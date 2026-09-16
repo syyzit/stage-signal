@@ -204,6 +204,10 @@ Because non-zero exit codes (11 blocked, 12 failed, 14 timeout) fail the step by
   run: exit ${{ steps.wait.outputs.exit-code }}
 ```
 
+See [`examples/github-action-wait.yml`](examples/github-action-wait.yml) for a complete copyable workflow that waits on an existing `.stage-signal/` directory. The composite action's steps use `shell: bash` (available on GitHub-hosted Ubuntu, macOS, and Windows runners). Pin the action ref (`@v0.1.1`) independently from the optional `version` input (PyPI package pin).
+
+For distinguishable blocked/failed/timeout in CI without log scraping, use the action `outputs` (see above) with `continue-on-error` on the wait step when you need downstream `if:` branches.
+
 Exit codes are the `wait` contract: `0` condition met, `11` blocked,
 `12` failed, `14` timeout, `15` not initialized (`10` running,
 `13` queued, `1`/`2`/`3` errors). See `action.yml`.

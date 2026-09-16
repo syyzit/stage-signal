@@ -1,0 +1,25 @@
+name: Wait for stage signal
+
+on:
+  workflow_dispatch:
+
+jobs:
+  wait:
+    runs-on: ubuntu-latest
+    timeout-minutes: 65
+    steps:
+      - uses: actions/checkout@v4
+      - name: Wait for an existing stage
+        id: wait
+        continue-on-error: true
+        uses: syyzit/stage-signal@v0.1.1
+        with:
+          dir: .stage-signal
+          state: terminal
+          timeout: 3600
+          version: "0.1.1"
+      - name: Branch on wait outcome
+        run: |
+          echo "outcome=${{ steps.wait.outputs.outcome }}"
+          echo "state=${{ steps.wait.outputs.state }}"
+          echo "exit_code=${{ steps.wait.outputs.exit_code }}"
