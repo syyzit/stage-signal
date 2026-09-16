@@ -13,6 +13,9 @@ license = { text = "MIT" }
 [project.scripts]
 stage-signal = "stage_signal.cli:main"
 
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
 [tool.setuptools.packages.find]
 where = ["src"]
 
