@@ -6,6 +6,17 @@ See `docs/RELEASE.md` for the release procedure.
 
 ## [Unreleased]
 
+- Reset `clear-terminal` to true idle `queued` state by clearing stage identity
+  (`stage_name` and `stage_id` set to `null`), preventing cleared failed stages
+  from appearing as unfinished pending work in orchestrators and `doctor` (#26).
+- Added optional `--keep-stage` flag to `clear-terminal` for workflows needing to
+  re-queue the previous stage identity without starting it immediately (#26).
+- Added `--accept-failure` flag to `done`, permitting orchestrators to transition
+  a `failed` stage to `done` while recording `"accepted_failure": true` in `result`
+  without inventing fake success (#26).
+- Documented orchestrator idle vs queued semantics and failure handling paths
+  in `docs/SPEC.md`, `README.md`, and `examples/cli-orchestrator-loop.md` (#26).
+
 ## [0.1.2] — 2026-09-16
 
 - Clear stale `meta` keys on `start` (replacing entirely with newly supplied

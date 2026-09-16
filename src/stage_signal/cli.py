@@ -71,6 +71,12 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument("--git-head", default=None)
     c.add_argument("--proof-ref", default=None)
     c.add_argument("--require-proof", action="store_true", default=False)
+    c.add_argument(
+        "--accept-failure",
+        action="store_true",
+        default=False,
+        help="allow done transition from failed only (records accepted_failure: true)",
+    )
     c.add_argument("--write-status-mirror", action="store_true", default=None)
     c.set_defaults(func=cmd_done)
 
@@ -96,7 +102,13 @@ def build_parser() -> argparse.ArgumentParser:
     c.set_defaults(func=cmd_wait)
 
     c = sub.add_parser(
-        "clear-terminal", help="reset a terminal state back to queued"
+        "clear-terminal", help="reset a terminal state back to queued (idle)"
+    )
+    c.add_argument(
+        "--keep-stage",
+        action="store_true",
+        default=False,
+        help="preserve stage name and id (default: clear to idle queued)",
     )
     c.set_defaults(func=cmd_clear_terminal)
 
@@ -225,6 +237,7 @@ def cmd_done(args: argparse.Namespace) -> int:
         git_head=args.git_head,
         proof_ref=args.proof_ref,
         require_proof=args.require_proof,
+        accept_failure=args.accept_failure,
         write_status_mirror=args.write_status_mirror,
     )
     print(f"done {_one_line(st)}")
@@ -310,7 +323,7 @@ def cmd_wait(args: argparse.Namespace) -> int:
 
 
 def cmd_clear_terminal(args: argparse.Namespace) -> int:
-    st = _stage(args).clear_terminal()
+    st = _stage(args).clear_terminal(keep_stage=args.keep_stage)
     print(f"cleared {_one_line(st)}")
     return 0
 

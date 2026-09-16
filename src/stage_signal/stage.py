@@ -401,9 +401,14 @@ class Stage:
         git_head: Optional[str] = None,
         proof_ref: Optional[str] = None,
         require_proof: bool = False,
+        accept_failure: bool = False,
         write_status_mirror: Optional[bool] = None,
     ) -> dict[str, Any]:
-        """Mark success. From queued/running, or idempotent repeat (SPEC §4 rule 5)."""
+        """Mark success. From queued/running, or idempotent repeat (SPEC §4 rule 5).
+
+        When accept_failure=True, allowed ONLY from failed, recording
+        accepted_failure: true in result.
+        """
         proof: Optional[dict[str, Any]] = None
         ref = proof_ref or os.environ.get(ENV_PROOF_REF)
         if require_proof:
@@ -412,14 +417,25 @@ class Stage:
             proof = {"tool": "agent-done-or-not", "ref": ref, "verified": None}
 
         def _apply(current: dict[str, Any]) -> dict[str, Any]:
-            _require_terminal_source(current, STATE_DONE, "done")
+            state = current.get("state")
+            if accept_failure:
+                if state != STATE_FAILED:
+                    raise IllegalTransition(
+                        f"done --accept-failure only allowed from state 'failed' "
+                        f"(current state: {state!r})"
+                    )
+            else:
+                _require_terminal_source(current, STATE_DONE, "done")
             ts = now_iso()
             current["state"] = STATE_DONE
-            current["result"] = {
+            result_payload: dict[str, Any] = {
                 "summary": summary,
                 "git_head": git_head if git_head is not None else current.get("git_head"),
                 "finished_at": ts,
             }
+            if accept_failure:
+                result_payload["accepted_failure"] = True
+            current["result"] = result_payload
             if git_head is not None:
                 current["git_head"] = git_head
             if proof is not None:
@@ -427,9 +443,13 @@ class Stage:
             current["error"] = None
             return current
 
+        detail: dict[str, Any] = {"proof": proof, "git_head": git_head}
+        if accept_failure:
+            detail["accepted_failure"] = True
+
         return self._mutate(
             "done", _apply, message=summary,
-            detail={"proof": proof, "git_head": git_head},
+            detail=detail,
             do_mirror=write_status_mirror,
         )
 
@@ -485,8 +505,13 @@ class Stage:
             do_mirror=write_status_mirror,
         )
 
-    def clear_terminal(self) -> dict[str, Any]:
-        """Reset done/blocked/failed back to queued (SPEC §4.7)."""
+    def clear_terminal(self, *, keep_stage: bool = False) -> dict[str, Any]:
+        """Reset done/blocked/failed back to queued (SPEC §4.7).
+
+        By default, clears stage identity (stage_id and stage_name set to None,
+        plus claim/session/heartbeat fields), transitioning to a true idle queued
+        state. Pass keep_stage=True to preserve the previous stage identity.
+        """
 
         def _apply(current: dict[str, Any]) -> dict[str, Any]:
             _require_state(
@@ -497,9 +522,26 @@ class Stage:
             current["state"] = STATE_QUEUED
             current["result"] = None
             current["error"] = None
+            current["proof"] = None
+            if not keep_stage:
+                current["stage_id"] = None
+                current["stage_name"] = None
+                current["session_id"] = None
+                current["pid"] = None
+                current["started_at"] = None
+                current["heartbeat_at"] = None
+                current["heartbeat_note"] = None
+                current["artifacts"] = []
+                current["meta"] = {}
             return current
 
-        return self._mutate("clear_terminal", _apply, message="cleared to queued")
+        msg = "cleared to queued" if keep_stage else "cleared to idle queued"
+        return self._mutate(
+            "clear_terminal",
+            _apply,
+            message=msg,
+            detail={"keep_stage": keep_stage},
+        )
 
     # -- observers --------------------------------------------------------
 

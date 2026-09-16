@@ -81,12 +81,15 @@ stage-signal start --stage impact-clarity --session "$SESSION_ID" --pid $$
 stage-signal heartbeat
 stage-signal done --summary "merged abc123" --git-head abc123
 # or: stage-signal blocked --reason "..." / stage-signal fail --reason "..."
+# or if accepting a known failure: stage-signal done --accept-failure --summary "accepted: ..."
 
 # orchestrator side
 stage-signal status --json
 stage-signal wait --state terminal --timeout 900
 # or wait --json for a structured outcome payload on stdout:
 stage-signal wait --json --state terminal --timeout 900
+# reset terminal state back to true idle queued:
+stage-signal clear-terminal
 ```
 
 The `--pid $$` example uses the POSIX shell process ID. On Windows, pass the
@@ -150,6 +153,16 @@ The agent CLI invocation line is pluggable — everything else stays identical:
 | **OpenCode** | `opencode run --dir "$REPO" --auto -m "$MODEL" "$PROMPT"` |
 
 See [`examples/cli-orchestrator-loop.md`](examples/cli-orchestrator-loop.md) for the end-to-end loop guide and [`examples/multi-cli-loop.sh`](examples/multi-cli-loop.sh) for a thin runner reusing `examples/queue-orchestrator.sh`.
+
+#### Idle vs. Queued in Orchestrators
+
+Orchestrator loops need to differentiate between an active pending stage and an idle runner:
+- **Idle state:** `state: queued` with no stage claimed (`stage_name: null`, displayed as `queued -`) indicates the worktree is idle and awaiting instructions (created by `init` or reset via `clear-terminal`).
+- **Queued stage:** `state: queued` with a stage name (`stage_name: "feature-x"`) indicates a specific stage is queued to be picked up.
+- **Handling failures:** When an agent reports `fail`, orchestrators have two clean SPEC-compatible choices:
+  - `stage-signal clear-terminal` to clear stage identity back to a true idle `queued -` state.
+  - `stage-signal done --accept-failure --summary "accepted: ..."` to transition a failed stage to `done` with `"accepted_failure": true` recorded in `result`, without inventing a fake success.
+
 
 ### GitHub Action: wait without a venv
 
