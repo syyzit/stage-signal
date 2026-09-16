@@ -124,6 +124,24 @@ Multi-stage queues (same contract, one dir walked against a queue file):
 `running`/`queued` wait (or exit 10/13 with `--once` for cron).
 Smoke: `examples/queue-orchestrator-smoke.sh`.
 
+### GitHub Action: wait without a venv
+
+No preinstalled venv needed — the composite action installs `stage-signal`
+from PyPI then runs `stage-signal wait`:
+
+```yaml
+- uses: syyzit/stage-signal@v0.1.0
+  with:
+    dir: .stage-signal   # default
+    state: terminal      # done | blocked | failed | terminal (default)
+    timeout: 3600        # seconds (default)
+    # python-version: "3.12"  # default
+```
+
+Exit codes are the `wait` contract: `0` condition met, `11` blocked,
+`12` failed, `14` timeout, `15` not initialized (`10` running,
+`13` queued, `1`/`2`/`3` errors). See `action.yml`.
+
 ---
 
 ## What this is / isn’t

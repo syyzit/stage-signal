@@ -8,3 +8,6 @@ __pycache__/
 dist/
 build/
 .DS_Store
+
+# local orchestrator state (never publish)
+.museloop/
