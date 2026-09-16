@@ -40,7 +40,7 @@ Terminal states for a given attempt: `done`, `blocked`, `failed`.
 
 ## Install
 
-From PyPI (once published):
+From PyPI (once 0.1.0 is published):
 
 ```bash
 python3 -m venv .venv
@@ -67,7 +67,7 @@ python -m pytest          # all green
 
 ---
 
-## Quick start (implemented)
+## Quick start
 
 ```bash
 # in your project
@@ -77,6 +77,7 @@ stage-signal init
 stage-signal start --stage impact-clarity --session "$SESSION_ID" --pid $$
 stage-signal heartbeat
 stage-signal done --summary "merged abc123" --git-head abc123
+# or: stage-signal blocked --reason "..." / stage-signal fail --reason "..."
 
 # orchestrator side
 stage-signal status --json
@@ -111,8 +112,6 @@ stage-signal start --stage demo --meta owner=OpenLoop --meta '{"ticket": 42, "fl
 - A raw JSON object string — JSON types (numbers, bools, null, nested
   objects/arrays) are preserved.
 - Bare words, malformed JSON, and non-object JSON exit `2` with no mutation.
-
-Stdlib only — no new dependencies for this contract.
 
 Minimal orchestrator loop (cron, bot, CI step, shell): see
 `examples/orchestrator-watchdog.sh` — it only calls
@@ -156,18 +155,26 @@ Agent UIs and chat transcripts are for humans. Orchestrators need a stable, bori
 
 ---
 
-## Status of this repository
+## Status
 
-Working today: library (`src/stage_signal/`), full CLI (`init`, `start`,
+0.1.0: library (`src/stage_signal/`), full CLI (`init`, `start`,
 `heartbeat`, `note`, `artifact`, `done`, `blocked`, `fail`, `status`,
 `wait`, `clear-terminal`, `doctor`), unit + concurrency tests,
-`examples/orchestrator-smoke.sh` as the end-to-end acceptance check,
-`examples/orchestrator-watchdog.sh` as a minimal orchestrator poll loop
-(only `status --json` / `wait`), `examples/queue-orchestrator.sh` (+
-`examples/sample-queue.md`, `examples/queue-orchestrator-smoke.sh`) as a
-minimal multi-stage queue consumer on the same contract, and CI
-(`.github/workflows/ci.yml`) running pytest + both smoke scripts on push/PR
-plus a packaging job (`python -m build` + `twine check dist/*`, no upload).
+`examples/orchestrator-watchdog.sh` (+ `examples/orchestrator-smoke.sh`),
+`examples/queue-orchestrator.sh` (+ `examples/sample-queue.md`,
+`examples/queue-orchestrator-smoke.sh`), CI (`.github/workflows/ci.yml`:
+pytest + both smokes + packaging check via `python -m build` /
+`twine check`, no upload). Contract: SPEC v1.
+
+---
+
+## Docs
+
+- `docs/SPEC.md` — normative contract (schema, CLI, exit codes)
+- `docs/COMPOSE.md` — proof interop (`--proof-ref` / `--require-proof`)
+- `docs/RELEASE.md` — release procedure (manual; no upload from agent loops)
+- `docs/PRIOR_ART.md` — background research
+- `CHANGELOG.md` — release notes
 
 ---
 
@@ -185,4 +192,4 @@ MIT — see `LICENSE`.
 
 ## Contributing
 
-Issues and PRs welcome once M1+ exists. Keep the scope small: lifecycle signals, not a platform.
+Issues and PRs welcome. Keep the scope small: lifecycle signals, not a platform.
