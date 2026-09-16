@@ -183,7 +183,13 @@ exit $EXIT_CODE
 """
         env = dict(os.environ)
         env["GITHUB_OUTPUT"] = str(gh_out)
-        env["PATH"] = f"{ROOT / '.venv' / 'bin'}:{env.get('PATH', '')}"
+        # Windows CI: use os.pathsep and Scripts; a hard-coded ":" corrupts PATH
+        # so `stage-signal` is not found and bash exits 1 for every wait code.
+        path_prefix = []
+        for candidate in (ROOT / ".venv" / "bin", ROOT / ".venv" / "Scripts"):
+            if candidate.is_dir():
+                path_prefix.append(str(candidate))
+        env["PATH"] = os.pathsep.join([*path_prefix, env.get("PATH", "")])
 
         proc = subprocess.run(
             ["bash", "-c", script],
