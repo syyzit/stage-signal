@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+import json
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
+import uuid
 from pathlib import Path
+
 import pytest
 
 from stage_signal.cli import main
@@ -49,7 +54,8 @@ def _parse_github_output(path: Path) -> dict[str, str]:
             while i < len(lines) and lines[i] != delim:
                 val_lines.append(lines[i])
                 i += 1
-            outputs[key] = "\n".join(val_lines)
+            outputs[key] = "
+".join(val_lines)
             i += 1
         elif "=" in line:
             k, v = line.split("=", 1)
@@ -67,17 +73,7 @@ def _run_action_wait_step(
     poll: str = "",
     force_no_json: bool = False,
 ) -> tuple[int, dict[str, str]]:
-    """Run the wait contract the composite action uses, without a bash subshell.
-
-    GitHub Actions runs the action step under `shell: bash`, but reproducing that
-    via `bash -c` on Windows CI lost exit codes (always 1). Drive `wait` through
-    the same installed CLI with subprocess and synthesize GITHUB_OUTPUT locally.
-    """
-    import json
-    import shutil
-    import tempfile
-    import uuid
-
+    """Run the wait contract without a bash subshell (Windows-safe)."""
     with tempfile.TemporaryDirectory() as td:
         gh_out = Path(td) / "gh_output"
         gh_out.touch()
@@ -85,7 +81,6 @@ def _run_action_wait_step(
 
         exe = shutil.which("stage-signal")
         if exe is None:
-            # Fallbacks used in local/dev checkouts
             for candidate in (
                 ROOT / ".venv" / "bin" / "stage-signal",
                 ROOT / ".venv" / "Scripts" / "stage-signal.exe",
@@ -111,8 +106,11 @@ def _run_action_wait_step(
         env = dict(os.environ)
         env["GITHUB_OUTPUT"] = str(gh_out)
 
-        with open(tmp_out, "w", encoding="utf-8") as sink:
-            proc = subprocess.run(cmd, env=env, stdout=sink if use_json else subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        if use_json:
+            with open(tmp_out, "w", encoding="utf-8") as sink:
+                proc = subprocess.run(cmd, env=env, stdout=sink, stderr=subprocess.PIPE, text=True)
+        else:
+            proc = subprocess.run(cmd, env=env, capture_output=True, text=True)
         exit_code = proc.returncode
 
         raw_json = tmp_out.read_text(encoding="utf-8") if use_json and tmp_out.exists() else ""
@@ -157,35 +155,21 @@ def _run_action_wait_step(
             timed_out = "true"
 
         with open(gh_out, "a", encoding="utf-8") as f:
-            f.write(f"state={observed}
-")
-            f.write(f"observed-state={observed}
-")
-            f.write(f"observed_state={observed}
-")
-            f.write(f"outcome={outcome}
-")
-            f.write(f"exit-code={exit_code}
-")
-            f.write(f"exit_code={exit_code}
-")
-            f.write(f"timed-out={timed_out}
-")
-            f.write(f"timed_out={timed_out}
-")
-            f.write(f"stage-id={stage_id}
-")
-            f.write(f"stage_id={stage_id}
-")
+            f.write(f"state={observed}\n")
+            f.write(f"observed-state={observed}\n")
+            f.write(f"observed_state={observed}\n")
+            f.write(f"outcome={outcome}\n")
+            f.write(f"exit-code={exit_code}\n")
+            f.write(f"exit_code={exit_code}\n")
+            f.write(f"timed-out={timed_out}\n")
+            f.write(f"timed_out={timed_out}\n")
+            f.write(f"stage-id={stage_id}\n")
+            f.write(f"stage_id={stage_id}\n")
             if raw_json.strip():
                 delim = f"ghdel_{uuid.uuid4().hex}"
-                f.write(f"json<<{delim}
-{raw_json.strip()}
-{delim}
-")
+                f.write(f"json<<{delim}\n{raw_json.strip()}\n{delim}\n")
 
         return exit_code, _parse_github_output(gh_out)
-
 
 
 def test_action_wait_met_done(tmp_path: Path) -> None:
