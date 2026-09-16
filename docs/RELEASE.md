@@ -1,7 +1,11 @@
 # Release checklist — stage-signal
 
-First PyPI release is **manual**. Do NOT automate upload/push in agent loops.
-This doc is the whole procedure; stop after local `twine check`.
+First PyPI upload goes through GitHub OIDC trusted publishing via
+`.github/workflows/publish.yml`, not local `twine upload`. Do NOT run
+`twine upload` locally or from an agent. Local `twine check` still
+required (step 5). Do NOT automate push/tag in agent loops.
+This doc is the whole procedure; stop after local `twine check`
+(unless this milestone explicitly asks for the publish workflow).
 
 Package name (PyPI): `stage-signal`
 Entry point: `stage-signal` (= `python -m stage_signal`)
@@ -74,17 +78,38 @@ EOF
 `pyproject.toml` metadata on any warning — do not work around with
 `--skip-existing`.
 
-## 6. Upload (human only, never the agent)
+## 6. Upload (trusted publisher via GitHub, never local twine upload)
+
+First upload for `v0.1.0` (and later tags) is handled by the
+`publish` workflow in `.github/workflows/publish.yml`:
+
+- Trigger: push a tag matching `v*` (e.g. `v0.1.0`), or manual
+  `workflow_dispatch`.
+- The workflow builds with `python -m build` and publishes with
+  `pypa/gh-action-pypi-publish@release/v1` using OIDC — no stored
+  API token, no `password`/`token` passed in the workflow.
+- Required job permissions: `id-token: write`, `contents: read`.
+- No `environment:` key in the workflow (pending publisher was
+  registered with an empty Environment name).
+
+Pending publisher fields on PyPI (must match exactly):
+
+- PyPI project name: `stage-signal`
+- Owner: `syyzit`
+- Repo name: `stage-signal`
+- Workflow name: `publish.yml`
+- Environment name: (empty — leave blank)
+
+Do NOT run `twine upload` locally — the pending publisher only
+trusts the GitHub workflow identity. Never store PyPI tokens in
+the repo.
 
 ```bash
-# maintainer runs this by hand after reviewing dist/:
-python -m twine upload dist/*
-# for a test run first:
-# python -m twine upload --repository testpypi dist/*
+# maintainer runs this by hand after reviewing dist/ and CI:
+# git push + git push --tags  (only when the maintainer says so)
+# pushing tag vX.Y.Z triggers the publish workflow, which uploads to PyPI.
+# for a test run first, configure a TestPyPI pending publisher separately.
 ```
-
-Never run `twine upload` from an unattended agent. Never store PyPI
-tokens in the repo.
 
 ## 7. Git tag (human only)
 
