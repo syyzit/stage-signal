@@ -22,7 +22,9 @@ See `docs/RELEASE.md` for the release procedure.
   PIDs on running stages (#5).
 - Added CI workflow job to run pytest on `windows-latest` across Python 3.11, 3.12, 3.13, and 3.14 (#11, #16).
 - Added copyable GitHub Actions wait workflow example in `examples/github-action-wait.yml` (#6).
-- Added Windows usage documentation, file locking semantics, and path conventions in `docs/WINDOWS.md` (#9).
+- Added Windows usage notes for venv activation, `--pid` / `$$`, and POSIX
+  shell examples in `README.md` (#9). (File locking semantics remain in
+  `docs/SPEC.md` §8 and the README platform locking note from #1.)
 - Added `CONTRIBUTING.md` guide covering development workflow, testing, style, and PR process (#10).
 
 ## [0.1.1] — 2026-09-16
