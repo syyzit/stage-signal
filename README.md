@@ -145,13 +145,13 @@ No preinstalled venv needed — the composite action installs `stage-signal`
 from PyPI then runs `stage-signal wait`:
 
 ```yaml
-- uses: syyzit/stage-signal@v0.1.0
+- uses: syyzit/stage-signal@v0.1.1
   with:
     dir: .stage-signal   # default
     state: terminal      # done | blocked | failed | terminal (default)
     timeout: 3600        # seconds (default)
     # python-version: "3.12"  # default
-    # version: "0.1.0"        # optional version pin (default: unpinned/latest)
+    # version: "0.1.1"        # optional version pin (default: unpinned/latest)
     # pip-cache: true         # optional boolean for pip caching (default: false)
     # cache: "pip"            # optional setup-python cache (default: "")
 ```

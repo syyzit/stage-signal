@@ -17,7 +17,7 @@ from .errors import (
 from .stage import Stage, verify_proof, want_matches, write_status_mirror
 from .store import StageStore, resolve_dir
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 __all__ = [
     "__version__",
