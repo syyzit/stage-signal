@@ -153,10 +153,46 @@ from PyPI then runs `stage-signal wait`:
     dir: .stage-signal   # default
     state: terminal      # done | blocked | failed | terminal (default)
     timeout: 3600        # seconds (default)
+    # poll: 5.0          # poll interval in seconds (default: CLI default 5.0)
     # python-version: "3.12"  # default
     # version: "0.1.1"        # optional version pin (default: unpinned/latest)
     # pip-cache: true         # optional boolean for pip caching (default: false)
     # cache: "pip"            # optional setup-python cache (default: "")
+```
+
+The action exposes step outputs so downstream steps can branch without log scraping:
+- `state` / `observed-state`: observed state (`done`, `blocked`, `failed`, `running`, etc.)
+- `outcome`: `met`, `mismatch`, `timeout`, or `error`
+- `exit-code` / `exit_code`: numeric wait exit code (`0`, `11`, `12`, `14`, `15`)
+- `timed-out` / `timed_out`: `"true"` or `"false"`
+- `stage-id` / `stage_id`: stage identifier if present in status
+- `json`: raw machine-readable JSON emitted by `wait --json`
+
+#### Branching without scraping logs
+
+Because non-zero exit codes (11 blocked, 12 failed, 14 timeout) fail the step by default, use `continue-on-error: true` to inspect outputs in subsequent steps:
+
+```yaml
+- name: Wait for milestone
+  id: wait
+  uses: syyzit/stage-signal@v0.1.1
+  continue-on-error: true
+  with:
+    state: done
+    timeout: 600
+
+- name: Notify on blocked
+  if: steps.wait.outputs.state == 'blocked'
+  run: echo "Stage blocked: ${{ steps.wait.outputs.stage-id }}"
+
+- name: Alert on timeout
+  if: steps.wait.outputs.timed-out == 'true'
+  run: echo "Stage timed out after 600s"
+
+# Optionally enforce job failure if wait was not met:
+- name: Fail if not met
+  if: steps.wait.outputs.outcome != 'met'
+  run: exit ${{ steps.wait.outputs.exit-code }}
 ```
 
 Exit codes are the `wait` contract: `0` condition met, `11` blocked,

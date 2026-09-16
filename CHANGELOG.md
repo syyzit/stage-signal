@@ -6,6 +6,9 @@ See `docs/RELEASE.md` for the release procedure.
 
 ## [Unreleased]
 
+- Composite action (`action.yml`) outputs exposed (`state`, `outcome`,
+  `exit-code`, `timed-out`, `stage-id`, `json`) and optional `poll` input added,
+  enabling CI steps to branch on wait outcomes without log scraping (#7).
 - Added `wait --json` emitting a machine-readable JSON result object (`outcome`,
   `wanted`, `observed_state`, `exit_code`, `timeout`, `stage_id`, `dir`,
   `status`) to stdout for CI dashboards and orchestrators across met, mismatch,
