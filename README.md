@@ -119,6 +119,12 @@ Minimal orchestrator loop (cron, bot, CI step, shell): see
 `stage-signal status --json` / `stage-signal wait` and exits with the
 observed-state code above. Acceptance sequence: `examples/orchestrator-smoke.sh`.
 
+Multi-stage queues (same contract, one dir walked against a queue file):
+`examples/queue-orchestrator.sh --queue examples/sample-queue.md [--dir PATH] [--once]`
+— `done` advances (exit 0), `blocked`/`failed` stop with 11/12,
+`running`/`queued` wait (or exit 10/13 with `--once` for cron).
+Smoke: `examples/queue-orchestrator-smoke.sh`.
+
 ---
 
 ## What this is / isn’t
@@ -157,8 +163,10 @@ Working today: library (`src/stage_signal/`), full CLI (`init`, `start`,
 `wait`, `clear-terminal`, `doctor`), unit + concurrency tests,
 `examples/orchestrator-smoke.sh` as the end-to-end acceptance check,
 `examples/orchestrator-watchdog.sh` as a minimal orchestrator poll loop
-(only `status --json` / `wait`), and CI (`.github/workflows/ci.yml`)
-running pytest + the smoke script on push/PR.
+(only `status --json` / `wait`), `examples/queue-orchestrator.sh` (+
+`examples/sample-queue.md`, `examples/queue-orchestrator-smoke.sh`) as a
+minimal multi-stage queue consumer on the same contract, and CI
+(`.github/workflows/ci.yml`) running pytest + the smoke script on push/PR.
 
 ---
 
