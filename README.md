@@ -40,7 +40,7 @@ Terminal states for a given attempt: `done`, `blocked`, `failed`.
 
 ## Install
 
-From PyPI (once 0.1.0 is published):
+From PyPI:
 
 ```bash
 python3 -m venv .venv

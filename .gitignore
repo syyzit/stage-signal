@@ -11,3 +11,6 @@ build/
 
 # local orchestrator state (never publish)
 .museloop/
+
+# local AGLoop orchestrator state (never publish)
+.agloop/

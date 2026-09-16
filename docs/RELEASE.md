@@ -120,7 +120,7 @@ git log --oneline -5   # sanity check what the tag points at
 ```
 
 Tag only a commit where steps 1–5 already passed. Push is HOLD by
-default in this repo (see `.museloop/QUEUE.md`).
+default in this repo until maintainer review.
 
 ## Quick fail-closed rules
 

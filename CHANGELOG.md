@@ -8,7 +8,8 @@ See `docs/RELEASE.md` for the release procedure.
 
 ## [0.1.0] — 2026-09-16
 
-First PyPI-ready snapshot (local build verified, not yet uploaded).
+Package available on PyPI (`pip install stage-signal`).
+GitHub release and tag: [`v0.1.0`](https://github.com/syyzit/stage-signal/releases/tag/v0.1.0).
 
 - Stage lifecycle CLI: `init`, `start`, `heartbeat`, `note`, `artifact`,
   `done`, `blocked`, `fail`, `status`, `wait`, `clear-terminal`, `doctor`.
@@ -17,5 +18,8 @@ First PyPI-ready snapshot (local build verified, not yet uploaded).
 - Exit-code contract for orchestrators (`0/1/2/3/10/11/12/13/14/15`).
 - Proof composition: `done --proof-ref/--require-proof` (see `docs/COMPOSE.md`).
 - Optional `.orch/STATUS.md` mirror via `--write-status-mirror`.
+- Composite GitHub Action for waiting without a preinstalled venv (`uses: syyzit/stage-signal@v0.1.0`).
 - Stdlib only, Python `>=3.11`. Entry point `stage-signal`
   (`python -m stage_signal` alias).
+
+[0.1.0]: https://github.com/syyzit/stage-signal/releases/tag/v0.1.0
