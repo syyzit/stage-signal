@@ -35,6 +35,8 @@ jobs:
 
   test-windows:
     runs-on: windows-latest
+    env:
+      PYTEST_TIMEOUT: "60"
     steps:
       - uses: actions/checkout@v7
 
@@ -51,11 +53,13 @@ jobs:
       - name: Run pytest (spec gaps first)
         env:
           PYTHONFAULTHANDLER: "1"
+          PYTEST_TIMEOUT: "60"
         run: python -m pytest tests/test_spec_gaps.py -vv --tb=short
 
       - name: Run pytest
         env:
           PYTHONFAULTHANDLER: "1"
+          PYTEST_TIMEOUT: "60"
         timeout-minutes: 10
         run: python -m pytest -q --tb=line
 

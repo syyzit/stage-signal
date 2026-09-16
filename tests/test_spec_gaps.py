@@ -201,3 +201,29 @@ def test_read_status_retries_torn_read_once(sdir: Path, monkeypatch) -> None:
     assert st["state"] == "running"
     assert calls["n"] == 1
     assert json.loads(good)["project"] == "p"
+
+
+def test_pytest_timeout_plugin_installed_and_aborts_hanging_test(tmp_path: Path) -> None:
+    import subprocess
+    import sys
+    import pytest_timeout
+
+    assert pytest_timeout is not None
+    test_file = tmp_path / "test_hanging.py"
+    test_file.write_text("import time\ndef test_slow():\n    time.sleep(2)\n")
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-q",
+            "--timeout=1",
+            "--timeout-method=thread",
+            str(test_file),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode != 0
+    assert "Timeout" in proc.stdout or "Timeout" in proc.stderr
+
