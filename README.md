@@ -49,6 +49,9 @@ pip install stage-signal
 stage-signal --help
 ```
 
+On Windows Command Prompt, activate the virtual environment with
+`.venv\Scripts\activate` instead of the `source` command above.
+
 System Python on macOS refuses bare `pip install` (PEP 668, "externally
 managed") — always use a venv as above.
 
@@ -83,6 +86,9 @@ stage-signal done --summary "merged abc123" --git-head abc123
 stage-signal status --json
 stage-signal wait --state terminal --timeout 900
 ```
+
+The `--pid $$` example uses the POSIX shell process ID. On Windows, pass the
+agent process ID instead (for example, `os.getpid()` from Python).
 
 On-disk layout (default):
 
@@ -119,6 +125,9 @@ Minimal orchestrator loop (cron, bot, CI step, shell): see
 `examples/orchestrator-watchdog.sh` — it only calls
 `stage-signal status --json` / `stage-signal wait` and exits with the
 observed-state code above. Acceptance sequence: `examples/orchestrator-smoke.sh`.
+
+The `examples/*.sh` scripts require a POSIX shell, such as Git Bash, WSL, or
+the default shell on macOS and Linux.
 
 Multi-stage queues (same contract, one dir walked against a queue file):
 `examples/queue-orchestrator.sh --queue examples/sample-queue.md [--dir PATH] [--once]`
