@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -91,10 +93,14 @@ def test_cli_start_meta_end_to_end(tmp_path, monkeypatch) -> None:
                  "--meta", '{"b": 2, "flag": true}']) == 0
     st = Stage(str(d)).status()
     assert st["meta"] == {"a": "1", "b": 2, "flag": True}
-    # meta merges across starts (existing library behavior still holds)
+    # new start replaces meta entirely with the new meta set (issue #15)
     assert main(["start", "--stage", "m", "--meta", "c=3"]) == 0
     st2 = Stage(str(d)).status()
-    assert st2["meta"] == {"a": "1", "b": 2, "flag": True, "c": "3"}
+    assert st2["meta"] == {"c": "3"}
+    # start without --meta clears meta entirely
+    assert main(["start", "--stage", "m"]) == 0
+    st3 = Stage(str(d)).status()
+    assert st3["meta"] == {}
 
 
 def test_cli_start_meta_bad_exits_2(tmp_path, monkeypatch, capsys) -> None:
@@ -289,4 +295,84 @@ def test_cli_wait_human_default_preserved(tmp_path, monkeypatch, capsys) -> None
     captured = capsys.readouterr()
     assert captured.out == ""
     assert "stage-signal: error: wait timed out after 0.2s" in captured.err
+
+
+def test_cli_dogfood_meta_and_git_refresh(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(
+        ["git", "init", "-b", "main"], cwd=repo, check=True, capture_output=True
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Test"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.email", "test@test.com"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "commit", "--allow-empty", "-m", "first"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+    head1 = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+
+    sdir = repo / ".stage-signal"
+    monkeypatch.setenv("STAGE_SIGNAL_DIR", str(sdir))
+
+    assert main(["init", "--project", "dogfood"]) == 0
+    assert (
+        main(
+            [
+                "start",
+                "--stage",
+                "s1",
+                "--meta",
+                "owner=OpenLoop",
+                "--meta",
+                "reason=no_module_named_pytest",
+            ]
+        )
+        == 0
+    )
+    st1 = Stage(str(sdir)).status()
+    assert st1["meta"] == {
+        "owner": "OpenLoop",
+        "reason": "no_module_named_pytest",
+    }
+    assert st1["git_head"] == head1
+    assert st1["git_branch"] == "main"
+
+    # Advance git repo with new commit
+    subprocess.run(
+        ["git", "commit", "--allow-empty", "-m", "second"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+    head2 = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    assert head1 != head2
+
+    # Start stage 2 without --meta: meta must be cleared, git_head must reflect head2
+    assert main(["start", "--stage", "s2"]) == 0
+    st2 = Stage(str(sdir)).status()
+    assert st2["meta"] == {}
+    assert st2["git_head"] == head2
+    assert st2["git_branch"] == "main"
 

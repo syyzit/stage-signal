@@ -79,7 +79,7 @@ Field rules:
 | `pid` | int\|null | yes | Claiming process pid. |
 | `model`, `variant` | str\|null | yes | Informational (e.g. model id). |
 | `repo_path` | str\|null | yes | Absolute path of repo at `start`/`init` time. |
-| `git_branch`, `git_head` | str\|null | yes | Best-effort VCS info; `--git-head` overrides. |
+| `git_branch`, `git_head` | str\|null | yes | Best-effort VCS info; refreshed from current repo on `start`; `--git-head`/`--git-branch` override. |
 | `started_at` | ISO8601\|null | yes | Set on `start`; preserved until next `start`. |
 | `updated_at` | ISO8601 | yes | Bumped on every mutation. |
 | `heartbeat_at` | ISO8601\|null | yes | Bumped on `start` + `heartbeat`. |
@@ -89,7 +89,7 @@ Field rules:
 | `artifacts` | list | yes | Items `{"path": str, "label": str\|null, "added_at": ISO8601}`. Preserved across heartbeats; cleared on `start` with a new `stage_id`, kept on retry of same `stage_id`. |
 | `proof` | object\|null | yes | Optional composition pointer, e.g. `{"tool": "agent-done-or-not", "ref": "<ledger path/label>", "verified": null\|"file"\|"verify"}`. Set by `done --proof-ref` / `--require-proof` (see §9 and `docs/COMPOSE.md`); cleared on every `start`. `verified` is `null` when recorded without checking, `"file"` when the `--require-proof` file gate passed, `"verify"` when the external verifier passed. |
 | `notes` | list | yes | Items `{"text": str, "added_at": ISO8601}`; appended by `note`, capped at 200 entries (oldest dropped). Preserved across `start` (both same and new `stage_id`). |
-| `meta` | object | yes | Free-form; `start` merges repeatable `--meta K=V` (value kept as string) and/or raw JSON object strings (e.g. `'{"ticket": 42}'`, JSON types preserved). Entries merge in order, later wins. Invalid entries (bare word, malformed JSON, non-object JSON) are exit 2 with no mutation. |
+| `meta` | object | yes | Free-form; cleared on each `start` unless new repeatable `--meta K=V` and/or raw JSON object strings are supplied (which replace `meta` entirely). Within a single `start`, entries merge in order, later wins. Invalid entries (bare word, malformed JSON, non-object JSON) are exit 2 with no mutation. |
 
 Timestamps are ISO-8601 with timezone (UTC if none determinable, suffix `+00:00`).
 `init` creates a STATUS with `state: "queued"` and null stage fields.
@@ -120,8 +120,9 @@ Rules:
    claim fields, bumps `attempt` (same `stage_id`) or resets to 1 (new
    `stage_id`), clears `result`/`error`/`proof`, sets `heartbeat_note` to null,
    clears `artifacts` only on a new `stage_id` (kept on retry), preserves
-   `notes`/`meta` (merges new `--meta`), and bumps `heartbeat_at` and
-   `updated_at`.
+   `notes`, clears stale `meta` (replacing entirely with new `--meta` if
+   supplied), refreshes `git_head` and `git_branch` from current repo (unless
+   overridden), and bumps `heartbeat_at` and `updated_at`.
    Emits `start` event. This is how a previous terminal (`blocked`/`failed`/
    `done`) is cleared for a new attempt — no separate unlock needed.
 3. `heartbeat [--note]` — allowed only from `running`. Bumps `heartbeat_at`,
@@ -192,9 +193,10 @@ stage-signal doctor [--stale-after SEC] [--json]
   (later wins): `K=V` (value kept as a string; value may contain `=`;
   `K=` means empty string) or a single raw JSON object string per entry
   (e.g. `'{"ticket": 42, "flag": true}'`; JSON types — numbers, bools,
-  null, nested objects/arrays — are preserved). Bare words, malformed
-  JSON, and non-object JSON are bad args (exit 2) with no mutation.
-  Implemented stdlib-only (`json`), no new dependencies.
+  null, nested objects/arrays — are preserved). On each `start`, previous
+  meta is cleared; any new `--meta` flags replace the previous meta entirely.
+  Bare words, malformed JSON, and non-object JSON are bad args (exit 2) with
+  no mutation. Implemented stdlib-only (`json`), no new dependencies.
 - `wait` defaults: `--state terminal --timeout 3600 --poll 5`.
   Exit 0 when the wanted condition is met. If a *different* terminal state is
   reached first, exit with that state's code (11/12) — not 0, not 14.

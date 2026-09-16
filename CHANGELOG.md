@@ -6,6 +6,9 @@ See `docs/RELEASE.md` for the release procedure.
 
 ## [Unreleased]
 
+- Clear stale `meta` keys on `start` (replacing entirely with newly supplied
+  `--meta` flags, or clearing to `{}` when omitted) and refresh `git_head` and
+  `git_branch` from current repository HEAD (#15).
 - Composite action (`action.yml`) outputs exposed (`state`, `outcome`,
   `exit-code`, `timed-out`, `stage-id`, `json`) and optional `poll` input added,
   enabling CI steps to branch on wait outcomes without log scraping (#7).

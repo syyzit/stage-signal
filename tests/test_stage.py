@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -316,13 +317,121 @@ def test_state_exit_codes() -> None:
     assert state_exit_code("done") == 0
 
 
-def test_meta_merge(stage: Stage) -> None:
+def test_meta_clear_and_replace_on_start(stage: Stage) -> None:
     stage.start(stage="m", meta={"a": "1"})
     st = stage.start(stage="m", meta={"b": "2"})
-    assert st["meta"] == {"a": "1", "b": "2"}
+    assert st["meta"] == {"b": "2"}
+    st2 = stage.start(stage="m")
+    assert st2["meta"] == {}
 
 
 def test_status_md_mirror(stage: Stage, stage_dir: Path) -> None:
     stage.start(stage="m")
     md = (stage_dir / "STATUS.md").read_text()
     assert "state: running" in md
+
+
+def test_dogfood_meta_cleared_on_new_stage(stage: Stage) -> None:
+    # Repro from dogfood (issue #15): prior loop had owner and reason in meta
+    stage.start(
+        stage="clear-meta",
+        meta={"owner": "OpenLoop", "reason": "no_module_named_pytest"},
+    )
+    st = stage.status()
+    assert st["meta"] == {
+        "owner": "OpenLoop",
+        "reason": "no_module_named_pytest",
+    }
+
+    # Next start without --meta must clear old meta entirely
+    st2 = stage.start(stage="other")
+    assert st2["meta"] == {}
+
+    # Another start with new meta must replace entirely without retaining old keys
+    st3 = stage.start(stage="third", meta={"owner": "NewAgent"})
+    assert st3["meta"] == {"owner": "NewAgent"}
+
+
+def test_git_head_and_branch_refresh_on_start(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(
+        ["git", "init", "-b", "main"], cwd=repo, check=True, capture_output=True
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Test"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.email", "test@test.com"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "commit", "--allow-empty", "-m", "commit 1"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+    head1 = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+
+    s = Stage(repo / ".stage-signal")
+    s.init(project="test-repo")
+    st1 = s.start(stage="stage-1")
+    assert st1["git_head"] == head1
+    assert st1["git_branch"] == "main"
+
+    # Advance git repo with a new commit
+    subprocess.run(
+        ["git", "commit", "--allow-empty", "-m", "commit 2"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+    head2 = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    assert head1 != head2
+
+    # Next stage start must reflect current HEAD, not previous stage SHA
+    st2 = s.start(stage="stage-2")
+    assert st2["git_head"] == head2
+    assert st2["git_head"] != head1
+
+    # Switch branch
+    subprocess.run(
+        ["git", "checkout", "-b", "feat-refresh"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+    st3 = s.start(stage="stage-3")
+    assert st3["git_branch"] == "feat-refresh"
+
+    # Explicit override takes precedence
+    st4 = s.start(
+        stage="stage-4", git_head="customhead", git_branch="custombranch"
+    )
+    assert st4["git_head"] == "customhead"
+    assert st4["git_branch"] == "custombranch"
+
+
+def test_git_head_not_stale_in_non_git_repo(stage: Stage) -> None:
+    # Explicit git_head in first stage
+    st1 = stage.start(stage="s1", git_head="manual-sha")
+    assert st1["git_head"] == "manual-sha"
+
+    # Subsequent stage without explicit git_head must not retain stale SHA
+    st2 = stage.start(stage="s2")
+    assert st2["git_head"] is None

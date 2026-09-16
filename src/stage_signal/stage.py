@@ -302,6 +302,9 @@ class Stage:
         def _apply(current: dict[str, Any]) -> dict[str, Any]:
             ts = now_iso()
             same_series = current.get("stage_id") == new_id
+            detected_head, detected_branch = _detect_git(self._store.dir)
+            resolved_head = git_head if git_head is not None else detected_head
+            resolved_branch = git_branch if git_branch is not None else detected_branch
             current.update(
                 {
                     "stage_id": new_id,
@@ -313,22 +316,19 @@ class Stage:
                     "model": model,
                     "variant": variant,
                     "repo_path": _repo_path(self._store.dir),
-                    "git_branch": git_branch if git_branch is not None else current.get("git_branch"),
-                    "git_head": git_head if git_head is not None else current.get("git_head"),
+                    "git_branch": resolved_branch,
+                    "git_head": resolved_head,
                     "started_at": ts,
                     "heartbeat_at": ts,
                     "heartbeat_note": None,
                     "result": None,
                     "error": None,
                     "proof": None,
+                    "meta": dict(meta) if meta else {},
                 }
             )
             if not same_series:
                 current["artifacts"] = []
-            if meta:
-                merged = dict(current.get("meta") or {})
-                merged.update(meta)
-                current["meta"] = merged
             return current
 
         return self._mutate(
@@ -722,3 +722,47 @@ def _repo_path(stage_dir: Path) -> Optional[str]:
         return str(Path.cwd().resolve())
     except OSError:
         return None
+
+
+def _detect_git(stage_dir: Path) -> tuple[Optional[str], Optional[str]]:
+    """Return (git_head, git_branch) best-effort for the repository containing stage_dir."""
+    head: Optional[str] = None
+    branch: Optional[str] = None
+    try:
+        candidate = (
+            stage_dir
+            if (stage_dir / ".git").exists()
+            else stage_dir.parent
+        )
+    except OSError:
+        candidate = stage_dir.parent
+
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(candidate), "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if proc.returncode == 0:
+            val = proc.stdout.strip()
+            if val:
+                head = val
+    except (subprocess.SubprocessError, OSError):
+        pass
+
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(candidate), "symbolic-ref", "--short", "-q", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if proc.returncode == 0:
+            val = proc.stdout.strip()
+            if val:
+                branch = val
+    except (subprocess.SubprocessError, OSError):
+        pass
+
+    return head, branch
