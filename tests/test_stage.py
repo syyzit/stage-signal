@@ -1,0 +1,328 @@
+"""Unit tests for the stage_signal core library (M1)."""
+
+from __future__ import annotations
+
+import json
+import os
+from pathlib import Path
+
+import pytest
+
+from stage_signal import (
+    BadArgsError,
+    CorruptStatusError,
+    IllegalTransition,
+    NotInitialized,
+    Stage,
+    WaitTimeout,
+    state_exit_code,
+)
+
+
+@pytest.fixture()
+def stage_dir(tmp_path: Path) -> Path:
+    return tmp_path / ".stage-signal"
+
+
+@pytest.fixture()
+def stage(stage_dir: Path) -> Stage:
+    s = Stage(stage_dir)
+    s.init(project="testproj")
+    return s
+
+
+def test_init_creates_queued_status(stage_dir: Path) -> None:
+    s = Stage(stage_dir)
+    st = s.init(project="p")
+    assert st["state"] == "queued"
+    assert st["schema_version"] == 1
+    assert st["project"] == "p"
+    assert st["stage_id"] is None
+    assert (stage_dir / "STATUS.json").is_file()
+    assert (stage_dir / "STATUS.md").is_file()
+    assert (stage_dir / "events.jsonl").is_file()
+    # idempotent: second init keeps existing status
+    st2 = s.init(project="other")
+    assert st2["project"] == "p"
+
+
+def test_init_env_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("STAGE_SIGNAL_PROJECT", "envproj")
+    s = Stage(tmp_path / ".stage-signal")
+    assert s.init()["project"] == "envproj"
+
+
+def test_not_initialized(tmp_path: Path) -> None:
+    s = Stage(tmp_path / ".stage-signal")
+    with pytest.raises(NotInitialized) as exc:
+        s.status()
+    assert exc.value.exit_code == 15
+
+
+def test_start_from_any_state(stage: Stage) -> None:
+    st = stage.start(stage="m1", session_id="ses_1")
+    assert st["state"] == "running"
+    assert st["stage_id"] == "m1"
+    assert st["attempt"] == 1
+    assert st["session_id"] == "ses_1"
+    assert st["started_at"]
+    assert st["heartbeat_at"]
+    # same stage_id retry bumps attempt, keeps artifacts
+    stage.artifact("a.txt")
+    st2 = stage.start(stage="m1")
+    assert st2["attempt"] == 2
+    assert [a["path"] for a in st2["artifacts"]] == ["a.txt"]
+    # new stage resets attempt + artifacts, clears terminal
+    stage.done(summary="ok")
+    st3 = stage.start(stage="m2")
+    assert st3["state"] == "running"
+    assert st3["attempt"] == 1
+    assert st3["artifacts"] == []
+    assert st3["result"] is None
+
+
+def test_start_validates_args(stage: Stage) -> None:
+    with pytest.raises(BadArgsError):
+        stage.start(stage="  ")
+    with pytest.raises(BadArgsError):
+        stage.start(stage="m", pid=-1)
+
+
+def test_heartbeat_only_running(stage: Stage) -> None:
+    with pytest.raises(IllegalTransition) as exc:
+        stage.heartbeat()
+    assert exc.value.exit_code == 3
+    stage.start(stage="m")
+    st = stage.heartbeat(note="progress")
+    assert st["heartbeat_note"] == "progress"
+    assert st["heartbeat_at"]
+
+
+def test_note_and_artifact(stage: Stage) -> None:
+    with pytest.raises(IllegalTransition):
+        stage.note("x")
+    with pytest.raises(BadArgsError):
+        stage.note("  ")
+    stage.start(stage="m")
+    stage.note("checkpoint-1")
+    st = stage.artifact("dist/app.whl", label="wheel")
+    assert st["notes"][-1]["text"] == "checkpoint-1"
+    assert st["artifacts"][-1] == {
+        "path": "dist/app.whl",
+        "label": "wheel",
+        "added_at": st["artifacts"][-1]["added_at"],
+    }
+    with pytest.raises(BadArgsError):
+        stage.artifact("  ")
+
+
+def test_done_blocked_fail(stage: Stage) -> None:
+    stage.start(stage="m")
+    st = stage.done(summary="merged abc", git_head="abc")
+    assert st["state"] == "done"
+    assert st["result"]["summary"] == "merged abc"
+    assert st["git_head"] == "abc"
+    assert st["error"] is None
+    assert state_exit_code("done") == 0
+    # idempotent repeat
+    st2 = stage.done(summary="again")
+    assert st2["state"] == "done"
+    assert st2["result"]["summary"] == "again"
+    # terminal -> different terminal is illegal
+    with pytest.raises(IllegalTransition):
+        stage.blocked("nope")
+    with pytest.raises(IllegalTransition):
+        stage.fail("nope")
+    # new attempt via start, then blocked
+    stage.start(stage="m")
+    st3 = stage.blocked("free-tier stall")
+    assert st3["state"] == "blocked"
+    assert st3["error"]["reason"] == "free-tier stall"
+    assert state_exit_code("blocked") == 11
+    stage.start(stage="m")
+    st4 = stage.fail("boom")
+    assert st4["state"] == "failed"
+    assert state_exit_code("failed") == 12
+    # blocked/fail require reasons
+    stage.start(stage="m")
+    with pytest.raises(BadArgsError):
+        stage.blocked(" ")
+    with pytest.raises(BadArgsError):
+        stage.fail("")
+
+
+def test_clear_terminal(stage: Stage) -> None:
+    with pytest.raises(IllegalTransition):
+        stage.clear_terminal()  # queued
+    stage.start(stage="m")
+    with pytest.raises(IllegalTransition):
+        stage.clear_terminal()  # running
+    stage.done(summary="ok")
+    st = stage.clear_terminal()
+    assert st["state"] == "queued"
+    assert st["result"] is None
+
+
+def test_done_from_queued_allowed(stage: Stage) -> None:
+    st = stage.done(summary="fast-path")
+    assert st["state"] == "done"
+
+
+def test_proof_ref_recorded(stage: Stage) -> None:
+    stage.start(stage="m")
+    st = stage.done(summary="ok", proof_ref="ledger/123")
+    assert st["proof"] == {
+        "tool": "agent-done-or-not",
+        "ref": "ledger/123",
+        "verified": None,
+    }
+
+
+def test_require_proof_file_gate(tmp_path: Path, stage: Stage) -> None:
+    stage.start(stage="m")
+    receipt = tmp_path / "receipt.json"
+    receipt.write_text('{"ok": true}\n')
+    st = stage.done(summary="ok", proof_ref=str(receipt), require_proof=True)
+    assert st["state"] == "done"
+    assert st["proof"]["verified"] == "file"
+    # missing file + no binary on PATH -> fail closed, no mutation
+    stage.start(stage="m2")
+    with pytest.raises(IllegalTransition):
+        stage.done(
+            summary="ok", proof_ref=str(tmp_path / "nope.json"),
+            require_proof=True,
+        )
+    assert stage.status()["state"] == "running"
+    # empty file fails
+    empty = tmp_path / "empty.json"
+    empty.write_text("")
+    with pytest.raises(IllegalTransition):
+        stage.done(summary="ok", proof_ref=str(empty), require_proof=True)
+    # no ref at all fails
+    with pytest.raises(IllegalTransition):
+        stage.done(summary="ok", require_proof=True)
+
+
+def test_require_proof_delegates_to_binary(
+    tmp_path: Path, stage: Stage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("STAGE_SIGNAL_PROOF_REF", raising=False)
+    fake = tmp_path / "bin" / "agent-done-or-not"
+    fake.parent.mkdir(parents=True)
+    fake.write_text("#!/bin/sh\nexit 0\n")
+    fake.chmod(0o755)
+    monkeypatch.setenv("PATH", str(fake.parent) + os.pathsep + os.environ["PATH"])
+    stage.start(stage="m")
+    st = stage.done(summary="ok", proof_ref="some-ref", require_proof=True)
+    assert st["proof"]["verified"] == "verify"
+
+
+def test_events_appended(stage: Stage, stage_dir: Path) -> None:
+    stage.start(stage="m")
+    stage.heartbeat(note="n")
+    stage.note("hello")
+    stage.artifact("f.bin")
+    stage.done(summary="ok")
+    lines = (stage_dir / "events.jsonl").read_text().strip().splitlines()
+    types = [json.loads(line)["type"] for line in lines]
+    assert types == ["init", "start", "heartbeat", "note", "artifact", "done"]
+    for line in lines:
+        obj = json.loads(line)
+        assert obj["ts"] and obj["state"] and obj["attempt"] >= 1
+
+
+def test_corrupt_status(tmp_path: Path) -> None:
+    d = tmp_path / ".stage-signal"
+    s = Stage(d)
+    s.init(project="p")
+    (d / "STATUS.json").write_text("{not json")
+    with pytest.raises(CorruptStatusError):
+        s.status()
+    (d / "STATUS.json").write_text('{"schema_version": 99}')
+    with pytest.raises(CorruptStatusError):
+        s.status()
+
+
+def test_wait_terminal_and_specific(stage: Stage) -> None:
+    import threading
+
+    stage.start(stage="m")
+    result: dict = {}
+
+    def finish() -> None:
+        import time
+
+        time.sleep(0.3)
+        Stage(stage.dir).done(summary="bg done")
+
+    t = threading.Thread(target=finish)
+    t.start()
+    out = stage.wait("terminal", timeout=10, poll=0.05)
+    t.join()
+    assert out["state"] == "done"
+    result["ok"] = True
+    assert result["ok"]
+
+    stage.start(stage="m")
+    Stage(stage.dir).blocked("stalled")
+    out2 = stage.wait("blocked", timeout=5, poll=0.05)
+    assert out2["state"] == "blocked"
+
+
+def test_wait_terminal_mismatch_returns_immediately(stage: Stage) -> None:
+    import time
+
+    stage.start(stage="m")
+    stage.blocked("stalled")
+    started = time.monotonic()
+    out = stage.wait("done", timeout=30, poll=0.5)
+    assert out["state"] == "blocked"
+    assert time.monotonic() - started < 5
+
+
+def test_wait_timeout(stage: Stage) -> None:
+    stage.start(stage="m")
+    with pytest.raises(WaitTimeout) as exc:
+        stage.wait("done", timeout=0.2, poll=0.05)
+    assert exc.value.exit_code == 14
+    assert exc.value.last_status["state"] == "running"
+
+
+def test_wait_validates(stage: Stage) -> None:
+    with pytest.raises(BadArgsError):
+        stage.wait("bogus", timeout=1)
+    with pytest.raises(BadArgsError):
+        stage.wait("terminal", timeout=0)
+
+
+def test_diagnose(stage: Stage, stage_dir: Path) -> None:
+    diag = stage.diagnose()
+    assert diag["ok"] and not diag["problems"]
+    missing = Stage(stage_dir.parent / "nope" / ".stage-signal")
+    diag2 = missing.diagnose()
+    assert not diag2["ok"]
+    stage.start(stage="m")
+    diag3 = stage.diagnose(stale_after=10**9)
+    assert diag3["ok"] and not diag3["warnings"]
+    diag4 = stage.diagnose(stale_after=0)
+    assert diag4["ok"] and diag4["warnings"] and "STALE" in diag4["warnings"][0]
+
+
+def test_state_exit_codes() -> None:
+    assert state_exit_code("running") == 10
+    assert state_exit_code("blocked") == 11
+    assert state_exit_code("failed") == 12
+    assert state_exit_code("queued") == 13
+    assert state_exit_code("done") == 0
+
+
+def test_meta_merge(stage: Stage) -> None:
+    stage.start(stage="m", meta={"a": "1"})
+    st = stage.start(stage="m", meta={"b": "2"})
+    assert st["meta"] == {"a": "1", "b": "2"}
+
+
+def test_status_md_mirror(stage: Stage, stage_dir: Path) -> None:
+    stage.start(stage="m")
+    md = (stage_dir / "STATUS.md").read_text()
+    assert "state: running" in md
