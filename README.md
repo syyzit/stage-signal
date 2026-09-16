@@ -156,9 +156,19 @@ from PyPI then runs `stage-signal wait`:
     # cache: "pip"            # optional setup-python cache (default: "")
 ```
 
+See [`examples/github-action-wait.yml`](examples/github-action-wait.yml) for
+a complete copyable workflow that waits on an existing `.stage-signal/`
+directory. The composite action's steps use `shell: bash`; GitHub-hosted
+Ubuntu, macOS, and Windows runners all provide Bash. Pin the action ref
+(`@v0.1.1`) independently from the optional `version` input, which pins the
+PyPI package installed by the action.
+
 Exit codes are the `wait` contract: `0` condition met, `11` blocked,
 `12` failed, `14` timeout, `15` not initialized (`10` running,
 `13` queued, `1`/`2`/`3` errors). See `action.yml`.
+GitHub Actions treats every non-zero code as a failed step, so blocked, failed,
+and timeout states are not distinguishable from a generic step failure without
+inspecting the logs.
 
 > **Action runtime note:** The composite action uses `actions/setup-python@v7`
 > (Node 24 runner runtime, compatible with runner v2.327.1+), avoiding
