@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ctypes
+from datetime import datetime, timedelta, timezone
 import errno
 import json
 import os
@@ -152,6 +153,46 @@ def test_cli_doctor_human_and_json_dead_pid(sdir: Path, capsys: pytest.CaptureFi
     assert expected_warning in data["warnings"]
     assert data["status"]["state"] == "running"
     assert data["status"]["pid"] == dead_pid
+
+
+@pytest.mark.parametrize("state,age,stale", [("running", 600, True), ("running", 30, False), ("done", 600, False)])
+def test_doctor_default_heartbeat_threshold(
+    sdir: Path, capsys: pytest.CaptureFixture[str], state: str, age: int, stale: bool,
+) -> None:
+    stage = Stage(sdir)
+    stage.start(stage="task1", pid=os.getpid())
+    if state == "done":
+        stage.done("finished")
+    status_file = sdir / "STATUS.json"
+    raw = json.loads(status_file.read_text())
+    raw["pid"] = None
+    raw["heartbeat_at"] = (datetime.now(timezone.utc) - timedelta(seconds=age)).isoformat()
+    status_file.write_text(json.dumps(raw))
+    before = status_file.read_bytes()
+    capsys.readouterr()
+
+    diag = stage.diagnose()
+    assert diag["ok"] is True
+    assert diag["problems"] == []
+    assert any("STALE" in w for w in diag["warnings"]) is stale
+    assert stage.diagnose(stale_after=3600)["warnings"] == []
+    assert stage.diagnose(stale_after=None)["warnings"] == []
+
+    assert main(["doctor"]) == 0
+    out = capsys.readouterr().out
+    assert ("WARNING: STALE" in out) is stale
+    assert f"OK: {state}" in out
+    assert main(["doctor", "--json"]) == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data["ok"] is True
+    assert data["problems"] == []
+    assert any("STALE" in w for w in data["warnings"]) is stale
+    if stale:
+        assert "threshold 300s" in data["warnings"][0]
+    assert data["status"] == raw
+    assert main(["doctor", "--stale-after", "3600", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["warnings"] == []
+    assert status_file.read_bytes() == before
 
 
 def test_cli_doctor_json_uninitialized(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

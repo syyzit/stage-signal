@@ -213,9 +213,12 @@ stage-signal doctor [--stale-after SEC] [--json]
   best-effort checks whether the claiming process is alive (POSIX
   `os.kill(pid, 0)`, Windows API; warning on dead PID). Prints `OK`
   lines / problems; exit 0 when healthy (problems list empty, even with
-  warnings), 1 otherwise. `--stale-after SEC` adds a `STALE` warning when
-  `running` and `now - heartbeat_at > SEC`. `--json` prints the diagnose
-  dict (`ok`, `problems`, `warnings`, `status`) as JSON to stdout.
+  warnings), 1 otherwise. `doctor` and `Stage.diagnose()` default to a
+  300-second (5-minute) heartbeat threshold, overridable with `--stale-after SEC`.
+  When `running` and `now - heartbeat_at > SEC`, human output prints
+  `WARNING: STALE`; `--json` includes the warning in the diagnose dict
+  (`ok`, `problems`, `warnings`, `status`). Warnings never change stage state.
+  Passing `stale_after=None` to `Stage.diagnose()` disables heartbeat checks.
 
 ## 7. Exit codes (part of the contract)
 

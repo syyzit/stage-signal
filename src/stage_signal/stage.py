@@ -550,7 +550,7 @@ class Stage:
             with self._store.locked(exclusive=False):
                 last = copy.deepcopy(self._store.read_status())
 
-    def diagnose(self, *, stale_after: Optional[float] = None) -> dict[str, Any]:
+    def diagnose(self, *, stale_after: Optional[float] = 300.0) -> dict[str, Any]:
         """Check dir health. Returns {"ok", "problems", "warnings", "status"}."""
         problems: list[str] = []
         warnings: list[str] = []
