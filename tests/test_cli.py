@@ -118,3 +118,175 @@ def test_cli_status_json_roundtrips_meta_types(tmp_path, monkeypatch, capsys) ->
     assert main(["status", "--json"]) == 10  # running
     out = capsys.readouterr().out
     assert json.loads(out)["meta"] == {"n": 1}
+
+
+def test_wait_help_documents_json() -> None:
+    parser = build_parser()
+    wait_parser = None
+    for action in parser._actions:
+        if hasattr(action, "_name_parser_map") and "wait" in action._name_parser_map:
+            wait_parser = action._name_parser_map["wait"]
+            break
+    assert wait_parser is not None
+    help_text = wait_parser.format_help()
+    assert "--json" in help_text
+
+
+def test_cli_wait_json_met_done(tmp_path, monkeypatch, capsys) -> None:
+    d = tmp_path / ".stage-signal"
+    monkeypatch.setenv("STAGE_SIGNAL_DIR", str(d))
+    assert main(["init", "--project", "demo"]) == 0
+    assert main(["start", "--stage", "m1", "--stage-id", "m1-id"]) == 0
+    assert main(["done", "--summary", "all good"]) == 0
+    capsys.readouterr()
+
+    # wait --json with default --state terminal
+    assert main(["wait", "--json"]) == 0
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    data = json.loads(captured.out)
+    assert data["outcome"] == "met"
+    assert data["wanted"] == "terminal"
+    assert data["observed_state"] == "done"
+    assert data["state"] == "done"
+    assert data["exit_code"] == 0
+    assert data["timeout"] is False
+    assert data["stage_id"] == "m1-id"
+    assert data["dir"] == str(d)
+    assert data["status"]["state"] == "done"
+    assert data["status"]["result"]["summary"] == "all good"
+
+    # wait --json with explicit --state done
+    assert main(["wait", "--json", "--state", "done"]) == 0
+    data2 = json.loads(capsys.readouterr().out)
+    assert data2["outcome"] == "met"
+    assert data2["wanted"] == "done"
+    assert data2["observed_state"] == "done"
+    assert data2["exit_code"] == 0
+
+
+def test_cli_wait_json_timeout(tmp_path, monkeypatch, capsys) -> None:
+    d = tmp_path / ".stage-signal"
+    monkeypatch.setenv("STAGE_SIGNAL_DIR", str(d))
+    assert main(["init"]) == 0
+    assert main(["start", "--stage", "m-running"]) == 0
+    capsys.readouterr()
+
+    # timeout exits 14 and includes last known status in JSON
+    assert main(["wait", "--json", "--state", "terminal", "--timeout", "0.2", "--poll", "0.05"]) == 14
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    data = json.loads(captured.out)
+    assert data["outcome"] == "timeout"
+    assert data["wanted"] == "terminal"
+    assert data["observed_state"] == "running"
+    assert data["state"] == "running"
+    assert data["exit_code"] == 14
+    assert data["timeout"] is True
+    assert data["stage_id"] == "m-running"
+    assert data["dir"] == str(d)
+    assert data["status"]["state"] == "running"
+    assert data["status"]["stage_name"] == "m-running"
+
+
+def test_cli_wait_json_mismatch_blocked(tmp_path, monkeypatch, capsys) -> None:
+    d = tmp_path / ".stage-signal"
+    monkeypatch.setenv("STAGE_SIGNAL_DIR", str(d))
+    assert main(["init"]) == 0
+    assert main(["start", "--stage", "m-block", "--stage-id", "id-block"]) == 0
+    assert main(["blocked", "--reason", "waiting on api key"]) == 0
+    capsys.readouterr()
+
+    # Mismatch: wanted done, observed blocked -> exit 11
+    assert main(["wait", "--json", "--state", "done", "--timeout", "5", "--poll", "0.05"]) == 11
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    data = json.loads(captured.out)
+    assert data["outcome"] == "mismatch"
+    assert data["wanted"] == "done"
+    assert data["observed_state"] == "blocked"
+    assert data["state"] == "blocked"
+    assert data["exit_code"] == 11
+    assert data["timeout"] is False
+    assert data["stage_id"] == "id-block"
+    assert data["dir"] == str(d)
+    assert data["status"]["state"] == "blocked"
+    assert data["status"]["error"]["reason"] == "waiting on api key"
+
+
+def test_cli_wait_json_mismatch_failed(tmp_path, monkeypatch, capsys) -> None:
+    d = tmp_path / ".stage-signal"
+    monkeypatch.setenv("STAGE_SIGNAL_DIR", str(d))
+    assert main(["init"]) == 0
+    assert main(["start", "--stage", "m-fail", "--stage-id", "id-fail"]) == 0
+    assert main(["fail", "--reason", "syntax error"]) == 0
+    capsys.readouterr()
+
+    # Mismatch: wanted done, observed failed -> exit 12
+    assert main(["wait", "--json", "--state", "done", "--timeout", "5", "--poll", "0.05"]) == 12
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    data = json.loads(captured.out)
+    assert data["outcome"] == "mismatch"
+    assert data["wanted"] == "done"
+    assert data["observed_state"] == "failed"
+    assert data["state"] == "failed"
+    assert data["exit_code"] == 12
+    assert data["timeout"] is False
+    assert data["stage_id"] == "id-fail"
+    assert data["dir"] == str(d)
+    assert data["status"]["state"] == "failed"
+    assert data["status"]["error"]["reason"] == "syntax error"
+
+
+def test_cli_wait_json_matching_non_done_terminal(tmp_path, monkeypatch, capsys) -> None:
+    d = tmp_path / ".stage-signal"
+    monkeypatch.setenv("STAGE_SIGNAL_DIR", str(d))
+    assert main(["init"]) == 0
+    assert main(["start", "--stage", "m-non-done"]) == 0
+    assert main(["blocked", "--reason", "blocked on external dep"]) == 0
+    capsys.readouterr()
+
+    # Waiting specifically for blocked matches -> exit 0
+    assert main(["wait", "--json", "--state", "blocked"]) == 0
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    data = json.loads(captured.out)
+    assert data["outcome"] == "met"
+    assert data["wanted"] == "blocked"
+    assert data["observed_state"] == "blocked"
+    assert data["state"] == "blocked"
+    assert data["exit_code"] == 0
+    assert data["timeout"] is False
+
+
+def test_cli_wait_human_default_preserved(tmp_path, monkeypatch, capsys) -> None:
+    d = tmp_path / ".stage-signal"
+    monkeypatch.setenv("STAGE_SIGNAL_DIR", str(d))
+    assert main(["init"]) == 0
+    assert main(["start", "--stage", "m-human"]) == 0
+    assert main(["done", "--summary", "finished"]) == 0
+    capsys.readouterr()
+
+    # Human met
+    assert main(["wait"]) == 0
+    out = capsys.readouterr().out
+    assert "wait met: done" in out
+
+    # Human mismatch
+    assert main(["start", "--stage", "m-human"]) == 0
+    assert main(["blocked", "--reason", "blocked"]) == 0
+    capsys.readouterr()
+    assert main(["wait", "--state", "done", "--timeout", "5", "--poll", "0.05"]) == 11
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "wait ended in blocked (wanted done)" in captured.err
+
+    # Human timeout
+    assert main(["start", "--stage", "m-human"]) == 0
+    capsys.readouterr()
+    assert main(["wait", "--state", "done", "--timeout", "0.2", "--poll", "0.05"]) == 14
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "stage-signal: error: wait timed out after 0.2s" in captured.err
+

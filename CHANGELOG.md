@@ -6,6 +6,13 @@ See `docs/RELEASE.md` for the release procedure.
 
 ## [Unreleased]
 
+- Added `wait --json` emitting a machine-readable JSON result object (`outcome`,
+  `wanted`, `observed_state`, `exit_code`, `timeout`, `stage_id`, `dir`,
+  `status`) to stdout for CI dashboards and orchestrators across met, mismatch,
+  and timeout outcomes while preserving SPEC exit codes (#8).
+- Added `doctor --json` and process liveness diagnostics checking for dead claiming
+  PIDs on running stages (#5).
+
 ## [0.1.1] — 2026-09-16
 
 - Windows stdlib locking fallback (`msvcrt.locking` on byte 0 of `stage.lock`)

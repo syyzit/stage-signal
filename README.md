@@ -82,6 +82,8 @@ stage-signal done --summary "merged abc123" --git-head abc123
 # orchestrator side
 stage-signal status --json
 stage-signal wait --state terminal --timeout 900
+# or wait --json for a structured outcome payload on stdout:
+stage-signal wait --json --state terminal --timeout 900
 ```
 
 On-disk layout (default):
@@ -102,6 +104,7 @@ Exact schema and exit codes: see `docs/SPEC.md` (normative) and
 `status` / `wait` exit codes are part of the contract: `0` done/OK,
 `1` generic/corrupt, `10` running, `11` blocked, `12` failed, `13` queued,
 `14` wait timeout, `15` not initialized, `2` bad args, `3` illegal transition.
+`wait --json` prints a structured JSON object (`outcome`, `wanted`, `observed_state`, `exit_code`, `timeout`, `stage_id`, `dir`, `status`) to stdout while preserving these exit codes.
 
 `start --meta` is repeatable and accepts two forms per entry (merged in
 order, later wins):

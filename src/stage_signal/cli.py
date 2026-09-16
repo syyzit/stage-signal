@@ -14,7 +14,7 @@ from .constants import (
     WAIT_DEFAULT_TIMEOUT,
     state_exit_code,
 )
-from .errors import BadArgsError, StageError
+from .errors import BadArgsError, StageError, WaitTimeout
 from .stage import WAIT_CHOICES, Stage, want_matches
 
 # Re-exported for tests / embedding.
@@ -92,6 +92,7 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument("--state", default="terminal", choices=list(WAIT_CHOICES))
     c.add_argument("--timeout", type=float, default=WAIT_DEFAULT_TIMEOUT)
     c.add_argument("--poll", type=float, default=WAIT_DEFAULT_POLL)
+    c.add_argument("--json", action="store_true", default=False)
     c.set_defaults(func=cmd_wait)
 
     c = sub.add_parser(
@@ -260,14 +261,51 @@ def cmd_status(args: argparse.Namespace) -> int:
 
 
 def cmd_wait(args: argparse.Namespace) -> int:
-    st = _stage(args).wait(args.state, timeout=args.timeout, poll=args.poll)
-    state = str(st.get("state"))
-    if want_matches(args.state, state):
-        print(f"wait met: {state} {_one_line(st)}")
-        return 0
-    # A different terminal state won first: report its code (SPEC §6).
-    print(f"wait ended in {state} (wanted {args.state})", file=sys.stderr)
-    return state_exit_code(state)
+    stage_obj = _stage(args)
+    try:
+        st = stage_obj.wait(args.state, timeout=args.timeout, poll=args.poll)
+        state = str(st.get("state"))
+        is_met = want_matches(args.state, state)
+        exit_code = 0 if is_met else state_exit_code(state)
+        outcome = "met" if is_met else "mismatch"
+        if args.json:
+            result = {
+                "outcome": outcome,
+                "wanted": args.state,
+                "observed_state": state,
+                "state": state,
+                "exit_code": exit_code,
+                "timeout": False,
+                "stage_id": st.get("stage_id"),
+                "dir": str(stage_obj.dir),
+                "status": st,
+            }
+            print(json.dumps(result, indent=2))
+            return exit_code
+        if is_met:
+            print(f"wait met: {state} {_one_line(st)}")
+            return 0
+        # A different terminal state won first: report its code (SPEC §6).
+        print(f"wait ended in {state} (wanted {args.state})", file=sys.stderr)
+        return exit_code
+    except WaitTimeout as exc:
+        if args.json:
+            st = exc.last_status
+            state = str(st.get("state")) if st else None
+            result = {
+                "outcome": "timeout",
+                "wanted": args.state,
+                "observed_state": state,
+                "state": state,
+                "exit_code": exc.exit_code,
+                "timeout": True,
+                "stage_id": st.get("stage_id") if st else None,
+                "dir": str(stage_obj.dir),
+                "status": st,
+            }
+            print(json.dumps(result, indent=2))
+            return exc.exit_code
+        raise
 
 
 def cmd_clear_terminal(args: argparse.Namespace) -> int:

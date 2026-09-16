@@ -182,7 +182,7 @@ stage-signal done [--summary TEXT] [--git-head H] [--proof-ref R] [--require-pro
 stage-signal blocked --reason TEXT [--write-status-mirror]
 stage-signal fail --reason TEXT [--write-status-mirror]
 stage-signal status [--json]
-stage-signal wait [--state done|blocked|failed|terminal] [--timeout SEC] [--poll SEC]
+stage-signal wait [--state done|blocked|failed|terminal] [--timeout SEC] [--poll SEC] [--json]
 stage-signal clear-terminal
 stage-signal doctor [--stale-after SEC] [--json]
 ```
@@ -199,6 +199,10 @@ stage-signal doctor [--stale-after SEC] [--json]
   Exit 0 when the wanted condition is met. If a *different* terminal state is
   reached first, exit with that state's code (11/12) — not 0, not 14.
   Exit 14 only on true timeout. `wait` on a non-initialized dir is exit 15.
+  `--json` prints one JSON object on stdout across all outcomes (`outcome`:
+  `"met"` | `"mismatch"` | `"timeout"`, `wanted`, `observed_state`, `exit_code`,
+  `timeout`, `stage_id`, `dir`, and the `status` snapshot) with human output
+  omitted, preserving the exit-code contract.
 - `status` prints human text by default, raw `STATUS.json` with `--json`.
   Its exit code always reflects state (§7), so orchestrators can
   `stage-signal status` / `wait` in shell `if` directly.

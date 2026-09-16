@@ -101,6 +101,7 @@ def test_cli_wait_mismatch_timeout_not_initialized(
     # uninitialized dir -> 15
     monkeypatch.setenv("STAGE_SIGNAL_DIR", str(tmp_path / "nope" / ".stage-signal"))
     assert main(["wait", "--state", "terminal", "--timeout", "1"]) == 15
+    assert main(["wait", "--json", "--state", "terminal", "--timeout", "1"]) == 15
     assert main(["status"]) == 15
 
 
