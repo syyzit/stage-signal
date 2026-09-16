@@ -1,5 +1,5 @@
 .orch/
-.museloop/
+.stage-signal/
 .venv/
 __pycache__/
 *.py[cod]
