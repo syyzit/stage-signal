@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import threading
 import types
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -204,3 +206,39 @@ def test_locked_fallback_when_neither(
     with store.locked(exclusive=False):
         executed_sh = True
     assert executed_sh
+
+
+@pytest.mark.parametrize("exclusive", [True, False])
+def test_locked_serializes_threads_by_resolved_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, exclusive: bool
+) -> None:
+    store = StageStore(tmp_path / ".stage-signal")
+    other = StageStore(tmp_path / "alias" / ".." / ".stage-signal")
+    (tmp_path / "alias").mkdir()
+    mock_fcntl = MagicMock()
+    monkeypatch.setattr(store_mod, "fcntl", mock_fcntl)
+    attempted = threading.Event()
+    entered = threading.Event()
+
+    def acquire_other() -> None:
+        attempted.set()
+        with other.locked(exclusive=exclusive):
+            entered.set()
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        with store.locked(exclusive=exclusive):
+            future = pool.submit(acquire_other)
+            assert attempted.wait(timeout=5)
+            assert not entered.wait(timeout=0.1)
+            assert mock_fcntl.flock.call_count == 1
+        future.result(timeout=5)
+    assert entered.is_set()
+    assert mock_fcntl.flock.call_count == 4
+
+
+def test_locked_seeds_empty_lockfile(tmp_path: Path) -> None:
+    store = StageStore(tmp_path / ".stage-signal")
+    store.locks_dir.mkdir(parents=True)
+    store.lock_path.touch()
+    with store.locked():
+        assert store.lock_path.read_bytes() == b"\0"
