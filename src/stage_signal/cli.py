@@ -47,7 +47,9 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument("--variant", default=None)
     c.add_argument("--git-head", default=None)
     c.add_argument("--git-branch", default=None)
-    c.add_argument("--meta", action="append", default=[], metavar="K=V")
+    c.add_argument("--meta", action="append", default=[], metavar="K=V|JSON",
+                     help="free-form meta: repeatable K=V or a JSON object "
+                          "string (e.g. '{\"ticket\": 42}'); merged, later wins")
     c.add_argument("--write-status-mirror", action="store_true", default=None)
     c.set_defaults(func=cmd_start)
 
@@ -124,12 +126,36 @@ def _stage(args: argparse.Namespace) -> Stage:
     return Stage(args.dir)
 
 
-def _parse_meta(entries: Sequence[str]) -> dict[str, str]:
-    meta: dict[str, str] = {}
+def _parse_meta(entries: Sequence[str]) -> dict[str, Any]:
+    """Parse repeatable --meta entries (SPEC §6).
+
+    Each entry is either ``K=V`` (value kept as a string) or a single
+    raw JSON object string (e.g. ``'{"ticket": 42}'``). Entries merge in
+    order; later entries win on key conflicts. JSON values keep their
+    JSON types (numbers, bools, null, nested objects/arrays).
+    """
+    meta: dict[str, Any] = {}
     for entry in entries:
+        stripped = entry.strip()
+        if stripped.startswith("{"):
+            try:
+                obj = json.loads(entry)
+            except json.JSONDecodeError as exc:
+                raise BadArgsError(
+                    f"invalid --meta {entry!r} "
+                    f"(expected K=V or JSON object: {exc})"
+                ) from exc
+            if not isinstance(obj, dict):
+                raise BadArgsError(
+                    f"invalid --meta {entry!r} "
+                    "(expected K=V or a JSON object, not "
+                    f"{type(obj).__name__})"
+                )
+            meta.update(obj)
+            continue
         if "=" not in entry:
             raise BadArgsError(
-                f"invalid --meta {entry!r} (expected K=V)"
+                f"invalid --meta {entry!r} (expected K=V or JSON object)"
             )
         key, _, value = entry.partition("=")
         if not key:

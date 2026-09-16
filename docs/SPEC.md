@@ -85,7 +85,7 @@ Field rules:
 | `artifacts` | list | yes | Items `{"path": str, "label": str\|null, "added_at": ISO8601}`. Preserved across heartbeats; cleared on `start` with a new `stage_id`, kept on retry of same `stage_id`. |
 | `proof` | object\|null | yes | Optional composition pointer, e.g. `{"tool": "agent-done-or-not", "ref": "<ledger path/label>"}`. Set by `done --proof-ref` / `--require-proof`. See `docs/COMPOSE.md`. |
 | `notes` | list | yes | Items `{"text": str, "added_at": ISO8601}`; appended by `note`, capped at 200 entries (oldest dropped). |
-| `meta` | object | yes | Free-form; `start` merges `--meta KEY=VALUE` (repeatable). |
+| `meta` | object | yes | Free-form; `start` merges repeatable `--meta K=V` (value kept as string) and/or raw JSON object strings (e.g. `'{"ticket": 42}'`, JSON types preserved). Entries merge in order, later wins. Invalid entries (bare word, malformed JSON, non-object JSON) are exit 2 with no mutation. |
 
 Timestamps are ISO-8601 with timezone (UTC if none determinable, suffix `+00:00`).
 `init` creates a STATUS with `state: "queued"` and null stage fields.
@@ -158,7 +158,7 @@ Each event: `{"ts": ISO8601, "type": str, "stage_id": str|null,
 stage-signal [--dir PATH] <command> [args]
 stage-signal init [--project NAME]
 stage-signal start --stage NAME [--stage-id ID] [--session ID] [--pid N]
-             [--model M] [--variant V] [--git-head H] [--meta K=V ...]
+             [--model M] [--variant V] [--git-head H] [--meta K=V|JSON ...]
              [--write-status-mirror]
 stage-signal heartbeat [--note TEXT]
 stage-signal note TEXT
@@ -174,6 +174,13 @@ stage-signal doctor [--stale-after SEC]
 ```
 
 - `--dir` / `STAGE_SIGNAL_DIR`: stage dir (default `.stage-signal`).
+- `start --meta` is repeatable and accepts two forms, merged in order
+  (later wins): `K=V` (value kept as a string; value may contain `=`;
+  `K=` means empty string) or a single raw JSON object string per entry
+  (e.g. `'{"ticket": 42, "flag": true}'`; JSON types — numbers, bools,
+  null, nested objects/arrays — are preserved). Bare words, malformed
+  JSON, and non-object JSON are bad args (exit 2) with no mutation.
+  Implemented stdlib-only (`json`), no new dependencies.
 - `wait` defaults: `--state terminal --timeout 3600 --poll 5`.
   Exit 0 when the wanted condition is met. If a *different* terminal state is
   reached first, exit with that state's code (11/12) — not 0, not 14.

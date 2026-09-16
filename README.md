@@ -88,6 +88,20 @@ Exact schema and exit codes: see `docs/SPEC.md` and `docs/IMPLEMENTATION_PLAN.md
 `10` running, `11` blocked, `12` failed, `13` queued, `14` wait timeout,
 `15` not initialized, `2` bad args, `3` illegal transition.
 
+`start --meta` is repeatable and accepts two forms per entry (merged in
+order, later wins):
+
+```bash
+stage-signal start --stage demo --meta owner=OpenLoop --meta '{"ticket": 42, "flag": true}'
+```
+
+- `K=V` — value kept as a string (value may contain `=`; `K=` is empty).
+- A raw JSON object string — JSON types (numbers, bools, null, nested
+  objects/arrays) are preserved.
+- Bare words, malformed JSON, and non-object JSON exit `2` with no mutation.
+
+Stdlib only — no new dependencies for this contract.
+
 Minimal orchestrator loop (cron, bot, CI step, shell): see
 `examples/orchestrator-watchdog.sh` — it only calls
 `stage-signal status --json` / `stage-signal wait` and exits with the
