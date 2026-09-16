@@ -71,8 +71,8 @@ Field rules:
 |-------|------|----------|-------|
 | `schema_version` | int | yes | Must be `1`. Readers reject others (exit 1 / `CorruptStatusError`). |
 | `project` | str | yes | Set by `init --project`, overridable by `STAGE_SIGNAL_PROJECT`. |
-| `stage_id` | str\|null | yes (key present) | Stable id for one attempt-series; defaults to `stage_name` when not given. `null` only before first `start`. |
-| `stage_name` | str\|null | yes (key present) | Human stage name (`start --stage`). `null` only before first `start`. |
+| `stage_id` | str\|null | yes (key present) | Stable id for one attempt-series; defaults to `stage_name` when not given. `null` before first `start` and when cleared to idle. |
+| `stage_name` | str\|null | yes (key present) | Human stage name (`start --stage`). `null` before first `start` and when cleared to idle. |
 | `state` | enum | yes | One of `queued\|running\|done\|blocked\|failed`. |
 | `attempt` | int ≥1 | yes | Incremented on each `start` for the **same** `stage_id`; reset to 1 on new `stage_id`. Starts at 1. |
 | `session_id` | str\|null | yes | Agent session claim. |
@@ -84,9 +84,9 @@ Field rules:
 | `updated_at` | ISO8601 | yes | Bumped on every mutation. |
 | `heartbeat_at` | ISO8601\|null | yes | Bumped on `start` + `heartbeat`. |
 | `heartbeat_note` | str\|null | yes | Last `--note`. |
-| `result` | object\|null | yes | Set by `done`: `{"summary": str, "git_head": str\|null, "finished_at": ISO8601}`. Cleared on `start`/`clear-terminal`. |
+| `result` | object\|null | yes | Set by `done`: `{"summary": str, "git_head": str\|null, "finished_at": ISO8601}` (plus `"accepted_failure": true` on accepted failure). Cleared on `start`/`clear-terminal`. |
 | `error` | object\|null | yes | Set by `blocked`/`fail`: `{"reason": str, "kind": "blocked"\|"failed", "finished_at": ISO8601}`. Cleared on `start`/`clear-terminal`. |
-| `artifacts` | list | yes | Items `{"path": str, "label": str\|null, "added_at": ISO8601}`. Preserved across heartbeats; cleared on `start` with a new `stage_id`, kept on retry of same `stage_id`. |
+| `artifacts` | list | yes | Items `{"path": str, "label": str\|null, "added_at": ISO8601}`. Preserved across heartbeats; cleared on `start` with a new `stage_id` and on `clear-terminal` without `--keep-stage`, kept on retry of same `stage_id`. |
 | `proof` | object\|null | yes | Optional composition pointer, e.g. `{"tool": "agent-done-or-not", "ref": "<ledger path/label>", "verified": null\|"file"\|"verify"}`. Set by `done --proof-ref` / `--require-proof` (see §9 and `docs/COMPOSE.md`); cleared on every `start`. `verified` is `null` when recorded without checking, `"file"` when the `--require-proof` file gate passed, `"verify"` when the external verifier passed. |
 | `notes` | list | yes | Items `{"text": str, "added_at": ISO8601}`; appended by `note`, capped at 200 entries (oldest dropped). Preserved across `start` (both same and new `stage_id`). |
 | `meta` | object | yes | Free-form; cleared on each `start` unless new repeatable `--meta K=V` and/or raw JSON object strings are supplied (which replace `meta` entirely). Within a single `start`, entries merge in order, later wins. Invalid entries (bare word, malformed JSON, non-object JSON) are exit 2 with no mutation. |
@@ -129,19 +129,41 @@ Rules:
    `updated_at`. Else exit 3.
 4. `note TEXT`, `artifact PATH [--label]` — allowed only from `running`.
    Else exit 3.
-5. `done [--summary] [--git-head] [--proof-ref R] [--require-proof]` —
+5. `done [--summary] [--git-head] [--proof-ref R] [--require-proof] [--accept-failure]` —
    allowed from `queued`/`running`, plus idempotent repeat when already
    `done` **with the same `stage_id`** (updates summary, exit 0).
-   Terminal→different-terminal without an intervening `start` is exit 3.
+   Allowed from `failed` **only** when `--accept-failure` is passed (records
+   `"accepted_failure": true` in `result`; from any non-failed state
+   `--accept-failure` is exit 3).
+   Terminal→different-terminal without an intervening `start` (or without
+   `--accept-failure` on `failed`) is exit 3.
    `--require-proof` verifies proof *before* mutating (see §9); on failure
    exit 3 and no mutation.
 6. `blocked --reason`, `fail --reason` — same rule as `done` with `error`
    payload instead of `result`.
-7. `clear-terminal` — allowed only from `done`/`blocked`/`failed`; sets
-   `queued` (keeps stage identity, clears `result`/`error`). From
-   `queued`/`running` it is exit 3.
+7. `clear-terminal [--keep-stage]` — allowed only from `done`/`blocked`/`failed`;
+   resets to `queued`. By default, clears stage identity (`stage_id` and
+   `stage_name` set to `null`, clearing claim/heartbeat/session/pid/proof/
+   artifacts/meta and resetting to true idle queued). If `--keep-stage` is given,
+   preserves previous `stage_id` and `stage_name` to re-queue the same stage.
+   From `queued`/`running` it is exit 3.
 8. Every mutation appends exactly one event to `events.jsonl` and rewrites
    `STATUS.md` best-effort.
+
+### Idle vs. Queued (orchestrator contract)
+
+A stage dir in `state: queued` with `stage_name: null` and `stage_id: null` represents
+a clean **idle** worktree (created by `init` or reset via `clear-terminal`). An
+orchestrator or watchdog observing `status` sees `queued - (attempt 1)` and knows no
+stage work is currently pending or abandoned. In contrast, `state: queued` with a
+non-null `stage_name` represents an actively queued stage awaiting execution.
+
+After a stage failure, orchestrators can choose between two clean end states:
+- **Return to idle:** `stage-signal clear-terminal` clears stage identity to null,
+  signaling that the failure was handled and the runner is idle.
+- **Accept failure:** `stage-signal done --accept-failure --summary "reason"` marks
+  the lifecycle `done` while recording `"accepted_failure": true`, without inventing
+  a fake success.
 
 ### Staleness (v1 policy)
 
@@ -179,12 +201,12 @@ stage-signal heartbeat [--note TEXT]
 stage-signal note TEXT
 stage-signal artifact PATH [--label LABEL]
 stage-signal done [--summary TEXT] [--git-head H] [--proof-ref R] [--require-proof]
-             [--write-status-mirror]
+             [--accept-failure] [--write-status-mirror]
 stage-signal blocked --reason TEXT [--write-status-mirror]
 stage-signal fail --reason TEXT [--write-status-mirror]
 stage-signal status [--json]
 stage-signal wait [--state done|blocked|failed|terminal] [--timeout SEC] [--poll SEC] [--json]
-stage-signal clear-terminal
+stage-signal clear-terminal [--keep-stage]
 stage-signal doctor [--stale-after SEC] [--json]
 ```
 

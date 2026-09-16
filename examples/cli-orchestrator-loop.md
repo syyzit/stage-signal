@@ -299,6 +299,20 @@ In both setups:
 
 ---
 
+## Handling Failures: Idle vs Accepted Failure
+
+When an agent fails (`stage-signal fail --reason "..."`), the orchestrator receives exit code `12`. Depending on orchestrator policy, there are two clean paths forward:
+
+1. **Reset to idle worktree:**
+   Run `stage-signal clear-terminal`.
+   This resets the stage directory to a clean `state: queued` with `stage_name: null`, reported as `queued - (attempt 1)`. Because `stage_name` is null, watchers and queue processors know the worktree is idle rather than awaiting an unfinished task.
+
+2. **Accept failure:**
+   Run `stage-signal done --accept-failure --summary "accepted: reason"`.
+   This marks the lifecycle stage `done` (exit code `0`) while explicitly recording `"accepted_failure": true` in the `result` payload. This allows pipelines that tolerate optional failure to close out the stage without faking a successful test run.
+
+---
+
 ## Cron Polling Pattern
 
 For completely serverless or cron-driven setups, schedule a single-pass check every 5 minutes:

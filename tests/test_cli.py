@@ -376,3 +376,91 @@ def test_cli_dogfood_meta_and_git_refresh(tmp_path: Path, monkeypatch: pytest.Mo
     assert st2["git_head"] == head2
     assert st2["git_branch"] == "main"
 
+
+def test_cli_clear_terminal_clears_identity(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    d = tmp_path / ".stage-signal"
+    monkeypatch.setenv("STAGE_SIGNAL_DIR", str(d))
+    assert main(["init", "--project", "testproj"]) == 0
+    assert main(["start", "--stage", "feat-1"]) == 0
+    assert main(["fail", "--reason", "compile error"]) == 0
+    capsys.readouterr()
+
+    # clear-terminal prints 'cleared queued - (attempt 1)'
+    assert main(["clear-terminal"]) == 0
+    out = capsys.readouterr().out
+    assert "cleared queued - (attempt 1)" in out
+
+    # Status shows true idle queued
+    assert main(["status", "--json"]) == 13
+    st = json.loads(capsys.readouterr().out)
+    assert st["state"] == "queued"
+    assert st["stage_name"] is None
+    assert st["stage_id"] is None
+    assert st["pid"] is None
+
+    # Doctor reports OK: queued
+    assert main(["doctor"]) == 0
+    doc_out = capsys.readouterr().out
+    assert "OK: queued" in doc_out
+
+
+def test_cli_clear_terminal_keep_stage(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    d = tmp_path / ".stage-signal"
+    monkeypatch.setenv("STAGE_SIGNAL_DIR", str(d))
+    assert main(["init", "--project", "testproj"]) == 0
+    assert main(["start", "--stage", "feat-2"]) == 0
+    assert main(["fail", "--reason", "tests failed"]) == 0
+    capsys.readouterr()
+
+    # clear-terminal --keep-stage preserves stage name
+    assert main(["clear-terminal", "--keep-stage"]) == 0
+    out = capsys.readouterr().out
+    assert "cleared queued feat-2 (attempt 1)" in out
+
+    assert main(["status", "--json"]) == 13
+    st = json.loads(capsys.readouterr().out)
+    assert st["state"] == "queued"
+    assert st["stage_name"] == "feat-2"
+    assert st["stage_id"] == "feat-2"
+
+
+def test_cli_done_accept_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    d = tmp_path / ".stage-signal"
+    monkeypatch.setenv("STAGE_SIGNAL_DIR", str(d))
+    assert main(["init", "--project", "testproj"]) == 0
+    assert main(["start", "--stage", "feat-3"]) == 0
+    assert main(["fail", "--reason", "budget exhausted"]) == 0
+
+    # Direct done fails with exit 3
+    capsys.readouterr()
+    assert main(["done", "--summary", "done anyway"]) == 3
+    err = capsys.readouterr().err
+    assert "not allowed from terminal state 'failed'" in err
+
+    # done with --accept-failure succeeds with exit 0
+    assert main(["done", "--accept-failure", "--summary", "accepted budget exhaustion"]) == 0
+    out = capsys.readouterr().out
+    assert "done done feat-3 (attempt 1)" in out
+
+    # Status reflects done and records accepted_failure
+    assert main(["status", "--json"]) == 0
+    st = json.loads(capsys.readouterr().out)
+    assert st["state"] == "done"
+    assert st["result"]["summary"] == "accepted budget exhaustion"
+    assert st["result"]["accepted_failure"] is True
+    assert st["error"] is None
+
+
+def test_cli_done_accept_failure_illegal_on_running(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    d = tmp_path / ".stage-signal"
+    monkeypatch.setenv("STAGE_SIGNAL_DIR", str(d))
+    assert main(["init", "--project", "testproj"]) == 0
+    assert main(["start", "--stage", "feat-4"]) == 0
+    capsys.readouterr()
+
+    # --accept-failure from running is illegal, exit 3
+    assert main(["done", "--accept-failure", "--summary", "not failed"]) == 3
+    err = capsys.readouterr().err
+    assert "done --accept-failure only allowed from state 'failed'" in err
+
+

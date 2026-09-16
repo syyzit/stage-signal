@@ -435,3 +435,88 @@ def test_git_head_not_stale_in_non_git_repo(stage: Stage) -> None:
     # Subsequent stage without explicit git_head must not retain stale SHA
     st2 = stage.start(stage="s2")
     assert st2["git_head"] is None
+
+
+def test_clear_terminal_clears_to_idle_by_default(stage: Stage) -> None:
+    stage.start(stage="m1", session_id="ses_1", pid=9999)
+    stage.artifact("foo.txt", label="f")
+    stage.fail(reason="boom")
+    st = stage.clear_terminal()
+    assert st["state"] == "queued"
+    assert st["stage_id"] is None
+    assert st["stage_name"] is None
+    assert st["session_id"] is None
+    assert st["pid"] is None
+    assert st["started_at"] is None
+    assert st["heartbeat_at"] is None
+    assert st["heartbeat_note"] is None
+    assert st["result"] is None
+    assert st["error"] is None
+    assert st["proof"] is None
+    assert st["artifacts"] == []
+    assert st["meta"] == {}
+    events = stage.events()
+    assert events[-1]["type"] == "clear_terminal"
+    assert events[-1]["stage_id"] is None
+    assert events[-1]["message"] == "cleared to idle queued"
+    assert events[-1]["detail"] == {"keep_stage": False}
+
+
+def test_clear_terminal_keep_stage(stage: Stage) -> None:
+    stage.start(stage="m1", session_id="ses_1", pid=9999)
+    stage.fail(reason="boom")
+    st = stage.clear_terminal(keep_stage=True)
+    assert st["state"] == "queued"
+    assert st["stage_id"] == "m1"
+    assert st["stage_name"] == "m1"
+    assert st["session_id"] == "ses_1"
+    assert st["result"] is None
+    assert st["error"] is None
+    events = stage.events()
+    assert events[-1]["type"] == "clear_terminal"
+    assert events[-1]["stage_id"] == "m1"
+    assert events[-1]["message"] == "cleared to queued"
+    assert events[-1]["detail"] == {"keep_stage": True}
+
+
+def test_done_accept_failure(stage: Stage) -> None:
+    stage.start(stage="m1")
+    stage.fail(reason="failed build")
+
+    # Regular done from failed is illegal
+    with pytest.raises(IllegalTransition):
+        stage.done(summary="cannot done from failed directly")
+
+    # done with accept_failure=True succeeds
+    st = stage.done(summary="accepted failed build", accept_failure=True)
+    assert st["state"] == "done"
+    assert st["result"]["summary"] == "accepted failed build"
+    assert st["result"]["accepted_failure"] is True
+    assert st["error"] is None
+    events = stage.events()
+    assert events[-1]["type"] == "done"
+    assert events[-1]["detail"]["accepted_failure"] is True
+
+
+def test_done_accept_failure_illegal_states(stage: Stage) -> None:
+    # accept_failure=True is only allowed from failed
+    # 1. From queued
+    with pytest.raises(IllegalTransition, match="only allowed from state 'failed'"):
+        stage.done(accept_failure=True)
+
+    # 2. From running
+    stage.start(stage="m2")
+    with pytest.raises(IllegalTransition, match="only allowed from state 'failed'"):
+        stage.done(accept_failure=True)
+
+    # 3. From blocked
+    stage.blocked(reason="waiting")
+    with pytest.raises(IllegalTransition, match="only allowed from state 'failed'"):
+        stage.done(accept_failure=True)
+
+    # 4. From done
+    stage.start(stage="m3")
+    stage.done(summary="ok")
+    with pytest.raises(IllegalTransition, match="only allowed from state 'failed'"):
+        stage.done(accept_failure=True)
+
