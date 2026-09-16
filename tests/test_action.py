@@ -54,8 +54,7 @@ def _parse_github_output(path: Path) -> dict[str, str]:
             while i < len(lines) and lines[i] != delim:
                 val_lines.append(lines[i])
                 i += 1
-            outputs[key] = "
-".join(val_lines)
+            outputs[key] = chr(10).join(val_lines)
             i += 1
         elif "=" in line:
             k, v = line.split("=", 1)
@@ -154,20 +153,21 @@ def _run_action_wait_step(
         if exit_code == 14:
             timed_out = "true"
 
+        nl = "\n"
         with open(gh_out, "a", encoding="utf-8") as f:
-            f.write(f"state={observed}\n")
-            f.write(f"observed-state={observed}\n")
-            f.write(f"observed_state={observed}\n")
-            f.write(f"outcome={outcome}\n")
-            f.write(f"exit-code={exit_code}\n")
-            f.write(f"exit_code={exit_code}\n")
-            f.write(f"timed-out={timed_out}\n")
-            f.write(f"timed_out={timed_out}\n")
-            f.write(f"stage-id={stage_id}\n")
-            f.write(f"stage_id={stage_id}\n")
+            f.write(f"state={observed}{nl}")
+            f.write(f"observed-state={observed}{nl}")
+            f.write(f"observed_state={observed}{nl}")
+            f.write(f"outcome={outcome}{nl}")
+            f.write(f"exit-code={exit_code}{nl}")
+            f.write(f"exit_code={exit_code}{nl}")
+            f.write(f"timed-out={timed_out}{nl}")
+            f.write(f"timed_out={timed_out}{nl}")
+            f.write(f"stage-id={stage_id}{nl}")
+            f.write(f"stage_id={stage_id}{nl}")
             if raw_json.strip():
                 delim = f"ghdel_{uuid.uuid4().hex}"
-                f.write(f"json<<{delim}\n{raw_json.strip()}\n{delim}\n")
+                f.write(f"json<<{delim}{nl}{raw_json.strip()}{nl}{delim}{nl}")
 
         return exit_code, _parse_github_output(gh_out)
 
