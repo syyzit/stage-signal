@@ -149,6 +149,13 @@ The library **never auto-mutates** on staleness. A `running` stage with an old
 `doctor --stale-after SEC` / `status --json` (`heartbeat_at`) what "stale"
 means. `doctor` reports staleness; it does not change state.
 
+Similarly, when `state == running` and a claiming `pid` is recorded, `doctor`
+performs an advisory best-effort liveness check (POSIX `os.kill(pid, 0)` /
+Windows API). If the claiming PID is dead while the stage is still `running`,
+`doctor` reports a warning (`DEAD PID: claiming pid N is not alive (state still running)`).
+The check is strictly advisory: the library never auto-transitions or mutates
+state; orchestrators decide whether to clear, fail, or restart.
+
 ## 5. events.jsonl
 
 Each event: `{"ts": ISO8601, "type": str, "stage_id": str|null,
@@ -177,7 +184,7 @@ stage-signal fail --reason TEXT [--write-status-mirror]
 stage-signal status [--json]
 stage-signal wait [--state done|blocked|failed|terminal] [--timeout SEC] [--poll SEC]
 stage-signal clear-terminal
-stage-signal doctor [--stale-after SEC]
+stage-signal doctor [--stale-after SEC] [--json]
 ```
 
 - `--dir` / `STAGE_SIGNAL_DIR`: stage dir (default `.stage-signal`).
@@ -196,10 +203,13 @@ stage-signal doctor [--stale-after SEC]
   Its exit code always reflects state (§7), so orchestrators can
   `stage-signal status` / `wait` in shell `if` directly.
 - `doctor` checks: dir exists, STATUS parses + schema ok, events.jsonl
-  readable, lock writable. Prints `OK` lines / problems; exit 0 when healthy,
-  1 otherwise. `--stale-after SEC` adds a `STALE` warning when `running` and
-  `now - heartbeat_at > SEC` (still exit 0 unless other problems; stale alone
-  is a warning, reported as `STALE ...` line).
+  readable, lock writable. When `state == running` and `pid` is an int,
+  best-effort checks whether the claiming process is alive (POSIX
+  `os.kill(pid, 0)`, Windows API; warning on dead PID). Prints `OK`
+  lines / problems; exit 0 when healthy (problems list empty, even with
+  warnings), 1 otherwise. `--stale-after SEC` adds a `STALE` warning when
+  `running` and `now - heartbeat_at > SEC`. `--json` prints the diagnose
+  dict (`ok`, `problems`, `warnings`, `status`) as JSON to stdout.
 
 ## 7. Exit codes (part of the contract)
 
@@ -286,4 +296,4 @@ with Stage.open(".stage-signal") as s:   # scoped use; use Stage(dir) + context 
 - Concurrency: N threads × M heartbeats → valid STATUS, exact event count.
 - CLI integration: subprocess per command incl. `wait` (background `done`),
   timeout path, proof gate paths (missing/empty/existing file).
-- Chaos note: `kill -9` ⇒ stale `running`; `doctor --stale-after` must flag it.
+- Chaos note: `kill -9` ⇒ stale `running`; `doctor --stale-after` or dead-PID check must flag it.

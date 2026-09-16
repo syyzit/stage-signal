@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import errno
 import os
 import shutil
 import subprocess
@@ -594,6 +595,17 @@ class Stage:
                     warnings.append("unparseable heartbeat_at")
             elif status.get("state") == STATE_RUNNING:
                 warnings.append("STALE: running with no heartbeat recorded")
+        if status is not None and status.get("state") == STATE_RUNNING:
+            pid = status.get("pid")
+            if isinstance(pid, int) and not isinstance(pid, bool):
+                try:
+                    alive = _is_pid_alive(pid)
+                    if alive is False:
+                        warnings.append(
+                            f"DEAD PID: claiming pid {pid} is not alive (state still running)"
+                        )
+                except Exception:
+                    pass
         return {
             "ok": not problems,
             "problems": problems,
@@ -603,6 +615,68 @@ class Stage:
 
 
 # -- helpers ------------------------------------------------------------
+
+
+def _is_pid_alive_posix(pid: int) -> Optional[bool]:
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError as exc:
+        if exc.errno == errno.ESRCH:
+            return False
+        if exc.errno == errno.EPERM:
+            return True
+        return None
+    except Exception:
+        return None
+
+
+def _is_pid_alive_windows(pid: int) -> Optional[bool]:
+    try:
+        import ctypes
+
+        kernel32 = getattr(getattr(ctypes, "windll", None), "kernel32", None)
+        if kernel32 is None:
+            return None
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        STILL_ACTIVE = 259
+        handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        if not handle:
+            err = kernel32.GetLastError()
+            if err == 5:  # ERROR_ACCESS_DENIED: process exists, treat as alive
+                return True
+            return False
+        try:
+            exit_code = ctypes.c_ulong()
+            if kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+                return bool(exit_code.value == STILL_ACTIVE)
+            return True
+        finally:
+            kernel32.CloseHandle(handle)
+    except Exception:
+        return None
+
+
+def _is_pid_alive(pid: int) -> Optional[bool]:
+    """Best-effort check whether a process is alive.
+
+    Returns True if alive, False if dead, or None if indeterminate.
+    Never raises.
+    - POSIX: os.kill(pid, 0) (ESRCH -> dead, EPERM -> alive).
+    - Windows: kernel32.OpenProcess / GetExitCodeProcess via ctypes.
+    """
+    if not isinstance(pid, int) or isinstance(pid, bool):
+        return None
+    if pid <= 0:
+        return False
+
+    if sys.platform == "win32":
+        return _is_pid_alive_windows(pid)
+    return _is_pid_alive_posix(pid)
 
 
 def _require_state(
