@@ -251,7 +251,7 @@ Agent UIs and chat transcripts are for humans. Orchestrators need a stable, bori
 
 ## Status
 
-0.1.0: library (`src/stage_signal/`), full CLI (`init`, `start`,
+0.1.2: library (`src/stage_signal/`), full CLI (`init`, `start`,
 `heartbeat`, `note`, `artifact`, `done`, `blocked`, `fail`, `status`,
 `wait`, `clear-terminal`, `doctor`), unit + concurrency tests,
 `examples/orchestrator-watchdog.sh` (+ `examples/orchestrator-smoke.sh`),
