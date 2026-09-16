@@ -68,7 +68,9 @@ class StageStore:
     def ensure_layout(self) -> None:
         """Create dir tree (idempotent). Does not touch STATUS.json."""
         self.locks_dir.mkdir(parents=True, exist_ok=True)
-        self.lock_path.touch(exist_ok=True)
+        # msvcrt.locking needs at least one byte in the file on Windows.
+        if not self.lock_path.exists() or self.lock_path.stat().st_size == 0:
+            self.lock_path.write_bytes(b"\0")
         if not self.events_path.exists():
             self.events_path.touch()
 

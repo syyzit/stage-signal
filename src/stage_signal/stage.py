@@ -299,12 +299,14 @@ class Stage:
         if pid is not None and (not isinstance(pid, int) or pid < 0):
             raise BadArgsError(f"invalid pid: {pid!r}")
 
+        # Detect git outside the store lock — subprocess + lock is a Windows hang risk.
+        detected_head, detected_branch = _detect_git(self._store.dir)
+        resolved_head = git_head if git_head is not None else detected_head
+        resolved_branch = git_branch if git_branch is not None else detected_branch
+
         def _apply(current: dict[str, Any]) -> dict[str, Any]:
             ts = now_iso()
             same_series = current.get("stage_id") == new_id
-            detected_head, detected_branch = _detect_git(self._store.dir)
-            resolved_head = git_head if git_head is not None else detected_head
-            resolved_branch = git_branch if git_branch is not None else detected_branch
             current.update(
                 {
                     "stage_id": new_id,

@@ -107,9 +107,15 @@ def _run_action_wait_step(
 
         if use_json:
             with open(tmp_out, "w", encoding="utf-8") as sink:
-                proc = subprocess.run(cmd, env=env, stdout=sink, stderr=subprocess.PIPE, text=True)
+                proc = subprocess.run(
+                    cmd, env=env, stdout=sink, stderr=subprocess.DEVNULL, text=True,
+                    timeout=max(30.0, float(timeout) + 5.0),
+                )
         else:
-            proc = subprocess.run(cmd, env=env, capture_output=True, text=True)
+            proc = subprocess.run(
+                cmd, env=env, capture_output=True, text=True,
+                timeout=max(30.0, float(timeout) + 5.0),
+            )
         exit_code = proc.returncode
 
         raw_json = tmp_out.read_text(encoding="utf-8") if use_json and tmp_out.exists() else ""
