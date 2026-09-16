@@ -215,10 +215,17 @@ def test_cli_doctor_json_missing_dir(tmp_path: Path, capsys: pytest.CaptureFixtu
     assert any("missing dir" in p for p in data["problems"])
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX signal-zero probe is unsafe on Windows")
+def test_posix_liveness_live_pid() -> None:
+    assert _is_pid_alive_posix(os.getpid()) is True
+
+
 def test_posix_liveness_unit(monkeypatch: pytest.MonkeyPatch) -> None:
     """Unit test POSIX liveness: EPERM treats as alive, ESRCH as dead, other errors as None."""
-    # Live current PID
-    assert _is_pid_alive_posix(os.getpid()) is True
+    mock_kill = MagicMock(return_value=None)
+    monkeypatch.setattr(os, "kill", mock_kill)
+    assert _is_pid_alive_posix(12345) is True
+    mock_kill.assert_called_once_with(12345, 0)
 
     # EPERM -> alive
     def mock_kill_eperm(pid: int, sig: int) -> None:
