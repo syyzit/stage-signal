@@ -1,6 +1,6 @@
 # Compose — `proof` interop with verification tools
 
-**Normative source:** `docs/SPEC.md` §9 (proof gate) and §4.5 (`done`).
+**Normative source:** `docs/SPEC.md` §9 (proof gate) and §4 rule 5 (`done`).
 This file is guidance: how to *reference* external proof without rebuilding
 the tools that produce it. On conflict, SPEC wins.
 
@@ -20,8 +20,8 @@ place the library ever shells out.
 
 ## The `proof` field
 
-Set only by `done` (cleared never — a new `start` with a new `stage_id`
-resets the stage; see SPEC §3). Shape:
+Set only by `done` (preserved on idempotent `done` repeats when no new
+`--proof-ref` is given; cleared on every new `start`; see SPEC §3). Shape:
 
 ```json
 "proof": {"tool": "agent-done-or-not", "ref": "<ledger path or label>", "verified": null | "file" | "verify"}

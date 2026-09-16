@@ -78,15 +78,18 @@ On-disk layout (default):
 
 ```
 .stage-signal/
-  STATUS.json     # current snapshot
+  STATUS.json     # current snapshot (normative)
+  STATUS.md       # human mirror (best-effort, never normative)
   events.jsonl    # append-only history
+  locks/stage.lock  # fcntl lock for read-modify-write cycles
 ```
 
-Exact schema and exit codes: see `docs/SPEC.md` and `docs/IMPLEMENTATION_PLAN.md`.
+Exact schema and exit codes: see `docs/SPEC.md` (normative) and
+`docs/PRIOR_ART.md` (background).
 
 `status` / `wait` exit codes are part of the contract: `0` done/OK,
-`10` running, `11` blocked, `12` failed, `13` queued, `14` wait timeout,
-`15` not initialized, `2` bad args, `3` illegal transition.
+`1` generic/corrupt, `10` running, `11` blocked, `12` failed, `13` queued,
+`14` wait timeout, `15` not initialized, `2` bad args, `3` illegal transition.
 
 `start --meta` is repeatable and accepts two forms per entry (merged in
 order, later wins):
@@ -152,7 +155,7 @@ running pytest + the smoke script on push/PR.
 
 ## Prior art
 
-We researched existing tools before writing this. Short version: several systems solve adjacent problems (verification receipts, process presence, full multi-agent orchestration). The niche here is a **small stage lifecycle aimed at external watchdogs**. Details: `docs/PRIOR_ART.md` (M0) and the prior-art section of `docs/IMPLEMENTATION_PLAN.md`.
+We researched existing tools before writing this. Short version: several systems solve adjacent problems (verification receipts, process presence, full multi-agent orchestration). The niche here is a **small stage lifecycle aimed at external watchdogs**. Details: `docs/PRIOR_ART.md`.
 
 ---
 

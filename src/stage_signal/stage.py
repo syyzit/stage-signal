@@ -6,6 +6,7 @@ import copy
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any, Optional
 import time
@@ -212,7 +213,12 @@ class Stage:
             if _status_mirror_enabled(do_mirror) and event_type in (
                 "start", "done", "blocked", "failed",
             ):
-                write_status_mirror(store.dir, new_status)
+                mirrored = write_status_mirror(store.dir, new_status)
+                if mirrored is None:
+                    print(
+                        "stage-signal: warning: status mirror failed",
+                        file=sys.stderr,
+                    )
             return copy.deepcopy(new_status)
 
     # -- lifecycle ------------------------------------------------------
@@ -313,6 +319,7 @@ class Stage:
                     "heartbeat_note": None,
                     "result": None,
                     "error": None,
+                    "proof": None,
                 }
             )
             if not same_series:
@@ -393,7 +400,7 @@ class Stage:
         require_proof: bool = False,
         write_status_mirror: Optional[bool] = None,
     ) -> dict[str, Any]:
-        """Mark success. From queued/running, or idempotent repeat (SPEC §4.5)."""
+        """Mark success. From queued/running, or idempotent repeat (SPEC §4 rule 5)."""
         proof: Optional[dict[str, Any]] = None
         ref = proof_ref or os.environ.get(ENV_PROOF_REF)
         if require_proof:
@@ -616,7 +623,7 @@ def _require_state(
 def _require_terminal_source(
     current: dict[str, Any], target: str, op: str
 ) -> None:
-    """Enforce SPEC §4.5-4.6: queued/running, or idempotent same-stage repeat."""
+    """Enforce SPEC §4 rules 5-6: queued/running, or idempotent same-stage repeat."""
     state = current.get("state")
     if state in (STATE_QUEUED, STATE_RUNNING):
         return

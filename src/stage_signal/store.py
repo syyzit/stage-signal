@@ -105,10 +105,21 @@ class StageStore:
             raise CorruptStatusError(f"cannot read {self.status_path}: {exc}") from exc
         try:
             data = json.loads(raw)
-        except json.JSONDecodeError as exc:
-            raise CorruptStatusError(
-                f"corrupt STATUS.json ({self.status_path}): {exc}"
-            ) from exc
+        except json.JSONDecodeError:
+            # Tolerate a torn read racing a concurrent atomic replace
+            # (SPEC §2): retry once before calling it corrupt.
+            try:
+                raw = self.status_path.read_text(encoding="utf-8")
+            except OSError as exc:
+                raise CorruptStatusError(
+                    f"cannot read {self.status_path}: {exc}"
+                ) from exc
+            try:
+                data = json.loads(raw)
+            except json.JSONDecodeError as exc:
+                raise CorruptStatusError(
+                    f"corrupt STATUS.json ({self.status_path}): {exc}"
+                ) from exc
         validate_status(data, source=str(self.status_path))
         return data
 

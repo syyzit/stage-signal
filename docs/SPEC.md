@@ -65,9 +65,9 @@ Field rules:
 
 | Field | Type | Required | Notes |
 |-------|------|----------|-------|
-| `schema_version` | int | yes | Must be `1`. Readers reject others (exit 2 / `CorruptStatusError`). |
+| `schema_version` | int | yes | Must be `1`. Readers reject others (exit 1 / `CorruptStatusError`). |
 | `project` | str | yes | Set by `init --project`, overridable by `STAGE_SIGNAL_PROJECT`. |
-| `stage_id` | str\|null | yes (key present) | Stable id for one attempt-series; defaults to `stage_name` + suffix when not given. `null` only before first `start`. |
+| `stage_id` | str\|null | yes (key present) | Stable id for one attempt-series; defaults to `stage_name` when not given. `null` only before first `start`. |
 | `stage_name` | str\|null | yes (key present) | Human stage name (`start --stage`). `null` only before first `start`. |
 | `state` | enum | yes | One of `queued\|running\|done\|blocked\|failed`. |
 | `attempt` | int ≥1 | yes | Incremented on each `start` for the **same** `stage_id`; reset to 1 on new `stage_id`. Starts at 1. |
@@ -83,8 +83,8 @@ Field rules:
 | `result` | object\|null | yes | Set by `done`: `{"summary": str, "git_head": str\|null, "finished_at": ISO8601}`. Cleared on `start`/`clear-terminal`. |
 | `error` | object\|null | yes | Set by `blocked`/`fail`: `{"reason": str, "kind": "blocked"\|"failed", "finished_at": ISO8601}`. Cleared on `start`/`clear-terminal`. |
 | `artifacts` | list | yes | Items `{"path": str, "label": str\|null, "added_at": ISO8601}`. Preserved across heartbeats; cleared on `start` with a new `stage_id`, kept on retry of same `stage_id`. |
-| `proof` | object\|null | yes | Optional composition pointer, e.g. `{"tool": "agent-done-or-not", "ref": "<ledger path/label>"}`. Set by `done --proof-ref` / `--require-proof`. See `docs/COMPOSE.md`. |
-| `notes` | list | yes | Items `{"text": str, "added_at": ISO8601}`; appended by `note`, capped at 200 entries (oldest dropped). |
+| `proof` | object\|null | yes | Optional composition pointer, e.g. `{"tool": "agent-done-or-not", "ref": "<ledger path/label>", "verified": null\|"file"\|"verify"}`. Set by `done --proof-ref` / `--require-proof` (see §9 and `docs/COMPOSE.md`); cleared on every `start`. `verified` is `null` when recorded without checking, `"file"` when the `--require-proof` file gate passed, `"verify"` when the external verifier passed. |
+| `notes` | list | yes | Items `{"text": str, "added_at": ISO8601}`; appended by `note`, capped at 200 entries (oldest dropped). Preserved across `start` (both same and new `stage_id`). |
 | `meta` | object | yes | Free-form; `start` merges repeatable `--meta K=V` (value kept as string) and/or raw JSON object strings (e.g. `'{"ticket": 42}'`, JSON types preserved). Entries merge in order, later wins. Invalid entries (bare word, malformed JSON, non-object JSON) are exit 2 with no mutation. |
 
 Timestamps are ISO-8601 with timezone (UTC if none determinable, suffix `+00:00`).
@@ -114,7 +114,10 @@ Rules:
    existing STATUS. Fails with exit 1 if `STATUS.json` is corrupt.
 2. `start --stage NAME` — allowed from **any** state. Sets `running`, updates
    claim fields, bumps `attempt` (same `stage_id`) or resets to 1 (new
-   `stage_id`), clears `result`/`error`, sets `heartbeat_at=updated_at=now`.
+   `stage_id`), clears `result`/`error`/`proof`, sets `heartbeat_note` to null,
+   clears `artifacts` only on a new `stage_id` (kept on retry), preserves
+   `notes`/`meta` (merges new `--meta`), and bumps `heartbeat_at` and
+   `updated_at`.
    Emits `start` event. This is how a previous terminal (`blocked`/`failed`/
    `done`) is cleared for a new attempt — no separate unlock needed.
 3. `heartbeat [--note]` — allowed only from `running`. Bumps `heartbeat_at`,
@@ -158,7 +161,7 @@ Each event: `{"ts": ISO8601, "type": str, "stage_id": str|null,
 stage-signal [--dir PATH] <command> [args]
 stage-signal init [--project NAME]
 stage-signal start --stage NAME [--stage-id ID] [--session ID] [--pid N]
-             [--model M] [--variant V] [--git-head H] [--meta K=V|JSON ...]
+             [--model M] [--variant V] [--git-head H] [--git-branch B] [--meta K=V|JSON ...]
              [--write-status-mirror]
 stage-signal heartbeat [--note TEXT]
 stage-signal note TEXT
@@ -199,8 +202,8 @@ stage-signal doctor [--stale-after SEC]
 | Code | Meaning |
 |------|---------|
 | 0 | OK / wait condition met |
-| 1 | Generic error (IO, corrupt file where not schema, doctor problems) |
-| 2 | Bad args / bad schema version |
+| 1 | Generic error (IO, corrupt file incl. unsupported schema version, doctor problems) |
+| 2 | Bad args |
 | 3 | Illegal transition / failed `--require-proof` gate |
 | 10 | State is `running` (`status`/`wait` mismatch reporting) |
 | 11 | State is `blocked` |
@@ -239,15 +242,15 @@ the transition); the 10–13 codes are for *observing* (`status`/`wait`) only.
 `start`/`done`/`blocked`/`fail` best-effort writes `<repo>/.orch/STATUS.md`
 (`state: <state>` + stage + updated) and touches `<repo>/.orch/DONE` when
 the new state is `done`. Mirror failures warn on stderr but never fail the
-command. Repo root = parent of the stage dir's parent when the dir is named
+command. Repo root = parent of the stage dir when the dir is named
 `.stage-signal`, else `cwd`. See `docs/COMPOSE.md`.
 
 ## 11. Library API (Python)
 
 ```python
-from stage_signal import Stage, StageError, IllegalTransition, NotInitialized, ExitCode
+from stage_signal import Stage, StageError, IllegalTransition, NotInitialized, state_exit_code
 
-with Stage.open(".stage-signal") as s:   # creates lock; use Stage(dir) + explicit close or context manager
+with Stage.open(".stage-signal") as s:   # scoped use; use Stage(dir) + context manager the same way
     s.init(project="myproj")
     s.start(stage="impact-clarity", session_id="ses_...", pid=123)
     s.heartbeat(note="tests green")
@@ -260,8 +263,8 @@ with Stage.open(".stage-signal") as s:   # creates lock; use Stage(dir) + explic
 - `Stage.open(dir)` → context-managed `Stage`. Plain `Stage(dir)` also works;
   mutations are one-shot locked internally in both cases.
 - Errors: `StageError` (code 1) → `BadArgsError` (2), `IllegalTransition` (3),
-  `NotInitialized` (15), `CorruptStatusError` (1). Each carries `.exit_code`.
-- `state_exit_code(state) -> int` maps state → 10/11/12/13.
+  `NotInitialized` (15), `CorruptStatusError` (1), `WaitTimeout` (14). Each carries `.exit_code`.
+- `state_exit_code(state) -> int` maps state → 10/11/12/13 (and `done` → 0).
 
 ## 12. Testing strategy
 
