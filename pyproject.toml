@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -8,7 +8,28 @@ version = "0.1.0"
 description = "Tiny harness-agnostic stage lifecycle CLI for external agent orchestrators"
 readme = "README.md"
 requires-python = ">=3.11"
-license = { text = "MIT" }
+license = "MIT"
+license-files = ["LICENSE*"]
+authors = [{ name = "stage-signal contributors" }]
+keywords = ["agents", "orchestration", "lifecycle", "automation", "cli"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+  "Topic :: System :: Monitoring",
+]
+
+[project.urls]
+Homepage = "https://github.com/syyzit/stage-signal"
+Repository = "https://github.com/syyzit/stage-signal"
+Issues = "https://github.com/syyzit/stage-signal/issues"
+Changelog = "https://github.com/syyzit/stage-signal/blob/main/CHANGELOG.md"
 
 [project.scripts]
 stage-signal = "stage_signal.cli:main"

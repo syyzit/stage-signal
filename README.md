@@ -38,17 +38,26 @@ Terminal states for a given attempt: `done`, `blocked`, `failed`.
 
 ---
 
-## Install (macOS / PEP 668)
+## Install
 
-System Python on macOS refuses bare `pip install` (PEP 668, "externally
-managed"). Use a venv — one path that works:
+From PyPI (once published):
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -e .          # installs the `stage-signal` entry point
-# contributors / CI also need tests:
-# pip install -e ".[dev]"
+pip install stage-signal
+stage-signal --help
+```
+
+System Python on macOS refuses bare `pip install` (PEP 668, "externally
+managed") — always use a venv as above.
+
+From source (contributors):
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e ".[dev]"   # installs the `stage-signal` entry point + tests
 stage-signal --help
 python -m pytest          # all green
 ```
