@@ -33,6 +33,24 @@ jobs:
       - name: Run queue orchestrator smoke
         run: sh examples/queue-orchestrator-smoke.sh
 
+  test-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install stage-signal with test extras
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Run pytest
+        run: python -m pytest -q
+
   packaging:
     runs-on: ubuntu-latest
     steps:
