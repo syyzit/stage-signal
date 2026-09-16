@@ -284,3 +284,5 @@ MIT — see `LICENSE`.
 ## Contributing
 
 Issues and PRs welcome. Keep the scope small: lifecycle signals, not a platform.
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) for local setup, tests, and release
+boundaries.
