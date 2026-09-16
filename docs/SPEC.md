@@ -21,13 +21,17 @@ Default root: `.stage-signal/` in the repo (override: `--dir PATH` or
   STATUS.json        # normative current state (single JSON object)
   STATUS.md          # optional human mirror (best-effort, never normative)
   events.jsonl       # append-only, one JSON object per line
-  locks/stage.lock   # lock file (fcntl POSIX; best-effort on other platforms)
+  locks/stage.lock   # lock file (POSIX fcntl.flock; Windows msvcrt.locking)
 ```
 
 - All writes are **atomic**: write temp file in same directory + `os.replace`.
 - All read-modify-write cycles hold an **exclusive lock** on `locks/stage.lock`
-  (see §8). Readers (`status` without mutation) take a shared lock where
-  available, else no lock but tolerate partial reads by retrying once.
+  (see §8). POSIX uses `fcntl.flock`; Windows uses stdlib `msvcrt.locking`
+  (exclusive byte lock on byte 0; shared requests fall back to exclusive;
+  no third-party dependencies). On platforms without locking primitives,
+  the lock path is a best-effort no-op. Readers (`status` without mutation)
+  take a shared lock where available (POSIX), else tolerate partial reads by
+  retrying once.
 - `events.jsonl` is append-only; never rewritten by the library (except file
   creation). Each line is a complete JSON object, UTF-8, `\n` terminated.
 
@@ -217,10 +221,20 @@ the transition); the 10–13 codes are for *observing* (`status`/`wait`) only.
 
 ## 8. Concurrency & atomicity
 
-- Exclusive `fcntl.flock(LOCK_EX)` on `locks/stage.lock` for every mutation;
-  shared `LOCK_SH` (fallback: exclusive) for reads. All platforms: temp-file +
-  `os.replace` for STATUS writes; `open(..., "a")` + flush + `os.fsync` for
-  event appends while holding the lock.
+- **Inter-process locking on `locks/stage.lock`:**
+  - **POSIX (Linux, macOS):** Exclusive `fcntl.flock(LOCK_EX)` on `locks/stage.lock`
+    for every mutation; shared `LOCK_SH` (fallback: exclusive) for reads.
+  - **Windows:** Standard library `msvcrt.locking` provides an exclusive byte lock
+    on byte 0 of `locks/stage.lock` with non-blocking retry polling (up to 10s).
+    Shared lock requests fall back to exclusive byte locking (msvcrt lacks shared locks).
+    No third-party packages (e.g. portalocker, pywin32) are required.
+  - **Non-locking environments:** If neither `fcntl` nor `msvcrt` is available,
+    `StageStore.locked()` is a best-effort no-op (`yield`). Do not assume Windows
+    or other platforms have POSIX `flock`.
+- **Atomic writes & event durability:**
+  - All platforms: temp-file in the stage directory + atomic `os.replace` for `STATUS.json` writes.
+  - `open(..., "a")` + flush + `os.fsync` for `events.jsonl` appends while holding the lock.
+  - Readers tolerate partial/torn reads by retrying once before reporting corruption (SPEC §2).
 - Concurrent heartbeats are safe: last writer wins on `heartbeat_at`, no event
   loss (append under lock), schema stays valid. Covered by a threads test.
 

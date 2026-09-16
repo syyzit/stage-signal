@@ -6,6 +6,7 @@ import contextlib
 import json
 import os
 import tempfile
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterator, Optional
@@ -14,6 +15,11 @@ try:
     import fcntl  # POSIX
 except ImportError:  # pragma: no cover - non-POSIX fallback
     fcntl = None  # type: ignore[assignment]
+
+try:
+    import msvcrt  # Windows stdlib
+except ImportError:  # pragma: no cover - non-Windows fallback
+    msvcrt = None  # type: ignore[assignment]
 
 from .constants import (
     DEFAULT_DIR_NAME,
@@ -81,7 +87,14 @@ class StageStore:
 
     @contextlib.contextmanager
     def locked(self, exclusive: bool = True) -> Iterator[None]:
-        """Hold a lock on locks/stage.lock for the duration of the block."""
+        """Hold a lock on locks/stage.lock for the duration of the block.
+
+        POSIX uses fcntl.flock (exclusive LOCK_EX or shared LOCK_SH).
+        Windows uses stdlib msvcrt.locking (exclusive byte lock on byte 0;
+        shared locks fall back to exclusive).
+        If neither is available, yields without inter-process locking
+        (atomic os.replace still protects STATUS writes).
+        """
         self.ensure_layout()
         with open(self.lock_path, "a+b") as fh:
             if fcntl is not None:
@@ -91,7 +104,25 @@ class StageStore:
                     yield
                 finally:
                     fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
-            else:  # pragma: no cover - non-POSIX: no inter-process lock
+            elif msvcrt is not None:  # pragma: no cover - Windows stdlib
+                # Windows stdlib msvcrt lacks shared locks; fall back to exclusive byte-0 locking.
+                fh.seek(0)
+                deadline = time.monotonic() + 10.0
+                while True:
+                    try:
+                        msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+                        break
+                    except OSError:
+                        if time.monotonic() >= deadline:
+                            raise
+                        time.sleep(0.02)
+                try:
+                    yield
+                finally:
+                    fh.seek(0)
+                    with contextlib.suppress(OSError):
+                        msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+            else:  # pragma: no cover - non-POSIX / non-Windows fallback: no inter-process lock
                 yield
 
     # -- STATUS.json IO -------------------------------------------------

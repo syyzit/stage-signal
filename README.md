@@ -91,8 +91,10 @@ On-disk layout (default):
   STATUS.json     # current snapshot (normative)
   STATUS.md       # human mirror (best-effort, never normative)
   events.jsonl    # append-only history
-  locks/stage.lock  # fcntl lock for read-modify-write cycles
+  locks/stage.lock  # inter-process lock (POSIX fcntl.flock; Windows msvcrt.locking)
 ```
+
+> **Platform locking note:** POSIX platforms use `fcntl.flock` (exclusive for mutations, shared for reads). Windows uses Python stdlib `msvcrt.locking` on the lock file (exclusive byte lock on byte 0; shared locks fall back to exclusive; no third-party dependencies). On environments lacking OS locking primitives, locking is a best-effort no-op. Do not assume Windows has POSIX `flock`. Atomic `os.replace` protects `STATUS.json` writes across all platforms.
 
 Exact schema and exit codes: see `docs/SPEC.md` (normative) and
 `docs/PRIOR_ART.md` (background).
