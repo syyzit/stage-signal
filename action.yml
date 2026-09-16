@@ -6,6 +6,7 @@ description: >-
   Exit codes: 0 done/OK (wait condition met), 1 generic/corrupt,
   2 bad args, 3 illegal transition, 10 running, 11 blocked,
   12 failed, 13 queued, 14 wait timeout, 15 not initialized.
+  Node runtime: uses actions/setup-python@v7 (Node 24 runner runtime).
 inputs:
   dir:
     description: 'Stage dir (passed as --dir)'
@@ -23,19 +24,49 @@ inputs:
     description: 'Python version for actions/setup-python'
     required: false
     default: '3.12'
+  version:
+    description: 'stage-signal version constraint to install (e.g. "0.1.0" or "==0.1.0"; default installs latest)'
+    required: false
+    default: ''
+  cache:
+    description: 'Dependency cache for actions/setup-python (e.g. "pip", or "" to disable)'
+    required: false
+    default: ''
+  cache-dependency-path:
+    description: 'Path to dependency file(s) for actions/setup-python cache'
+    required: false
+    default: ''
+  pip-cache:
+    description: 'Boolean flag to enable pip caching via actions/setup-python ("true" or "false")'
+    required: false
+    default: 'false'
 runs:
   using: 'composite'
   steps:
     - name: Set up Python
-      uses: actions/setup-python@v5
+      uses: actions/setup-python@v7
       with:
         python-version: ${{ inputs.python-version }}
+        cache: ${{ (inputs.cache != '' && inputs.cache) || (inputs.pip-cache == 'true' && 'pip') || '' }}
+        cache-dependency-path: ${{ inputs.cache-dependency-path }}
 
     - name: Install stage-signal
       shell: bash
       run: |
         python -m pip install --upgrade pip
-        pip install stage-signal
+        VERSION=$(echo "${{ inputs.version }}" | tr -d '[:space:]')
+        if [ -n "$VERSION" ]; then
+          case "$VERSION" in
+            "=="*|">="*|"<="*|"~="*|"!="*|"<"*|">"*)
+              pip install "stage-signal${VERSION}"
+              ;;
+            *)
+              pip install "stage-signal==${VERSION}"
+              ;;
+          esac
+        else
+          pip install stage-signal
+        fi
 
     - name: Wait for stage
       shell: bash

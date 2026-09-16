@@ -151,11 +151,20 @@ from PyPI then runs `stage-signal wait`:
     state: terminal      # done | blocked | failed | terminal (default)
     timeout: 3600        # seconds (default)
     # python-version: "3.12"  # default
+    # version: "0.1.0"        # optional version pin (default: unpinned/latest)
+    # pip-cache: true         # optional boolean for pip caching (default: false)
+    # cache: "pip"            # optional setup-python cache (default: "")
 ```
 
 Exit codes are the `wait` contract: `0` condition met, `11` blocked,
 `12` failed, `14` timeout, `15` not initialized (`10` running,
 `13` queued, `1`/`2`/`3` errors). See `action.yml`.
+
+> **Action runtime note:** The composite action uses `actions/setup-python@v7`
+> (Node 24 runner runtime, compatible with runner v2.327.1+), avoiding
+> Node 20 runner deprecation warnings. Release packages published from GitHub
+> Actions include build provenance attestations (`actions/attest-build-provenance@v4`).
+
 
 ---
 

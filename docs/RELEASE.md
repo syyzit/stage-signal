@@ -88,9 +88,32 @@ First upload for `v0.1.0` (and later tags) is handled by the
 - The workflow builds with `python -m build` and publishes with
   `pypa/gh-action-pypi-publish@release/v1` using OIDC — no stored
   API token, no `password`/`token` passed in the workflow.
-- Required job permissions: `id-token: write`, `contents: read`.
+- Required job permissions: `id-token: write`, `contents: read`, `attestations: write`.
 - No `environment:` key in the workflow (pending publisher was
   registered with an empty Environment name).
+
+### Artifact attestations & build provenance
+
+`.github/workflows/publish.yml` generates cryptographic build provenance
+attestations for built distribution packages (`dist/*`) using
+`actions/attest-build-provenance@v4` (SLSA provenance backed by Sigstore
+and GitHub's attestation registry).
+
+Because `syyzit/stage-signal` is a public repository on GitHub, artifact
+attestations are enabled natively without any third-party tokens or secrets.
+The workflow only requires `id-token: write` (for OIDC token minting) and
+`attestations: write` (to persist attestations in GitHub).
+
+In addition, `pypa/gh-action-pypi-publish@release/v1` automatically publishes
+PEP 740 digital attestations directly to PyPI.
+
+To verify artifact provenance using the GitHub CLI:
+
+```bash
+gh attestation verify dist/stage_signal-<version>-py3-none-any.whl --repo syyzit/stage-signal
+gh attestation verify dist/stage_signal-<version>.tar.gz --repo syyzit/stage-signal
+```
+
 
 Pending publisher fields on PyPI (must match exactly):
 

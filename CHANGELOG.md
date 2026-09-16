@@ -6,6 +6,14 @@ See `docs/RELEASE.md` for the release procedure.
 
 ## [Unreleased]
 
+- Composite action (`action.yml`) and workflows (`ci.yml`, `publish.yml`) bumped
+  to Node 24 runtime (`actions/setup-python@v7`, `actions/checkout@v7`) avoiding
+  Node 20 runner deprecation warnings (#2).
+- Artifact attestations and build provenance enabled in `.github/workflows/publish.yml`
+  via `actions/attest-build-provenance@v4` with `attestations: write` (#2).
+- Added optional backward-compatible action inputs to `action.yml`: `version`,
+  `cache`, `cache-dependency-path`, and `pip-cache` (#2).
+
 ## [0.1.0] — 2026-09-16
 
 Package available on PyPI (`pip install stage-signal`).
