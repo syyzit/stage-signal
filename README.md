@@ -124,6 +124,19 @@ Multi-stage queues (same contract, one dir walked against a queue file):
 `running`/`queued` wait (or exit 10/13 with `--once` for cron).
 Smoke: `examples/queue-orchestrator-smoke.sh`.
 
+### Driving coding agents (agy, OpenCode, etc.)
+
+An external orchestrator loop can drive coding agents across multi-stage milestones without scraping TUIs or transcripts. The orchestrator owns the **queue** (often in gitignored folders like `.agloop/` or `.museloop/` with prompt templates and run logs), while `.stage-signal/` owns the **stage signal** (`start`, `wait`, `done`, exit codes).
+
+The agent CLI invocation line is pluggable — everything else stays identical:
+
+| Agent CLI | Invocation Line |
+| :--- | :--- |
+| **agy** (Antigravity CLI) | `agy -p "$PROMPT" --dangerously-skip-permissions --print-timeout 45m` |
+| **OpenCode** | `opencode run --dir "$REPO" --auto -m "$MODEL" "$PROMPT"` |
+
+See [`examples/cli-orchestrator-loop.md`](examples/cli-orchestrator-loop.md) for the end-to-end loop guide and [`examples/multi-cli-loop.sh`](examples/multi-cli-loop.sh) for a thin runner reusing `examples/queue-orchestrator.sh`.
+
 ### GitHub Action: wait without a venv
 
 No preinstalled venv needed — the composite action installs `stage-signal`
@@ -180,7 +193,8 @@ Agent UIs and chat transcripts are for humans. Orchestrators need a stable, bori
 `wait`, `clear-terminal`, `doctor`), unit + concurrency tests,
 `examples/orchestrator-watchdog.sh` (+ `examples/orchestrator-smoke.sh`),
 `examples/queue-orchestrator.sh` (+ `examples/sample-queue.md`,
-`examples/queue-orchestrator-smoke.sh`), CI (`.github/workflows/ci.yml`:
+`examples/queue-orchestrator-smoke.sh`, `examples/cli-orchestrator-loop.md`,
+`examples/multi-cli-loop.sh`), CI (`.github/workflows/ci.yml`:
 pytest + both smokes + packaging check via `python -m build` /
 `twine check`, no upload). Contract: SPEC v1.
 

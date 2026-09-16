@@ -93,4 +93,18 @@ code=$?
 [ "$code" -eq 13 ] || fail "queued fresh dir should exit 13, got $code"
 pass "queued fresh dir --once -> exit 13"
 
+# 9. multi-cli-loop runner with --agent mock drains a fresh queue
+Q_MOCK="$WORK/mock-queue.md"
+cat >"$Q_MOCK" <<'EOF'
+- m1
+- m2
+EOF
+D_MOCK="$WORK/mock-stage/.stage-signal"
+MCLO="$PWD/examples/multi-cli-loop.sh"
+if [ -x "$MCLO" ]; then
+  out="$("$MCLO" --agent mock --queue "$Q_MOCK" --dir "$D_MOCK" --timeout 5 2>&1)" || fail "multi-cli-loop mock should exit 0, got $?"
+  echo "$out" | grep -q "queue drained: all milestones complete" || fail "expected drained in multi-cli-loop, got: $out"
+  pass "multi-cli-loop runner with mock agent drains queue"
+fi
+
 echo "ALL QUEUE SMOKE CHECKS PASSED"
