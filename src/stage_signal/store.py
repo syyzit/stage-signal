@@ -6,6 +6,7 @@ import contextlib
 import json
 import os
 import tempfile
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -31,6 +32,10 @@ from .constants import (
     STATUS_MD_FILENAME,
 )
 from .errors import CorruptStatusError, NotInitialized
+
+
+_THREAD_LOCKS: dict[Path, threading.RLock] = {}
+_THREAD_LOCKS_GUARD = threading.Lock()
 
 
 def resolve_dir(explicit: Optional[str | os.PathLike] = None) -> Path:
@@ -97,8 +102,13 @@ class StageStore:
         If neither is available, yields without inter-process locking
         (atomic os.replace still protects STATUS writes).
         """
-        self.ensure_layout()
-        with open(self.lock_path, "a+b") as fh:
+        lock_path = self.lock_path.resolve()
+        with _THREAD_LOCKS_GUARD:
+            thread_lock = _THREAD_LOCKS.setdefault(lock_path, threading.RLock())
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(thread_lock)
+            self.ensure_layout()
+            fh = stack.enter_context(open(self.lock_path, "a+b"))
             if fcntl is not None:
                 op = fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH
                 fcntl.flock(fh.fileno(), op)
