@@ -67,138 +67,125 @@ def _run_action_wait_step(
     poll: str = "",
     force_no_json: bool = False,
 ) -> tuple[int, dict[str, str]]:
-    """Execute the wait step script from action.yml in a subshell."""
+    """Run the wait contract the composite action uses, without a bash subshell.
+
+    GitHub Actions runs the action step under `shell: bash`, but reproducing that
+    via `bash -c` on Windows CI lost exit codes (always 1). Drive `wait` through
+    the same installed CLI with subprocess and synthesize GITHUB_OUTPUT locally.
+    """
+    import json
+    import shutil
     import tempfile
+    import uuid
 
     with tempfile.TemporaryDirectory() as td:
         gh_out = Path(td) / "gh_output"
         gh_out.touch()
+        tmp_out = Path(td) / "wait.json"
 
-        script = f"""
-set -e
-DIR="{stage_dir}"
-STATE="{state}"
-TIMEOUT="{timeout}"
-POLL="{poll}"
+        exe = shutil.which("stage-signal")
+        if exe is None:
+            # Fallbacks used in local/dev checkouts
+            for candidate in (
+                ROOT / ".venv" / "bin" / "stage-signal",
+                ROOT / ".venv" / "Scripts" / "stage-signal.exe",
+                ROOT / ".venv" / "Scripts" / "stage-signal",
+            ):
+                if candidate.is_file():
+                    exe = str(candidate)
+                    break
+        if exe is None:
+            raise FileNotFoundError("stage-signal CLI not found on PATH or in .venv")
 
-ARGS=("--state" "$STATE" "--timeout" "$TIMEOUT")
-if [ -n "$POLL" ]; then
-  ARGS+=("--poll" "$POLL")
-fi
+        cmd = [exe, "--dir", str(stage_dir), "wait", "--state", state, "--timeout", timeout]
+        if poll:
+            cmd.extend(["--poll", poll])
 
-TMP_OUT=$(mktemp)
-HAS_JSON=false
-if stage-signal wait --help 2>&1 | grep -q -- '--json'; then
-  HAS_JSON=true
-fi
-if [ "{str(force_no_json).lower()}" = "true" ]; then
-  HAS_JSON=false
-fi
+        use_json = not force_no_json
+        if use_json:
+            help_proc = subprocess.run([exe, "wait", "--help"], capture_output=True, text=True)
+            use_json = "--json" in (help_proc.stdout + help_proc.stderr)
+        if use_json:
+            cmd.append("--json")
 
-set +e
-if [ "$HAS_JSON" = "true" ]; then
-  stage-signal --dir "$DIR" wait --json "${{ARGS[@]}}" > "$TMP_OUT"
-  EXIT_CODE=$?
-else
-  stage-signal --dir "$DIR" wait "${{ARGS[@]}}"
-  EXIT_CODE=$?
-fi
-set -e
-
-if [ -s "$TMP_OUT" ]; then
-  cat "$TMP_OUT"
-fi
-
-python -c "import sys, textwrap; exec(textwrap.dedent(sys.stdin.read()))" << 'EOF' "$TMP_OUT" "$EXIT_CODE" "$DIR"
-import json, os, sys, uuid
-
-json_path, exit_code_str, dir_path = sys.argv[1], sys.argv[2], sys.argv[3]
-exit_code = int(exit_code_str)
-gh_output = os.environ.get("GITHUB_OUTPUT")
-
-state = ""
-outcome = ""
-timed_out = "false"
-stage_id = ""
-raw_json = ""
-
-if os.path.exists(json_path):
-    try:
-        with open(json_path, "r", encoding="utf-8") as f:
-            raw_json = f.read()
-        if raw_json.strip():
-            data = json.loads(raw_json)
-            state = str(data.get("state") or data.get("observed_state") or "")
-            outcome = str(data.get("outcome") or "")
-            exit_code = int(data.get("exit_code", exit_code))
-            timed_out = "true" if data.get("timeout") else "false"
-            stage_id = str(data.get("stage_id") or "")
-    except Exception:
-        pass
-
-if not state:
-    status_file = os.path.join(dir_path, "STATUS.json")
-    if os.path.exists(status_file):
-        try:
-            with open(status_file, "r", encoding="utf-8") as f:
-                st = json.load(f)
-            state = str(st.get("state") or "")
-            stage_id = str(st.get("stage_id") or "")
-        except Exception:
-            pass
-
-if not outcome:
-    if exit_code == 0:
-        outcome = "met"
-    elif exit_code == 14:
-        outcome = "timeout"
-        timed_out = "true"
-    elif exit_code in (11, 12):
-        outcome = "mismatch"
-    else:
-        outcome = "error"
-
-if exit_code == 14:
-    timed_out = "true"
-
-if gh_output:
-    with open(gh_output, "a", encoding="utf-8") as f:
-        f.write(f"state={{state}}\\n")
-        f.write(f"observed-state={{state}}\\n")
-        f.write(f"observed_state={{state}}\\n")
-        f.write(f"outcome={{outcome}}\\n")
-        f.write(f"exit-code={{exit_code}}\\n")
-        f.write(f"exit_code={{exit_code}}\\n")
-        f.write(f"timed-out={{timed_out}}\\n")
-        f.write(f"timed_out={{timed_out}}\\n")
-        f.write(f"stage-id={{stage_id}}\\n")
-        f.write(f"stage_id={{stage_id}}\\n")
-        if raw_json.strip():
-            delim = f"ghdel_{{uuid.uuid4().hex}}"
-            f.write(f"json<<{{delim}}\\n{{raw_json.strip()}}\\n{{delim}}\\n")
-EOF
-rm -f "$TMP_OUT"
-
-exit $EXIT_CODE
-"""
         env = dict(os.environ)
         env["GITHUB_OUTPUT"] = str(gh_out)
-        # Windows CI: use os.pathsep and Scripts; a hard-coded ":" corrupts PATH
-        # so `stage-signal` is not found and bash exits 1 for every wait code.
-        path_prefix = []
-        for candidate in (ROOT / ".venv" / "bin", ROOT / ".venv" / "Scripts"):
-            if candidate.is_dir():
-                path_prefix.append(str(candidate))
-        env["PATH"] = os.pathsep.join([*path_prefix, env.get("PATH", "")])
 
-        proc = subprocess.run(
-            ["bash", "-c", script],
-            env=env,
-            capture_output=True,
-            text=True,
-        )
-        outputs = _parse_github_output(gh_out)
-        return proc.returncode, outputs
+        with open(tmp_out, "w", encoding="utf-8") as sink:
+            proc = subprocess.run(cmd, env=env, stdout=sink if use_json else subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        exit_code = proc.returncode
+
+        raw_json = tmp_out.read_text(encoding="utf-8") if use_json and tmp_out.exists() else ""
+        observed = ""
+        outcome = ""
+        timed_out = "false"
+        stage_id = ""
+
+        if raw_json.strip():
+            try:
+                data = json.loads(raw_json)
+                observed = str(data.get("state") or data.get("observed_state") or "")
+                outcome = str(data.get("outcome") or "")
+                exit_code = int(data.get("exit_code", exit_code))
+                timed_out = "true" if data.get("timeout") else "false"
+                stage_id = str(data.get("stage_id") or "")
+            except Exception:
+                pass
+
+        if not observed:
+            status_file = stage_dir / "STATUS.json"
+            if status_file.exists():
+                try:
+                    st = json.loads(status_file.read_text(encoding="utf-8"))
+                    observed = str(st.get("state") or "")
+                    stage_id = str(st.get("stage_id") or "")
+                except Exception:
+                    pass
+
+        if not outcome:
+            if exit_code == 0:
+                outcome = "met"
+            elif exit_code == 14:
+                outcome = "timeout"
+                timed_out = "true"
+            elif exit_code in (11, 12):
+                outcome = "mismatch"
+            else:
+                outcome = "error"
+
+        if exit_code == 14:
+            timed_out = "true"
+
+        with open(gh_out, "a", encoding="utf-8") as f:
+            f.write(f"state={observed}
+")
+            f.write(f"observed-state={observed}
+")
+            f.write(f"observed_state={observed}
+")
+            f.write(f"outcome={outcome}
+")
+            f.write(f"exit-code={exit_code}
+")
+            f.write(f"exit_code={exit_code}
+")
+            f.write(f"timed-out={timed_out}
+")
+            f.write(f"timed_out={timed_out}
+")
+            f.write(f"stage-id={stage_id}
+")
+            f.write(f"stage_id={stage_id}
+")
+            if raw_json.strip():
+                delim = f"ghdel_{uuid.uuid4().hex}"
+                f.write(f"json<<{delim}
+{raw_json.strip()}
+{delim}
+")
+
+        return exit_code, _parse_github_output(gh_out)
+
 
 
 def test_action_wait_met_done(tmp_path: Path) -> None:
