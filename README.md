@@ -86,6 +86,11 @@ Exact schema and exit codes: see `docs/SPEC.md` and `docs/IMPLEMENTATION_PLAN.md
 `10` running, `11` blocked, `12` failed, `13` queued, `14` wait timeout,
 `15` not initialized, `2` bad args, `3` illegal transition.
 
+Minimal orchestrator loop (cron, bot, CI step, shell): see
+`examples/orchestrator-watchdog.sh` — it only calls
+`stage-signal status --json` / `stage-signal wait` and exits with the
+observed-state code above. Acceptance sequence: `examples/orchestrator-smoke.sh`.
+
 ---
 
 ## What this is / isn’t
@@ -121,8 +126,11 @@ Agent UIs and chat transcripts are for humans. Orchestrators need a stable, bori
 
 Working today: library (`src/stage_signal/`), full CLI (`init`, `start`,
 `heartbeat`, `note`, `artifact`, `done`, `blocked`, `fail`, `status`,
-`wait`, `clear-terminal`, `doctor`), unit + concurrency tests, and
-`examples/orchestrator-smoke.sh` as the end-to-end acceptance check.
+`wait`, `clear-terminal`, `doctor`), unit + concurrency tests,
+`examples/orchestrator-smoke.sh` as the end-to-end acceptance check,
+`examples/orchestrator-watchdog.sh` as a minimal orchestrator poll loop
+(only `status --json` / `wait`), and CI (`.github/workflows/ci.yml`)
+running pytest + the smoke script on push/PR.
 
 ---
 
