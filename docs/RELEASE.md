@@ -38,6 +38,10 @@ Both must pass. No commit with red tests.
 
 ## 4. Build (local)
 
+CI runs the same check on every push/PR (packaging job in
+`.github/workflows/ci.yml`: `python -m build` + `twine check dist/*`, no
+upload).
+
 ```bash
 .venv/bin/pip install --upgrade build twine
 .venv/bin/python -m build

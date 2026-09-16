@@ -166,7 +166,8 @@ Working today: library (`src/stage_signal/`), full CLI (`init`, `start`,
 (only `status --json` / `wait`), `examples/queue-orchestrator.sh` (+
 `examples/sample-queue.md`, `examples/queue-orchestrator-smoke.sh`) as a
 minimal multi-stage queue consumer on the same contract, and CI
-(`.github/workflows/ci.yml`) running pytest + the smoke script on push/PR.
+(`.github/workflows/ci.yml`) running pytest + both smoke scripts on push/PR
+plus a packaging job (`python -m build` + `twine check dist/*`, no upload).
 
 ---
 

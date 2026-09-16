@@ -29,3 +29,25 @@ jobs:
 
       - name: Run orchestrator smoke
         run: sh examples/orchestrator-smoke.sh
+
+      - name: Run queue orchestrator smoke
+        run: sh examples/queue-orchestrator-smoke.sh
+
+  packaging:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build sdist and wheel
+        run: |
+          python -m pip install --upgrade pip
+          pip install build twine
+          python -m build
+
+      - name: Check distributions with twine
+        run: twine check dist/*
