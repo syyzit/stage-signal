@@ -47,6 +47,8 @@ managed"). Use a venv — one path that works:
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -e .          # installs the `stage-signal` entry point
+# contributors / CI also need tests:
+# pip install -e ".[dev]"
 stage-signal --help
 python -m pytest          # all green
 ```
