@@ -35,7 +35,10 @@ Changelog = "https://github.com/syyzit/stage-signal/blob/main/CHANGELOG.md"
 stage-signal = "stage_signal.cli:main"
 
 [project.optional-dependencies]
-dev = ["pytest>=8"]
+dev = [
+  "pytest>=8",
+  "pytest-timeout>=2.3.0",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]

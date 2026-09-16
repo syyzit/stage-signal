@@ -23,6 +23,8 @@ sh examples/orchestrator-smoke.sh
 sh examples/queue-orchestrator-smoke.sh
 ```
 
+On Windows, `pytest-timeout` enforces a 60s per-test timeout (configured in CI and defaulted in `tests/conftest.py`) so hangs fail promptly with stack traces.
+
 Do not bump the package version, publish to PyPI, or push release tags as part
 of a contribution. Maintainers follow the release procedure in
 [`docs/RELEASE.md`](docs/RELEASE.md).
