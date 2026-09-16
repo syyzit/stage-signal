@@ -6,6 +6,8 @@ See `docs/RELEASE.md` for the release procedure.
 
 ## [Unreleased]
 
+## [0.1.2] — 2026-09-16
+
 - Clear stale `meta` keys on `start` (replacing entirely with newly supplied
   `--meta` flags, or clearing to `{}` when omitted) and refresh `git_head` and
   `git_branch` from current repository HEAD (#15).
@@ -18,6 +20,10 @@ See `docs/RELEASE.md` for the release procedure.
   and timeout outcomes while preserving SPEC exit codes (#8).
 - Added `doctor --json` and process liveness diagnostics checking for dead claiming
   PIDs on running stages (#5).
+- Added CI workflow job to run pytest on `windows-latest` across Python 3.11, 3.12, 3.13, and 3.14 (#11, #16).
+- Added copyable GitHub Actions wait workflow example in `examples/github-action-wait.yml` (#6).
+- Added Windows usage documentation, file locking semantics, and path conventions in `docs/WINDOWS.md` (#9).
+- Added `CONTRIBUTING.md` guide covering development workflow, testing, style, and PR process (#10).
 
 ## [0.1.1] — 2026-09-16
 
@@ -50,6 +56,7 @@ GitHub release and tag: [`v0.1.0`](https://github.com/syyzit/stage-signal/releas
 - Stdlib only, Python `>=3.11`. Entry point `stage-signal`
   (`python -m stage_signal` alias).
 
-[Unreleased]: https://github.com/syyzit/stage-signal/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/syyzit/stage-signal/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/syyzit/stage-signal/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/syyzit/stage-signal/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/syyzit/stage-signal/releases/tag/v0.1.0
