@@ -73,6 +73,17 @@ init  -->  start --pid  -->  [heartbeat / note]*  -->  done | fail | blocked
    ```
    Heartbeats update `heartbeat_at`. Notes append timestamped diagnostic logs to `STATUS.json` (capped at 200 entries).
 
+3b. **`supervise` (Auto-Heartbeat Child Process)**:
+   Agents frequently forget to heartbeat while running long tasks (compilations, large test suites, long benchmark runs), causing watchdog false-alarms on `STALE_HEARTBEAT` / `needs_reclaim`.
+   Use `supervise` to run the child command with an automatic background heartbeat:
+   ```bash
+   stage-signal --dir .stage-signal supervise --every 30 -- pytest tests/
+   ```
+   - Automatically bumps `heartbeat` every `--every` seconds (default 60s) while the child process runs.
+   - On child exit 0, transitions to `done`.
+   - On child non-zero exit, transitions to `failed`.
+   - Forwards signals (`SIGINT`, `SIGTERM`) to the child process and records terminal state on exit.
+
 4. **Terminal States**:
    When the stage ends, the agent transitions to one of three terminal states:
    - **`done`**: Success.

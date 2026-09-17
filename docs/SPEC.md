@@ -312,6 +312,8 @@ stage-signal wait [--state done|blocked|failed|terminal] [--needs-reclaim]
              [--timeout SEC] [--poll SEC] [--json]
 stage-signal clear-terminal [--keep-stage]
 stage-signal doctor [--stale-after SEC] [--json] [--format human|json]
+stage-signal supervise [--every SEC] [--dir DIR] [--summary SUMMARY] [--reason REASON]
+             [--write-status-mirror] -- CMD [ARGS...]
 ```
 
 - `--dir` / `STAGE_SIGNAL_DIR`: stage dir (default `.stage-signal`).
@@ -429,6 +431,18 @@ stage-signal doctor [--stale-after SEC] [--json] [--format human|json]
   opts into best-effort termination of a valid, alive recorded PID before mutation,
   only after the guard passes; see §4 rule 7 for timing, platform behavior, and limits.
   It is compatible with `--keep-failed`. Mutators do not support `--json`.
+- `supervise [--every SEC] [--dir DIR] [--summary SUMMARY] [--reason REASON] [--write-status-mirror] -- CMD [ARGS...]`:
+  Runs and supervises a child process `CMD`, automatically bumping stage `heartbeat` every `--every`
+  seconds (default 60; validated `1 <= every <= stale_threshold - 1`, default stale threshold 300)
+  while the child process is alive. The stage must already be in state `running` (refuses with exit 3 /
+  `IllegalTransition` otherwise; exit 15 / `NotInitialized` if not initialized). When the child process exits 0,
+  transitions to `done` with `--summary` (default: `'command succeeded (exit 0): CMD'`). When the child process
+  exits non-zero, transitions to `failed` with `--reason` (default: `'command failed with exit code N: CMD'` or
+  `'command terminated by SIGNUM: CMD'`). Signals (`SIGINT`, `SIGTERM`) are forwarded to the child process;
+  the supervisor waits for child exit and records the terminal transition before returning.
+  Exit code matches the child process exit code (or `128 + SIGNUM` if terminated by signal, 2 on bad args,
+  3 on illegal transition, 15 if not initialized, 127 if command not found, 126 if permission denied).
+  Library: `Stage.supervise(cmd, *, every=60.0, stale_threshold=300.0, summary=None, reason=None, write_status_mirror=None, cwd=None, env=None) -> int`.
 
 ## 7. Exit codes (part of the contract)
 
@@ -447,6 +461,7 @@ stage-signal doctor [--stale-after SEC] [--json] [--format human|json]
 
 `done`/`blocked`/`failed` terminal commands exit 0 on success (they *perform*
 the transition); the 10–13 codes are for *observing* (`status`/`wait`) only (and exit 10 for `doctor --exit-reclaim` when reclaim is needed).
+`supervise` returns the child process exit code (or `128 + SIGNUM` on signal termination, 127 when not found, 126 on permission denied; standard error exit codes 2, 3, 15 apply on setup/precondition failures).
 
 ## 8. Concurrency & atomicity
 
