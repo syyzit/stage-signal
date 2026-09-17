@@ -154,6 +154,74 @@ def test_done_blocked_fail(stage: Stage) -> None:
         stage.fail("")
 
 
+def test_fail_if_dead_pid(stage: Stage) -> None:
+    process = subprocess.Popen([sys.executable, "-c", "pass"])
+    process.wait(timeout=10)
+    stage.start(stage="m", pid=process.pid)
+
+    st = stage.fail("worker exited", if_dead_pid=True)
+
+    assert st["state"] == "failed"
+    assert st["error"]["reason"] == "worker exited"
+    assert st["error"]["finished_at"]
+    events = [json.loads(line) for line in (stage.dir / "events.jsonl").read_text().splitlines()]
+    assert events[-1]["type"] == "failed"
+    assert events[-1]["message"] == "worker exited"
+
+
+def test_fail_if_dead_pid_live_no_mutation(stage: Stage) -> None:
+    stage.start(stage="m", pid=os.getpid())
+    before = {name: (stage.dir / name).read_bytes() for name in ("STATUS.json", "STATUS.md", "events.jsonl")}
+
+    with pytest.raises(IllegalTransition, match="is alive") as exc:
+        stage.fail("worker exited", if_dead_pid=True, write_status_mirror=True)
+
+    assert exc.value.exit_code == 3
+    assert {name: (stage.dir / name).read_bytes() for name in before} == before
+    assert not (stage.dir.parent / ".orch").exists()
+
+
+@pytest.mark.parametrize("pid", [None, True, False, 0, -1, "123", 1.5, [], {}])
+def test_fail_if_dead_pid_invalid_no_mutation(stage: Stage, monkeypatch: pytest.MonkeyPatch, pid) -> None:
+    status = stage.start(stage="m")
+    status["pid"] = pid
+    (stage.dir / "STATUS.json").write_text(json.dumps(status))
+    before = {name: (stage.dir / name).read_bytes() for name in ("STATUS.json", "STATUS.md", "events.jsonl")}
+
+    def unexpected_probe(pid):
+        pytest.fail("invalid pid must not be probed")
+
+    monkeypatch.setattr("stage_signal.stage._is_pid_alive", unexpected_probe)
+    with pytest.raises(IllegalTransition, match="valid positive integer"):
+        stage.fail("worker exited", if_dead_pid=True)
+
+    assert {name: (stage.dir / name).read_bytes() for name in before} == before
+
+
+@pytest.mark.parametrize("state", ["queued", "done", "blocked", "failed"])
+def test_fail_if_dead_pid_non_running_normal_rules(stage: Stage, monkeypatch: pytest.MonkeyPatch, state: str) -> None:
+    if state == "done":
+        stage.done()
+    elif state == "blocked":
+        stage.blocked("waiting")
+    elif state == "failed":
+        stage.fail("previous failure")
+    before = {name: (stage.dir / name).read_bytes() for name in ("STATUS.json", "STATUS.md", "events.jsonl")}
+
+    def unexpected_probe(pid):
+        pytest.fail("non-running states must not probe pid")
+
+    monkeypatch.setattr("stage_signal.stage._is_pid_alive", unexpected_probe)
+    if state in ("queued", "failed"):
+        st = stage.fail("new failure", if_dead_pid=True)
+        assert st["state"] == "failed"
+        assert st["error"]["reason"] == "new failure"
+    else:
+        with pytest.raises(IllegalTransition):
+            stage.fail("new failure", if_dead_pid=True)
+        assert {name: (stage.dir / name).read_bytes() for name in before} == before
+
+
 def test_clear_terminal(stage: Stage) -> None:
     with pytest.raises(IllegalTransition):
         stage.clear_terminal()  # queued

@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -11,6 +13,40 @@ import pytest
 from stage_signal.cli import _parse_meta, build_parser, main
 from stage_signal.errors import BadArgsError
 from stage_signal import Stage
+
+
+def test_cli_fail_if_dead_pid(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    stage = Stage(tmp_path / ".stage-signal")
+    stage.init()
+    process = subprocess.Popen([sys.executable, "-c", "pass"])
+    process.wait(timeout=10)
+    stage.start(stage="m", pid=process.pid)
+
+    assert main(["--dir", str(stage.dir), "fail", "--reason", "worker exited", "--if-dead-pid"]) == 0
+    assert "failed" in capsys.readouterr().out
+    assert stage.status()["state"] == "failed"
+    assert stage.status()["error"]["reason"] == "worker exited"
+
+
+@pytest.mark.parametrize("condition", ["live", "missing", "unknown"])
+def test_cli_fail_if_dead_pid_refuses_without_mutation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], condition: str
+) -> None:
+    stage = Stage(tmp_path / ".stage-signal")
+    stage.init()
+    status = stage.start(stage="m", pid=os.getpid())
+    if condition == "missing":
+        del status["pid"]
+        (stage.dir / "STATUS.json").write_text(json.dumps(status))
+    elif condition == "unknown":
+        monkeypatch.setattr("stage_signal.stage._is_pid_alive", lambda pid: None)
+    before = {name: (stage.dir / name).read_bytes() for name in ("STATUS.json", "STATUS.md", "events.jsonl")}
+
+    expected_code = 1 if condition == "missing" else 3
+    assert main(["--dir", str(stage.dir), "fail", "--reason", "worker exited", "--if-dead-pid"]) == expected_code
+    expected_error = "missing keys: pid" if condition == "missing" else "fail --if-dead-pid"
+    assert expected_error in capsys.readouterr().err
+    assert {name: (stage.dir / name).read_bytes() for name in before} == before
 
 
 def test_parse_meta_kv_basic() -> None:

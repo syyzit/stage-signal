@@ -490,6 +490,7 @@ class Stage:
         self,
         reason: str,
         *,
+        if_dead_pid: bool = False,
         write_status_mirror: Optional[bool] = None,
     ) -> dict[str, Any]:
         """Mark hard failure. Same transition rule as done."""
@@ -498,6 +499,18 @@ class Stage:
 
         def _apply(current: dict[str, Any]) -> dict[str, Any]:
             _require_terminal_source(current, STATE_FAILED, "fail")
+            if if_dead_pid and current.get("state") == STATE_RUNNING:
+                pid = current.get("pid")
+                if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+                    raise IllegalTransition(
+                        "fail --if-dead-pid requires a valid positive integer claiming pid"
+                    )
+                alive = _is_pid_alive(pid)
+                if alive is not False:
+                    condition = "is alive" if alive is True else "has unknown liveness"
+                    raise IllegalTransition(
+                        f"fail --if-dead-pid refused: claiming pid {pid} {condition}"
+                    )
             current["state"] = STATE_FAILED
             current["error"] = {
                 "reason": reason,
@@ -734,12 +747,12 @@ def _is_pid_alive_windows(pid: int) -> Optional[bool]:
             err = kernel32.GetLastError()
             if err == 5:  # ERROR_ACCESS_DENIED: process exists, treat as alive
                 return True
-            return False
+            return False if err == 87 else None
         try:
             exit_code = ctypes.c_ulong()
             if kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
                 return bool(exit_code.value == STILL_ACTIVE)
-            return True
+            return None
         finally:
             kernel32.CloseHandle(handle)
     except Exception:

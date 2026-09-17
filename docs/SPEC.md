@@ -139,8 +139,15 @@ Rules:
    `--accept-failure` on `failed`) is exit 3.
    `--require-proof` verifies proof *before* mutating (see §9); on failure
    exit 3 and no mutation.
-6. `blocked --reason`, `fail --reason` — same rule as `done` with `error`
+6. `blocked --reason`, `fail --reason [--if-dead-pid]` — same rule as `done` with `error`
    payload instead of `result`.
+   With `--if-dead-pid`, a `running` stage transitions to `failed` (exit 0)
+   only when its claiming `pid` is a positive integer (not a boolean) confirmed
+   dead. A live, null/invalid PID or unknown liveness causes exit 3 without
+   changing status, events, or mirrors; an absent required `pid` key is corrupt
+   status (exit 1, also no mutation). The guard is checked under the mutation lock.
+   Outside `running`, normal fail rules apply: `queued` and `failed` allow fail,
+   while `done` and `blocked` reject it (exit 3). `doctor` remains advisory-only.
 7. `clear-terminal [--keep-stage]` — allowed only from `done`/`blocked`/`failed`;
    resets to `queued`. By default, clears stage identity (`stage_id` and
    `stage_name` set to `null`, clearing claim/heartbeat/session/pid/proof/
@@ -203,7 +210,7 @@ stage-signal artifact PATH [--label LABEL]
 stage-signal done [--summary TEXT] [--git-head H] [--proof-ref R] [--require-proof]
              [--accept-failure] [--write-status-mirror]
 stage-signal blocked --reason TEXT [--write-status-mirror]
-stage-signal fail --reason TEXT [--write-status-mirror]
+stage-signal fail --reason TEXT [--if-dead-pid] [--write-status-mirror]
 stage-signal status [--json]
 stage-signal wait [--state done|blocked|failed|terminal] [--timeout SEC] [--poll SEC] [--json]
 stage-signal clear-terminal [--keep-stage]
