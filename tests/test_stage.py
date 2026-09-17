@@ -70,6 +70,26 @@ def test_reclaim_kill_child(stage: Stage, ignore_term: bool) -> None:
         process.stdout.close()
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX signals")
+def test_reclaim_kill_guard_refused_leaves_pid_alive(stage: Stage) -> None:
+    process = subprocess.Popen(
+        [sys.executable, "-c", "import time; print('ready', flush=True); time.sleep(60)"],
+        stdout=subprocess.PIPE, text=True,
+    )
+    try:
+        assert process.stdout.readline().strip() == "ready"
+        status = stage.start(stage="healthy", pid=process.pid)
+        (stage.dir / "STATUS.json").write_text(json.dumps(status))
+        with pytest.raises(IllegalTransition, match="needs_reclaim is false"):
+            stage.reclaim("healthy running", kill=True)
+        assert process.poll() is None
+    finally:
+        if process.poll() is None:
+            process.kill()
+        process.wait(timeout=5)
+        process.stdout.close()
+
+
 def test_init_creates_queued_status(stage_dir: Path) -> None:
     s = Stage(stage_dir)
     st = s.init(project="p")
