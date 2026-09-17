@@ -119,7 +119,8 @@ def build_parser() -> argparse.ArgumentParser:
     c.set_defaults(func=cmd_wait)
 
     c = sub.add_parser(
-        "clear-terminal", help="reset a terminal state back to queued (idle)"
+        "clear-terminal",
+        help="reset a terminal or queued state back to queued (idle)",
     )
     c.add_argument(
         "--keep-stage",

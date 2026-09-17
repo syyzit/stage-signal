@@ -26,6 +26,7 @@ from .constants import (
     STATE_QUEUED,
     STATE_RUNNING,
     TERMINAL_STATES,
+    CLEARABLE_STATES,
     DOCTOR_SUMMARY_RECLAIM_NEEDED,
     WARNING_CODE_DEAD_PID,
     WARNING_CODE_STALE_HEARTBEAT,
@@ -528,7 +529,7 @@ class Stage:
         )
 
     def clear_terminal(self, *, keep_stage: bool = False) -> dict[str, Any]:
-        """Reset done/blocked/failed back to queued (SPEC §4.7).
+        """Reset done/blocked/failed/queued back to queued (SPEC §4.7).
 
         By default, clears stage identity (stage_id and stage_name set to None,
         plus claim/session/heartbeat fields), transitioning to a true idle queued
@@ -537,8 +538,8 @@ class Stage:
 
         def _apply(current: dict[str, Any]) -> dict[str, Any]:
             _require_state(
-                current, TERMINAL_STATES, "clear-terminal",
-                message="only terminal states (done/blocked/failed) "
+                current, CLEARABLE_STATES, "clear-terminal",
+                message="only terminal states (done/blocked/failed) and queued "
                         "can be cleared",
             )
             current["state"] = STATE_QUEUED

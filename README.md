@@ -88,7 +88,7 @@ stage-signal status --json
 stage-signal wait --state terminal --timeout 900
 # or wait --json for a structured outcome payload on stdout:
 stage-signal wait --json --state terminal --timeout 900
-# reset terminal state back to true idle queued:
+# reset terminal or queued state back to true idle queued:
 stage-signal clear-terminal
 # check directory health and inspect structured warnings (STALE_HEARTBEAT, DEAD_PID):
 stage-signal doctor --json
@@ -171,7 +171,7 @@ See [`docs/examples/orchestrator.md`](docs/examples/orchestrator.md) for the dua
 Orchestrator loops need to differentiate between an active pending stage and an idle runner:
 - **Idle state:** `state: queued` with no stage claimed (`stage_name: null`, displayed as `queued -`) indicates the worktree is idle and awaiting instructions (created by `init` or reset via `clear-terminal`).
 - **Queued stage:** `state: queued` with a stage name (`stage_name: "feature-x"`) indicates a specific stage is queued to be picked up.
-- **Handling failures:** When an agent reports `fail`, orchestrators have two clean SPEC-compatible choices:
+- **Handling failures & abandoning:** When an agent reports `fail`, or when abandoning a stuck queued stage, orchestrators have two clean SPEC-compatible choices:
   - `stage-signal clear-terminal` to clear stage identity back to a true idle `queued -` state.
   - `stage-signal done --accept-failure --summary "accepted: ..."` to transition a failed stage to `done` with `"accepted_failure": true` recorded in `result`, without inventing a fake success.
 

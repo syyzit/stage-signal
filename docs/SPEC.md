@@ -110,7 +110,7 @@ Heartbeat age is available only when `state == "running"`; for `done`, `failed`,
             └──────────────┬───────────────┘              │
            start           │ start              clear-terminal
                            ▼                              │
-            ┌──────────────────────────────┐   done/blocked/fail (same
+            ┌──────────────────────────────┐   done/blocked/fail/queued (same
             │           running            │   stage → idempotent OK)
             └──┬───────────┬───────────┬───┘
       done / blocked / fail (from queued or running)
@@ -156,12 +156,12 @@ Rules:
    status (exit 1, also no mutation). The guard is checked under the mutation lock.
    Outside `running`, normal fail rules apply: `queued` and `failed` allow fail,
    while `done` and `blocked` reject it (exit 3). `doctor` remains advisory-only.
-7. `clear-terminal [--keep-stage]` — allowed only from `done`/`blocked`/`failed`;
+7. `clear-terminal [--keep-stage]` — allowed from `done`/`blocked`/`failed`/`queued`;
    resets to `queued`. By default, clears stage identity (`stage_id` and
    `stage_name` set to `null`, clearing claim/heartbeat/session/pid/proof/
    artifacts/meta and resetting to true idle queued). If `--keep-stage` is given,
    preserves previous `stage_id` and `stage_name` to re-queue the same stage.
-   From `queued`/`running` it is exit 3.
+   From `running` it is exit 3.
 8. Every mutation appends exactly one event to `events.jsonl` and rewrites
    `STATUS.md` best-effort.
 
@@ -173,9 +173,9 @@ orchestrator or watchdog observing `status` sees `queued - (attempt 1)` and know
 stage work is currently pending or abandoned. In contrast, `state: queued` with a
 non-null `stage_name` represents an actively queued stage awaiting execution.
 
-After a stage failure, orchestrators can choose between two clean end states:
+After a stage failure, or when abandoning a parked or stuck queued stage, orchestrators can choose between clean end states:
 - **Return to idle:** `stage-signal clear-terminal` clears stage identity to null,
-  signaling that the failure was handled and the runner is idle.
+  signaling that the failure or stuck queued stage was handled and the runner is idle.
 - **Accept failure:** `stage-signal done --accept-failure --summary "reason"` marks
   the lifecycle `done` while recording `"accepted_failure": true`, without inventing
   a fake success.

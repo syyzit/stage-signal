@@ -507,6 +507,64 @@ def test_cli_clear_terminal_keep_stage(tmp_path: Path, monkeypatch: pytest.Monke
     assert st["stage_id"] == "feat-2"
 
 
+def test_cli_clear_terminal_from_queued(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    d = tmp_path / ".stage-signal"
+    monkeypatch.setenv("STAGE_SIGNAL_DIR", str(d))
+    assert main(["init", "--project", "testproj"]) == 0
+    capsys.readouterr()
+
+    # clear-terminal on initial idle queued state succeeds (exit 0)
+    assert main(["clear-terminal"]) == 0
+    out = capsys.readouterr().out
+    assert "cleared queued - (attempt 1)" in out
+
+    assert main(["status", "--json"]) == 13
+    st = json.loads(capsys.readouterr().out)
+    assert st["state"] == "queued"
+    assert st["stage_name"] is None
+    assert st["stage_id"] is None
+
+
+def test_cli_clear_terminal_from_stuck_queued(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    d = tmp_path / ".stage-signal"
+    monkeypatch.setenv("STAGE_SIGNAL_DIR", str(d))
+    assert main(["init", "--project", "testproj"]) == 0
+    assert main(["start", "--stage", "stuck-feat"]) == 0
+    assert main(["fail", "--reason", "interrupted"]) == 0
+    assert main(["clear-terminal", "--keep-stage"]) == 0
+    capsys.readouterr()
+
+    # Stage is parked in queued with stage_name
+    assert main(["status", "--json"]) == 13
+    st = json.loads(capsys.readouterr().out)
+    assert st["state"] == "queued"
+    assert st["stage_name"] == "stuck-feat"
+
+    # clear-terminal abandons stuck queued back to idle queued
+    assert main(["clear-terminal"]) == 0
+    out = capsys.readouterr().out
+    assert "cleared queued - (attempt 1)" in out
+
+    assert main(["status", "--json"]) == 13
+    st2 = json.loads(capsys.readouterr().out)
+    assert st2["state"] == "queued"
+    assert st2["stage_name"] is None
+    assert st2["stage_id"] is None
+
+
+def test_cli_clear_terminal_illegal_on_running(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    d = tmp_path / ".stage-signal"
+    monkeypatch.setenv("STAGE_SIGNAL_DIR", str(d))
+    assert main(["init", "--project", "testproj"]) == 0
+    assert main(["start", "--stage", "running-feat"]) == 0
+    capsys.readouterr()
+
+    # clear-terminal is illegal from running (exit 3)
+    assert main(["clear-terminal"]) == 3
+    err = capsys.readouterr().err
+    assert "only terminal states (done/blocked/failed) and queued can be cleared" in err
+
+
 def test_cli_done_accept_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     d = tmp_path / ".stage-signal"
     monkeypatch.setenv("STAGE_SIGNAL_DIR", str(d))

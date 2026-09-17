@@ -12,6 +12,8 @@ See `docs/RELEASE.md` for the release procedure.
   done / blocked / failed / timeout without scraping logs.
 - Example workflow `examples/github-action-wait.yml` shows copy-paste
   `if:` branches for those four outcomes.
+- Extended `clear-terminal` to accept `queued` state, allowing stuck or parked
+  queued stages to be abandoned or reset to idle queued (or preserved with `--keep-stage`) (#76).
 
 ## [0.1.6] — 2026-09-17
 

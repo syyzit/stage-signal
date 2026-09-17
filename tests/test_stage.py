@@ -223,8 +223,9 @@ def test_fail_if_dead_pid_non_running_normal_rules(stage: Stage, monkeypatch: py
 
 
 def test_clear_terminal(stage: Stage) -> None:
-    with pytest.raises(IllegalTransition):
-        stage.clear_terminal()  # queued
+    st_queued = stage.clear_terminal()  # queued is allowed
+    assert st_queued["state"] == "queued"
+    assert st_queued["stage_name"] is None
     stage.start(stage="m")
     with pytest.raises(IllegalTransition):
         stage.clear_terminal()  # running
@@ -627,6 +628,59 @@ def test_clear_terminal_keep_stage(stage: Stage) -> None:
     events = stage.events()
     assert events[-1]["type"] == "clear_terminal"
     assert events[-1]["stage_id"] == "m1"
+    assert events[-1]["message"] == "cleared to queued"
+    assert events[-1]["detail"] == {"keep_stage": True}
+
+
+def test_clear_terminal_from_queued_idle(stage: Stage) -> None:
+    st = stage.clear_terminal()
+    assert st["state"] == "queued"
+    assert st["stage_id"] is None
+    assert st["stage_name"] is None
+    events = stage.events()
+    assert events[-1]["type"] == "clear_terminal"
+    assert events[-1]["stage_id"] is None
+    assert events[-1]["message"] == "cleared to idle queued"
+    assert events[-1]["detail"] == {"keep_stage": False}
+
+
+def test_clear_terminal_from_stuck_queued_clears_to_idle(stage: Stage) -> None:
+    stage.start(stage="stuck-stage", session_id="ses_stuck", pid=1234)
+    stage.fail(reason="stranded")
+    stage.clear_terminal(keep_stage=True)
+    # Stage is now parked/stuck in queued with stage_name
+    curr = stage.status()
+    assert curr["state"] == "queued"
+    assert curr["stage_name"] == "stuck-stage"
+    assert curr["stage_id"] == "stuck-stage"
+
+    # clear_terminal abandons stuck queued back to idle queued
+    st = stage.clear_terminal()
+    assert st["state"] == "queued"
+    assert st["stage_name"] is None
+    assert st["stage_id"] is None
+    assert st["session_id"] is None
+    assert st["pid"] is None
+    assert st["started_at"] is None
+    events = stage.events()
+    assert events[-1]["type"] == "clear_terminal"
+    assert events[-1]["stage_id"] is None
+    assert events[-1]["message"] == "cleared to idle queued"
+    assert events[-1]["detail"] == {"keep_stage": False}
+
+
+def test_clear_terminal_from_stuck_queued_keep_stage(stage: Stage) -> None:
+    stage.start(stage="stuck-stage", session_id="ses_stuck", pid=1234)
+    stage.fail(reason="stranded")
+    stage.clear_terminal(keep_stage=True)
+
+    st = stage.clear_terminal(keep_stage=True)
+    assert st["state"] == "queued"
+    assert st["stage_name"] == "stuck-stage"
+    assert st["stage_id"] == "stuck-stage"
+    events = stage.events()
+    assert events[-1]["type"] == "clear_terminal"
+    assert events[-1]["stage_id"] == "stuck-stage"
     assert events[-1]["message"] == "cleared to queued"
     assert events[-1]["detail"] == {"keep_stage": True}
 
