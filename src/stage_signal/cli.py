@@ -1,4 +1,4 @@
-"""stage-signal CLI: init/start/heartbeat/note/artifact/done/blocked/fail/status/wait/clear-terminal/doctor."""
+"""stage-signal CLI: init/start/heartbeat/note/artifact/done/blocked/fail/status/wait/events/clear-terminal/doctor."""
 
 from __future__ import annotations
 
@@ -10,6 +10,8 @@ from typing import Any, Callable, Optional, Sequence
 from . import __version__
 from .constants import (
     ENV_DIR,
+    EVENT_TYPES,
+    EVENTS_DEFAULT_TAIL,
     EXIT_ERROR,
     EXIT_OK,
     EXIT_RUNNING,
@@ -113,6 +115,45 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument("--json", action="store_true", default=False)
     c.set_defaults(func=cmd_status)
 
+    c = sub.add_parser(
+        "events",
+        help="show recent events.jsonl (newest last; default last 20)",
+        description=(
+            "Read events.jsonl under a shared lock. Human output is "
+            "chronological, newest last. Default --tail 20; --tail 0 shows "
+            "all. --type filters to one SPEC event type before --tail. "
+            "--json prints a JSON array (not NDJSON)."
+        ),
+    )
+    c.add_argument(
+        "--tail",
+        type=_nonneg_int,
+        default=EVENTS_DEFAULT_TAIL,
+        metavar="N",
+        help=(
+            "last N matching events (default: "
+            f"{EVENTS_DEFAULT_TAIL}; 0 = all)"
+        ),
+    )
+    c.add_argument(
+        "--type",
+        choices=list(EVENT_TYPES),
+        default=None,
+        metavar="TYPE",
+        help=(
+            "filter to one SPEC event type ("
+            + "|".join(EVENT_TYPES)
+            + "); applied before --tail"
+        ),
+    )
+    c.add_argument(
+        "--json",
+        action="store_true",
+        default=False,
+        help="print a JSON array (not NDJSON); omit human text",
+    )
+    c.set_defaults(func=cmd_events)
+
     c = sub.add_parser("wait", help="poll until a state is reached")
     c.add_argument("--state", default="terminal", choices=list(WAIT_CHOICES))
     c.add_argument("--timeout", type=float, default=WAIT_DEFAULT_TIMEOUT)
@@ -212,12 +253,40 @@ def _parse_meta(entries: Sequence[str]) -> dict[str, Any]:
     return meta
 
 
+def _nonneg_int(value: str) -> int:
+    """argparse type: int >= 0 (0 = all for --tail)."""
+    try:
+        parsed = int(value, 10)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"invalid int: {value!r}") from exc
+    if parsed < 0:
+        raise argparse.ArgumentTypeError("must be >= 0 (0 = all)")
+    return parsed
+
+
 def _one_line(status: dict[str, Any]) -> str:
     return (
         f"{status.get('state')} "
         f"{status.get('stage_name') or '-'} "
         f"(attempt {status.get('attempt')})"
     )
+
+
+def _one_line_event(event: dict[str, Any]) -> str:
+    """Human one-liner: ts, type, state, stage, message (newest-last list)."""
+    ts = str(event.get("ts") or "-")
+    etype = str(event.get("type") or "-")
+    state = str(event.get("state") or "-")
+    name = str(event.get("stage_name") or "-")
+    message = event.get("message")
+    if message is None:
+        msg = ""
+    else:
+        msg = str(message).replace("\n", " ").replace("\r", " ")
+    line = f"{ts}  {etype:<14}  {state:<8}  {name}"
+    if msg:
+        line = f"{line}  {msg}"
+    return line
 
 
 def _status_reason(status: Optional[dict[str, Any]]) -> Optional[str]:
@@ -339,6 +408,20 @@ def cmd_fail(args: argparse.Namespace) -> int:
     )
     print(f"failed {_one_line(st)}: {args.reason}")
     return 0
+
+
+def cmd_events(args: argparse.Namespace) -> int:
+    tail = args.tail
+    events = _stage(args).events(
+        tail=None if tail == 0 else tail,
+        type=args.type,
+    )
+    if args.json:
+        print(json.dumps(events, indent=2))
+    else:
+        for event in events:
+            print(_one_line_event(event))
+    return EXIT_OK
 
 
 def cmd_status(args: argparse.Namespace) -> int:

@@ -24,7 +24,7 @@
 3. **The remaining niche is real:** a tiny, harness-agnostic **stage lifecycle
    contract** for *external* watchdogs that poll without watching a TUI:
    - States: `queued | running | done | blocked | failed`
-   - CLI: `init / start / heartbeat / note / artifact / done / blocked / fail / status / wait / clear-terminal / doctor`
+   - CLI: `init / start / heartbeat / note / artifact / done / blocked / fail / status / events / wait / clear-terminal / doctor`
    - Stable exit codes for shell (`0,1,2,3,10,11,12,13,14,15`)
    - Filesystem is the API: `STATUS.json` + append-only `events.jsonl`
 

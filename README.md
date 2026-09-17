@@ -92,6 +92,11 @@ stage-signal wait --json --state terminal --timeout 900
 stage-signal clear-terminal
 # one-shot fail when doctor/status would set needs_reclaim (DEAD_PID or STALE):
 stage-signal fail --reason "reclaim" --if-needs-reclaim
+# audit the reclaim (do not scrape events.jsonl with tail/jq):
+stage-signal events --tail 20 --type failed
+# reset to idle queued, then confirm the clear_terminal event:
+stage-signal clear-terminal
+stage-signal events --tail 5 --type clear_terminal
 # check directory health and inspect structured warnings (STALE_HEARTBEAT, DEAD_PID):
 stage-signal doctor --json
 # or exit 10 when reclaim is needed (dead PID or stale heartbeat) without requiring jq:
@@ -131,7 +136,7 @@ with exit 3 and no mutation (outside `running`, normal fail rules apply). Doctor
 
 To reclaim whenever `needs_reclaim` would be true (DEAD_PID **or** STALE_HEARTBEAT, same detection as `doctor` / `status` / `Stage.diagnose()`), use `fail --reason TEXT --if-needs-reclaim`. That one-shot gate writes `failed` + reason only when reclaim is needed; healthy running and non-running states exit 3 with no mutation. `--if-dead-pid` and `--if-needs-reclaim` are mutually exclusive.
 
-`clear-terminal` resets `done`/`blocked`/`failed` **and** stuck `queued` (named or idle) back to idle queued, appending a `clear_terminal` event. From `running` it stays illegal — reclaim with `fail --if-needs-reclaim` or `fail --if-dead-pid` first.
+`clear-terminal` resets `done`/`blocked`/`failed` **and** stuck `queued` (named or idle) back to idle queued, appending a `clear_terminal` event. From `running` it stays illegal — reclaim with `fail --if-needs-reclaim` or `fail --if-dead-pid` first. After either mutation, `stage-signal events [--tail N] [--type TYPE] [--json]` is the first-class audit path (human default newest-last, last 20; `--tail 0` = all; `--json` is a JSON array). Do not scrape `events.jsonl` with `tail`/`jq`.
 
 `start --meta` is repeatable and accepts two forms per entry (merged in
 order, later wins):
@@ -180,7 +185,7 @@ Orchestrator loops need to differentiate between an active pending stage and an 
 - **Handling failures:** When an agent reports `fail`, orchestrators have two clean SPEC-compatible choices:
   - `stage-signal clear-terminal` to clear stage identity back to a true idle `queued -` state.
   - `stage-signal done --accept-failure --summary "accepted: ..."` to transition a failed stage to `done` with `"accepted_failure": true` recorded in `result`, without inventing a fake success.
-- **Stuck running:** When `status --json` / `doctor --json` reports `needs_reclaim: true`, `stage-signal fail --reason "..." --if-needs-reclaim` writes `failed` for both `DEAD_PID` and `STALE_HEARTBEAT`. Use `--if-dead-pid` only when the PID is confirmed dead.
+- **Stuck running:** When `status --json` / `doctor --json` reports `needs_reclaim: true`, `stage-signal fail --reason "..." --if-needs-reclaim` writes `failed` for both `DEAD_PID` and `STALE_HEARTBEAT`. Use `--if-dead-pid` only when the PID is confirmed dead. Audit with `stage-signal events --type failed` (then `clear-terminal` + `events --type clear_terminal` if returning to idle).
 
 
 ### GitHub Action: wait without a venv

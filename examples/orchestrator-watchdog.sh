@@ -4,7 +4,10 @@
 # The orchestrator never scrapes agent output. It only reads:
 #   stage-signal status --json
 #   stage-signal wait --state WANT --timeout SEC
+#   stage-signal events [--tail N] [--type TYPE] [--json]
 # then decides what to do next (enqueue the next stage, alert, stop).
+# After fail --if-needs-reclaim / clear-terminal, audit via `events`
+# (do not scrape events.jsonl with tail/jq).
 #
 # Usage:
 #   ./examples/orchestrator-watchdog.sh [--dir PATH] [--state WANT] [--timeout SEC] [--poll SEC] [--once]
@@ -151,6 +154,8 @@ else:
   echo "orchestrator-watchdog: DEAD_PID warning for pid $pid; reclaiming via guarded fail" >&2
   if ST fail --reason "reclaimed by orchestrator-watchdog: claiming pid $pid is dead (DEAD_PID)" --if-dead-pid; then
     echo "orchestrator-watchdog: stage reclaimed as failed" >&2
+    # First-class audit (newest last). Do not scrape events.jsonl.
+    ST events --tail 20 --type failed >&2 || true
     return 12
   else
     rc=$?

@@ -18,6 +18,7 @@ from .constants import (
     ENV_STATUS_MIRROR,
     ENV_PROJECT,
     ENV_PROOF_REF,
+    EVENT_TYPES,
     MAX_NOTES,
     SCHEMA_VERSION,
     STATE_BLOCKED,
@@ -593,10 +594,35 @@ class Stage:
             _, status["needs_reclaim"] = _reclaim_diagnostics(status)
             return _attach_heartbeat_age(status)
 
-    def events(self) -> list[dict[str, Any]]:
-        """Read all events."""
+    def events(
+        self,
+        *,
+        tail: Optional[int] = None,
+        type: Optional[str] = None,
+    ) -> list[dict[str, Any]]:
+        """Read events.jsonl (shared lock). Chronological, newest last.
+
+        *type* filters to one SPEC event type. *tail* keeps the last N
+        matching events (``None`` or ``0`` = all). Filter is applied
+        before tail, so ``type="failed", tail=5`` is the last 5 failed
+        events.
+        """
+        if type is not None and type not in EVENT_TYPES:
+            raise BadArgsError(
+                f"invalid event type {type!r} "
+                f"(choose from {'|'.join(EVENT_TYPES)})"
+            )
+        if tail is not None and (
+            not isinstance(tail, int) or isinstance(tail, bool) or tail < 0
+        ):
+            raise BadArgsError("events tail must be an int >= 0 (0 = all)")
         with self._store.locked(exclusive=False):
-            return self._store.read_events()
+            events = self._store.read_events()
+        if type is not None:
+            events = [event for event in events if event.get("type") == type]
+        if tail:
+            events = events[-tail:]
+        return copy.deepcopy(events)
 
     def wait(
         self,

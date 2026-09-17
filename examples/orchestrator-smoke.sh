@@ -44,6 +44,9 @@ ST clear-terminal >/dev/null || fail "clear-terminal"
 [ "$(STATE_OF)" = "queued" ] || fail "expected queued after clear-terminal"
 pass "clear-terminal -> queued"
 
+ST events --json --type clear_terminal --tail 1 >/dev/null || fail "events after clear-terminal"
+pass "events --json --type clear_terminal"
+
 ST start --stage demo2 --session test --pid $$ >/dev/null || fail "start demo2"
 ST blocked --reason "external dependency unavailable" >/dev/null || fail "blocked"
 [ "$(STATE_OF)" = "blocked" ] || fail "expected blocked after blocked"
