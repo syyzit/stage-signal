@@ -6,9 +6,14 @@ See `docs/RELEASE.md` for the release procedure.
 
 ## [Unreleased]
 
+- Froze `STATUS.json` `result`/`error` object required keys in SPEC §13.9 via
+  exported `RESULT_KEYS` / `ERROR_KEYS` / `ERROR_KINDS`, with regression coverage
+  for `done` / `blocked` / `fail` / `done --accept-failure` on disk and
+  `status --json`, null validity, and additive tolerance (#113).
 - Froze STATUS proof object required keys (`PROOF_KEYS`) and canonical `verified`
   enum values (`PROOF_VERIFIED_VALUES`) in SPEC §13.10, guaranteeing additive-only
   proof contracts across proof-ref-only and `--require-proof` paths (#114).
+
 - Froze STATUS artifact/note entry keys in SPEC §13.7 via exported
   `ARTIFACT_ENTRY_KEYS` / `NOTE_ENTRY_KEYS`, with on-disk and `status --json`
   regression coverage for required keys, null labels, and additive fields (#109).

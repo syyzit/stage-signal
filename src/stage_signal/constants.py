@@ -127,6 +127,9 @@ STATUS_REQUIRED_KEYS = (
 
 ARTIFACT_ENTRY_KEYS = ("path", "label", "added_at")
 NOTE_ENTRY_KEYS = ("text", "added_at")
+RESULT_KEYS = ("summary", "git_head", "finished_at")
+ERROR_KEYS = ("reason", "kind", "finished_at")
+ERROR_KINDS = (STATE_BLOCKED, STATE_FAILED)
 
 PROOF_KEYS = ("tool", "ref", "verified")
 PROOF_REQUIRED_KEYS = PROOF_KEYS

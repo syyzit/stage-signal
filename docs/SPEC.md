@@ -732,6 +732,34 @@ The canonical warning code set is frozen in `WARNING_CODES`:
 
 The single source of truth for the warning codes is `WARNING_CODES` in `stage_signal.constants`, also exported from `stage_signal`. The individual `WARNING_CODE_*` constants remain exported as aliases. Orchestrators may stably branch on `warnings[].code` matching one of these identifiers.
 
+### 13.9 result/error object keys freeze (`RESULT_KEYS`, `ERROR_KEYS`, `ERROR_KINDS`)
+When the top-level `result` field is non-null (set by `done`), it MUST include all three required keys:
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `summary` | str | Human-readable completion summary. |
+| `git_head` | str\|null | Git head at completion; the key MUST be present even when `null`. |
+| `finished_at` | ISO8601 | Timestamp when the terminal transition was recorded. |
+
+When `done` is invoked with `--accept-failure`, the result additionally records `"accepted_failure": true`. This key is **optional additive**: it MUST NOT appear on a plain `done`, and readers MUST tolerate it plus any other unknown additional keys.
+
+When the top-level `error` field is non-null (set by `blocked` or `fail`), it MUST include all three required keys:
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `reason` | str | Human-readable blocked/failure reason. |
+| `kind` | enum | One of the frozen `ERROR_KINDS`: `blocked` or `failed`. |
+| `finished_at` | ISO8601 | Timestamp when the terminal transition was recorded. |
+
+A `null` `result` and/or `error` remains valid in every state (e.g. `running`, `queued`, and `blocked`/`failed` carry `result: null`; `done` carries `error: null`).
+
+The single sources of truth for these required key sets are
+`RESULT_KEYS = ("summary", "git_head", "finished_at")`,
+`ERROR_KEYS = ("reason", "kind", "finished_at")`, and
+`ERROR_KINDS = ("blocked", "failed")` in `stage_signal.constants`, also
+exported from `stage_signal`.
+Under `schema_version: 1`, result/error object evolution is **additive-only** (§13.1): these keys MUST NOT be removed, renamed, or change semantic meaning. Readers MUST tolerate unknown additional keys on non-null `result`/`error` objects.
+
 ### 13.10 Proof object keys and verified enum freeze (`PROOF_KEYS`, `PROOF_VERIFIED_VALUES`)
 When `proof` is non-null in `STATUS.json` or in the output of `status --json` / `Stage.status()`, it MUST be an object including all required keys below. `proof: null` remains valid when no proof reference was recorded.
 
