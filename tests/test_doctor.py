@@ -647,3 +647,94 @@ def test_doctor_healthy_running_vs_stale_vs_dead_pid(sdir: Path, capsys: pytest.
     assert data["state"] == "running"
     assert data["summary"] == "ATTENTION: running needs reclaim"
     assert any(w["code"] == "DEAD_PID" for w in data["warnings"])
+
+
+@pytest.mark.parametrize("state", ["running", "done", "failed", "queued", "blocked"])
+@pytest.mark.parametrize(
+    "heartbeat,pid_alive,codes",
+    [
+        ("fresh", True, set()),
+        ("stale", True, {"STALE_HEARTBEAT"}),
+        ("fresh", False, {"DEAD_PID"}),
+        ("stale", False, {"STALE_HEARTBEAT", "DEAD_PID"}),
+        (None, True, {"STALE_HEARTBEAT"}),
+        ("invalid", True, {"UNPARSEABLE_HEARTBEAT"}),
+        ("fresh", None, set()),
+    ],
+)
+def test_needs_reclaim_state_matrix(
+    sdir: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch,
+    state: str, heartbeat: str | None, pid_alive: bool | None, codes: set[str],
+) -> None:
+    stage = Stage(sdir)
+    stage.start(stage="reclaim", pid=os.getpid())
+    monkeypatch.setattr("stage_signal.stage._is_pid_alive", lambda pid: pid_alive)
+    status_file = sdir / "STATUS.json"
+    raw = json.loads(status_file.read_text())
+    raw["state"] = state
+    if heartbeat == "stale":
+        raw["heartbeat_at"] = (datetime.now(timezone.utc) - timedelta(seconds=600)).isoformat()
+    elif heartbeat != "fresh":
+        raw["heartbeat_at"] = heartbeat
+    status_file.write_text(json.dumps(raw))
+    before = status_file.read_bytes()
+    capsys.readouterr()
+    expected_codes = codes if state == "running" else set()
+    expected_reclaim = bool(expected_codes & {"STALE_HEARTBEAT", "DEAD_PID"})
+
+    diag = stage.diagnose()
+    assert main(["doctor", "--json"]) == 0
+    data = json.loads(capsys.readouterr().out)
+    for result in (diag, data):
+        assert result["needs_reclaim"] is expected_reclaim
+        assert result["ok"] is True
+        assert result["state"] == state
+        assert {w["code"] for w in result["warnings"]} == expected_codes
+    assert status_file.read_bytes() == before
+    assert stage.diagnose(stale_after=None)["needs_reclaim"] is (
+        state == "running" and pid_alive is False
+    )
+    assert stage.diagnose(stale_after=3600)["needs_reclaim"] is (
+        state == "running" and (pid_alive is False or heartbeat is None)
+    )
+
+
+@pytest.mark.parametrize("problem", ["missing_dir", "missing_status", "corrupt_status"])
+def test_needs_reclaim_without_status(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], problem: str,
+) -> None:
+    d = tmp_path / "unhealthy"
+    if problem != "missing_dir":
+        d.mkdir()
+    if problem == "corrupt_status":
+        (d / "STATUS.json").write_text("{corrupt json")
+    diag = Stage(d).diagnose()
+    assert main(["--dir", str(d), "doctor", "--json"]) == 1
+    data = json.loads(capsys.readouterr().out)
+    for result in (diag, data):
+        assert result["needs_reclaim"] is False
+        assert result["ok"] is False
+        assert result["problems"]
+        assert result["warnings"] == []
+        assert result["status"] is None
+
+
+@pytest.mark.parametrize("pid_alive", [True, False])
+def test_needs_reclaim_independent_of_problems(
+    sdir: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch,
+    pid_alive: bool,
+) -> None:
+    stage = Stage(sdir)
+    stage.start(stage="reclaim", pid=os.getpid())
+    monkeypatch.setattr("stage_signal.stage._is_pid_alive", lambda pid: pid_alive)
+    (sdir / "events.jsonl").write_text("{corrupt json\n")
+    capsys.readouterr()
+
+    diag = stage.diagnose()
+    assert main(["doctor", "--json"]) == 1
+    data = json.loads(capsys.readouterr().out)
+    for result in (diag, data):
+        assert result["needs_reclaim"] is (not pid_alive)
+        assert result["ok"] is False
+        assert result["problems"]
+        assert result["summary"] is None
