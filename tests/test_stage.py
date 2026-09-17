@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -17,6 +18,7 @@ from stage_signal import (
     Stage,
     WaitTimeout,
     state_exit_code,
+    verify_proof,
 )
 
 
@@ -208,14 +210,91 @@ def test_require_proof_delegates_to_binary(
     tmp_path: Path, stage: Stage, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.delenv("STAGE_SIGNAL_PROOF_REF", raising=False)
-    fake = tmp_path / "bin" / "agent-done-or-not"
-    fake.parent.mkdir(parents=True)
-    fake.write_text("#!/bin/sh\nexit 0\n")
-    fake.chmod(0o755)
-    monkeypatch.setenv("PATH", str(fake.parent) + os.pathsep + os.environ["PATH"])
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    fake_sh = bin_dir / "agent-done-or-not"
+    fake_sh.write_text("#!/bin/sh\nexit 0\n")
+    try:
+        fake_sh.chmod(0o755)
+    except OSError:
+        pass
+    fake_cmd = bin_dir / "agent-done-or-not.cmd"
+    fake_cmd.write_text("@echo off\nexit /b 0\n")
+    monkeypatch.setenv("PATH", str(bin_dir) + os.pathsep + os.environ["PATH"])
     stage.start(stage="m")
     st = stage.done(summary="ok", proof_ref="some-ref", require_proof=True)
     assert st["proof"]["verified"] == "verify"
+
+
+def test_require_proof_delegates_to_binary_failure(
+    tmp_path: Path, stage: Stage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("STAGE_SIGNAL_PROOF_REF", raising=False)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    fake_sh = bin_dir / "agent-done-or-not"
+    fake_sh.write_text("#!/bin/sh\necho 'rejection reason' >&2\nexit 1\n")
+    try:
+        fake_sh.chmod(0o755)
+    except OSError:
+        pass
+    fake_cmd = bin_dir / "agent-done-or-not.cmd"
+    fake_cmd.write_text("@echo rejection reason 1>&2\n@exit /b 1\n")
+    monkeypatch.setenv("PATH", str(bin_dir) + os.pathsep + os.environ["PATH"])
+    stage.start(stage="m")
+    with pytest.raises(IllegalTransition, match="agent-done-or-not verify exited 1: rejection reason"):
+        stage.done(summary="ok", proof_ref="some-ref", require_proof=True)
+
+
+def test_verify_proof_windows_cmd_delegation(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("STAGE_SIGNAL_PROOF_REF", raising=False)
+    monkeypatch.setattr("stage_signal.stage.sys.platform", "win32")
+    monkeypatch.setattr(
+        "shutil.which",
+        lambda cmd: r"C:\tools\agent-done-or-not.cmd" if cmd == "agent-done-or-not" else None,
+    )
+    monkeypatch.setenv("COMSPEC", r"C:\Windows\System32\cmd.exe")
+    called_cmd: list[list[str]] = []
+
+    class FakeProc:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    def fake_run(cmd, capture_output, text, timeout):
+        called_cmd.append(cmd)
+        return FakeProc()
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+    res = verify_proof("ref-123")
+    assert res == {"tool": "agent-done-or-not", "ref": "ref-123", "verified": "verify"}
+    assert called_cmd == [
+        [r"C:\Windows\System32\cmd.exe", "/c", r"C:\tools\agent-done-or-not.cmd", "verify", "--ref", "ref-123"]
+    ]
+
+
+def test_verify_proof_windows_exe_delegation(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("STAGE_SIGNAL_PROOF_REF", raising=False)
+    monkeypatch.setattr("stage_signal.stage.sys.platform", "win32")
+    monkeypatch.setattr(
+        "shutil.which",
+        lambda cmd: r"C:\tools\agent-done-or-not.exe" if cmd == "agent-done-or-not" else None,
+    )
+    called_cmd: list[list[str]] = []
+
+    class FakeProc:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    def fake_run(cmd, capture_output, text, timeout):
+        called_cmd.append(cmd)
+        return FakeProc()
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+    res = verify_proof("ref-123")
+    assert res == {"tool": "agent-done-or-not", "ref": "ref-123", "verified": "verify"}
+    assert called_cmd == [[r"C:\tools\agent-done-or-not.exe", "verify", "--ref", "ref-123"]]
 
 
 def test_events_appended(stage: Stage, stage_dir: Path) -> None:

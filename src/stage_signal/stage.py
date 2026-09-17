@@ -76,9 +76,13 @@ def verify_proof(ref: Optional[str] = None) -> dict[str, Any]:
         raise IllegalTransition(f"proof gate failed: file {ref!r} is empty/unreadable")
     binary = shutil.which("agent-done-or-not")
     if binary is not None:
+        cmd = [binary, "verify", "--ref", ref]
+        if sys.platform == "win32" and binary.lower().endswith((".cmd", ".bat")):
+            comspec = os.environ.get("COMSPEC") or os.environ.get("ComSpec") or "cmd.exe"
+            cmd = [comspec, "/c"] + cmd
         try:
             proc = subprocess.run(
-                [binary, "verify", "--ref", ref],
+                cmd,
                 capture_output=True,
                 text=True,
                 timeout=120,
