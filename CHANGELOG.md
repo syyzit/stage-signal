@@ -6,16 +6,34 @@ See `docs/RELEASE.md` for the release procedure.
 
 ## [Unreleased]
 
+## [0.1.3] — 2026-09-17
+
 - Reset `clear-terminal` to true idle `queued` state by clearing stage identity
   (`stage_name` and `stage_id` set to `null`), preventing cleared failed stages
-  from appearing as unfinished pending work in orchestrators and `doctor` (#26).
+  from appearing as unfinished pending work in orchestrators and `doctor` (#26, #27).
 - Added optional `--keep-stage` flag to `clear-terminal` for workflows needing to
-  re-queue the previous stage identity without starting it immediately (#26).
+  re-queue the previous stage identity without starting it immediately (#26, #27).
 - Added `--accept-failure` flag to `done`, permitting orchestrators to transition
   a `failed` stage to `done` while recording `"accepted_failure": true` in `result`
-  without inventing fake success (#26).
+  without inventing fake success (#26, #27).
 - Documented orchestrator idle vs queued semantics and failure handling paths
-  in `docs/SPEC.md`, `README.md`, and `examples/cli-orchestrator-loop.md` (#26).
+  in `docs/SPEC.md`, `README.md`, and `examples/cli-orchestrator-loop.md` (#26, #27).
+- Added `pytest-timeout>=2.3.0` to dev dependencies and configured a per-test
+  timeout on Windows CI (`PYTEST_TIMEOUT="60"`) in `.github/workflows/ci.yml` and
+  `tests/conftest.py` so test hangs trigger an informative stack dump naming the
+  offending test instead of an undifferentiated CI hang (#28, #29).
+- Fixed Windows CI `KeyboardInterrupt` during test runs by stopping `os.kill(pid, 0)`
+  self-probe on Windows, where CPython maps signal 0 to `GenerateConsoleCtrlEvent`
+  which queued an asynchronous interrupt that surfaced in subsequent threading locks (#25, #30).
+- Fixed Windows test harness `PermissionError` when reading lockfile byte 0 under an
+  active `msvcrt` exclusive byte lock (#31, #34).
+- Added cross-platform `.cmd` stubbing for proof verification tests and explicit
+  `cmd.exe /c` execution in `src/stage_signal/stage.py` when `agent-done-or-not` is
+  resolved to a `.cmd` or `.bat` file on Windows `PATH` (#32, #33).
+- Serialized same-process threads in `StageStore.locked()`, moved git repository detection
+  outside file lock acquisition to avoid Windows lock contention, and rewritten
+  Windows-safe composite action wait test harness (#20).
+- Defaulted `doctor` stale-heartbeat threshold to 300s (5m) for agent workflows (#18, #21).
 
 ## [0.1.2] — 2026-09-16
 
@@ -69,7 +87,8 @@ GitHub release and tag: [`v0.1.0`](https://github.com/syyzit/stage-signal/releas
 - Stdlib only, Python `>=3.11`. Entry point `stage-signal`
   (`python -m stage_signal` alias).
 
-[Unreleased]: https://github.com/syyzit/stage-signal/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/syyzit/stage-signal/compare/v0.1.3...HEAD
+[0.1.3]: https://github.com/syyzit/stage-signal/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/syyzit/stage-signal/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/syyzit/stage-signal/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/syyzit/stage-signal/releases/tag/v0.1.0
