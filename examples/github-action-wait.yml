@@ -12,12 +12,12 @@ jobs:
       - name: Wait for an existing stage
         id: wait
         continue-on-error: true
-        uses: syyzit/stage-signal@v0.1.4
+        uses: syyzit/stage-signal@v0.1.5
         with:
           dir: .stage-signal
           state: terminal
           timeout: 3600
-          version: "0.1.4"
+          version: "0.1.5"
       - name: Branch on wait outcome
         run: |
           echo "outcome=${{ steps.wait.outputs.outcome }}"

@@ -179,14 +179,14 @@ No preinstalled venv needed — the composite action installs `stage-signal`
 from PyPI then runs `stage-signal wait`:
 
 ```yaml
-- uses: syyzit/stage-signal@v0.1.4
+- uses: syyzit/stage-signal@v0.1.5
   with:
     dir: .stage-signal   # default
     state: terminal      # done | blocked | failed | terminal (default)
     timeout: 3600        # seconds (default)
     # poll: 5.0          # poll interval in seconds (default: CLI default 5.0)
     # python-version: "3.12"  # default
-    # version: "0.1.4"        # optional version pin (default: unpinned/latest)
+    # version: "0.1.5"        # optional version pin (default: unpinned/latest)
     # pip-cache: true         # optional boolean for pip caching (default: false)
     # cache: "pip"            # optional setup-python cache (default: "")
 ```
@@ -206,7 +206,7 @@ Because non-zero exit codes (11 blocked, 12 failed, 14 timeout) fail the step by
 ```yaml
 - name: Wait for milestone
   id: wait
-  uses: syyzit/stage-signal@v0.1.4
+  uses: syyzit/stage-signal@v0.1.5
   continue-on-error: true
   with:
     state: done
@@ -226,7 +226,7 @@ Because non-zero exit codes (11 blocked, 12 failed, 14 timeout) fail the step by
   run: exit ${{ steps.wait.outputs.exit-code }}
 ```
 
-See [`examples/github-action-wait.yml`](examples/github-action-wait.yml) for a complete copyable workflow that waits on an existing `.stage-signal/` directory. The composite action's steps use `shell: bash` (available on GitHub-hosted Ubuntu, macOS, and Windows runners). Pin the action ref (`@v0.1.4`) independently from the optional `version` input (PyPI package pin).
+See [`examples/github-action-wait.yml`](examples/github-action-wait.yml) for a complete copyable workflow that waits on an existing `.stage-signal/` directory. The composite action's steps use `shell: bash` (available on GitHub-hosted Ubuntu, macOS, and Windows runners). Pin the action ref (`@v0.1.5`) independently from the optional `version` input (PyPI package pin).
 
 For distinguishable blocked/failed/timeout in CI without log scraping, use the action `outputs` (see above) with `continue-on-error` on the wait step when you need downstream `if:` branches.
 
@@ -273,7 +273,7 @@ Agent UIs and chat transcripts are for humans. Orchestrators need a stable, bori
 
 ## Status
 
-0.1.4: library (`src/stage_signal/`), full CLI (`init`, `start`,
+0.1.5: library (`src/stage_signal/`), full CLI (`init`, `start`,
 `heartbeat`, `note`, `artifact`, `done`, `blocked`, `fail`, `status`,
 `wait`, `clear-terminal`, `doctor`), unit + concurrency tests,
 `examples/orchestrator-watchdog.sh` (+ `examples/orchestrator-smoke.sh`),

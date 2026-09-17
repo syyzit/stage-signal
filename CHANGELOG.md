@@ -6,6 +6,14 @@ See `docs/RELEASE.md` for the release procedure.
 
 ## [Unreleased]
 
+## [0.1.5] — 2026-09-17
+
+- Updated `stage-signal doctor` to report `ATTENTION: running needs reclaim` instead of
+  `OK: running` when `DEAD_PID` or `STALE_HEARTBEAT` warnings apply to a running stage,
+  and added a machine-readable `summary` field to `doctor --json` output and `Stage.diagnose()` (#57, #58).
+- Omitted heartbeat elapsed age (`(age <Ns>)` in human `stage-signal status`, and
+  `heartbeat_age_seconds` in `status --json`) when the stage is not in `running` state (#54, #59).
+
 ## [0.1.4] — 2026-09-17
 
 - Added explicit `DEAD_PID` recovery hint (`reclaim with 'fail --reason TEXT --if-dead-pid'`)
@@ -101,7 +109,8 @@ GitHub release and tag: [`v0.1.0`](https://github.com/syyzit/stage-signal/releas
 - Stdlib only, Python `>=3.11`. Entry point `stage-signal`
   (`python -m stage_signal` alias).
 
-[Unreleased]: https://github.com/syyzit/stage-signal/compare/v0.1.4...HEAD
+[Unreleased]: https://github.com/syyzit/stage-signal/compare/v0.1.5...HEAD
+[0.1.5]: https://github.com/syyzit/stage-signal/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/syyzit/stage-signal/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/syyzit/stage-signal/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/syyzit/stage-signal/compare/v0.1.1...v0.1.2
