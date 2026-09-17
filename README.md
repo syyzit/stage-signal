@@ -199,6 +199,7 @@ from PyPI then runs `stage-signal wait`:
   with:
     dir: .stage-signal   # default
     state: terminal      # done | blocked | failed | terminal (default)
+    # needs-reclaim: true # alternate wait target: poll until DEAD_PID or STALE_HEARTBEAT
     timeout: 3600        # seconds (default)
     # poll: 5.0          # poll interval in seconds (default: CLI default 5.0)
     # python-version: "3.12"  # default
@@ -210,15 +211,16 @@ from PyPI then runs `stage-signal wait`:
 The action exposes step outputs so downstream steps can branch without log scraping:
 - `state` / `observed-state`: observed state (`done`, `blocked`, `failed`, `running`, etc.)
 - `outcome`: `met`, `mismatch`, `timeout`, or `error`
-- `exit-code` / `exit_code`: numeric wait exit code (`0`, `11`, `12`, `14`, `15`)
+- `exit-code` / `exit_code`: numeric wait exit code (`0`, `1` done-without-reclaim, `11`, `12`, `14`, `15`)
 - `timed-out` / `timed_out`: `"true"` or `"false"`
 - `stage-id` / `stage_id`: stage identifier if present in status
 - `reason`: short blocked/failed reason or timeout message (empty otherwise)
+- `needs-reclaim` / `needs_reclaim`: `"true"` or `"false"` (whether `needs_reclaim` was observed)
 - `json`: raw machine-readable JSON emitted by `wait --json`
 
 #### Branching without scraping logs
 
-Because non-zero exit codes (11 blocked, 12 failed, 14 timeout) fail the step by default, use `continue-on-error: true` to inspect outputs in subsequent steps:
+Because non-zero exit codes (11 blocked, 12 failed, 14 timeout, 1 done-without-reclaim) fail the step by default, use `continue-on-error: true` to inspect outputs in subsequent steps:
 
 ```yaml
 - name: Wait for milestone
@@ -253,11 +255,45 @@ Because non-zero exit codes (11 blocked, 12 failed, 14 timeout) fail the step by
     exit 1
 ```
 
-See [`examples/github-action-wait.yml`](examples/github-action-wait.yml) for a complete copyable workflow that waits on an existing `.stage-signal/` directory and branches on `done` / `blocked` / `failed` / `timeout`. The composite action's steps use `shell: bash` (available on GitHub-hosted Ubuntu, macOS, and Windows runners). Pin the action ref (`@v0.1.6`) independently from the optional `version` input (PyPI package pin). Waiting for `terminal` with `continue-on-error: true` keeps 11/12/14 from collapsing into a generic failed step so later `if:` branches can read `state` / `timed-out` / `reason`.
+#### CI reclaim gate: wait --needs-reclaim
 
-For distinguishable blocked/failed/timeout in CI without log scraping, use the action `outputs` (see above) with `continue-on-error` on the wait step when you need downstream `if:` branches.
+In CI watchdogs, gate on the reclaim condition without writing cron/sleep loops by setting `needs-reclaim: true`. This runs `stage-signal wait --needs-reclaim --json`, polling until `needs_reclaim` is true (`DEAD_PID` or `STALE_HEARTBEAT`). Terminal states without reclaim fail closed (`done` → 1, `blocked` → 11, `failed` → 12) so downstream `if:` branches can distinguish reclaim needed from timeout or clean task completion:
 
-Exit codes are the `wait` contract: `0` condition met, `11` blocked,
+```yaml
+- name: Wait for reclaim signal
+  id: wait
+  uses: syyzit/stage-signal@v0.1.6
+  continue-on-error: true
+  with:
+    needs-reclaim: true
+    timeout: 900
+    poll: 5
+
+# Branch 1: Reclaim needed (outcome == 'met', needs-reclaim == 'true', exit-code 0)
+- name: Reclaim needed
+  if: steps.wait.outputs.needs-reclaim == 'true'
+  run: |
+    echo "Reclaim needed: stage_id=${{ steps.wait.outputs.stage-id }}"
+    # Fail the stage under the mutation lock, then trigger alerts or restart:
+    # stage-signal --dir .stage-signal fail --reason "CI watchdog reclaim" --if-needs-reclaim
+
+# Branch 2: Watchdog wait timed out (exit-code 14)
+- name: Timed out
+  if: steps.wait.outputs.timed-out == 'true'
+  run: echo "Watchdog timed out without reclaim: ${{ steps.wait.outputs.reason }}"
+
+# Branch 3: Terminal reached without reclaim (outcome == 'mismatch': done -> 1, blocked -> 11, failed -> 12)
+- name: Terminal without reclaim
+  if: steps.wait.outputs.outcome == 'mismatch'
+  run: |
+    echo "Stage reached terminal state without reclaim: state=${{ steps.wait.outputs.state }} exit_code=${{ steps.wait.outputs.exit-code }}"
+```
+
+See [`examples/github-action-wait.yml`](examples/github-action-wait.yml) and [`examples/github-action-wait-reclaim.yml`](examples/github-action-wait-reclaim.yml) for complete copyable workflows that wait on an existing `.stage-signal/` directory and branch on `done` / `blocked` / `failed` / `timeout` / `reclaim-needed`. The composite action's steps use `shell: bash` (available on GitHub-hosted Ubuntu, macOS, and Windows runners). Pin the action ref (`@v0.1.6`) independently from the optional `version` input (PyPI package pin). Waiting for `terminal` or `--needs-reclaim` with `continue-on-error: true` keeps 11/12/14/1 from collapsing into a generic failed step so later `if:` branches can read `state` / `timed-out` / `needs-reclaim` / `reason`.
+
+For distinguishable blocked/failed/timeout/reclaim in CI without log scraping, use the action `outputs` (see above) with `continue-on-error` on the wait step when you need downstream `if:` branches.
+
+Exit codes are the `wait` contract: `0` condition met, `1` done-without-reclaim (fail closed), `11` blocked,
 `12` failed, `14` timeout, `15` not initialized (`10` running,
 `13` queued, `1`/`2`/`3` errors). See `action.yml`.
 

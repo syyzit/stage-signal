@@ -30,6 +30,8 @@ def test_action_yml_declares_outputs_and_inputs() -> None:
     assert "stage-id:" in content
     assert "json:" in content
     assert "reason:" in content
+    assert "needs-reclaim:" in content
+    assert "needs_reclaim:" in content
     assert "poll:" in content
     assert "id: wait" in content
     assert "steps.wait.outputs.state" in content
@@ -37,6 +39,7 @@ def test_action_yml_declares_outputs_and_inputs() -> None:
     assert "steps.wait.outputs.exit-code" in content
     assert "steps.wait.outputs.timed-out" in content
     assert "steps.wait.outputs.reason" in content
+    assert "steps.wait.outputs.needs-reclaim" in content
 
 
 def _parse_github_output(path: Path) -> dict[str, str]:
@@ -72,6 +75,7 @@ def _run_action_wait_step(
     state: str = "terminal",
     timeout: str = "1",
     poll: str = "",
+    needs_reclaim: bool = False,
     force_no_json: bool = False,
 ) -> tuple[int, dict[str, str]]:
     """Run the wait contract without a bash subshell (Windows-safe)."""
@@ -93,7 +97,13 @@ def _run_action_wait_step(
         if exe is None:
             raise FileNotFoundError("stage-signal CLI not found on PATH or in .venv")
 
-        cmd = [exe, "--dir", str(stage_dir), "wait", "--state", state, "--timeout", timeout]
+        cmd = [exe, "--dir", str(stage_dir), "wait", "--timeout", timeout]
+        if needs_reclaim:
+            cmd.append("--needs-reclaim")
+            if state != "terminal":
+                cmd.extend(["--state", state])
+        else:
+            cmd.extend(["--state", state])
         if poll:
             cmd.extend(["--poll", poll])
 
@@ -126,6 +136,7 @@ def _run_action_wait_step(
         timed_out = "false"
         stage_id = ""
         reason = ""
+        needs_reclaim_val = "false"
 
         if raw_json.strip():
             try:
@@ -136,6 +147,8 @@ def _run_action_wait_step(
                 timed_out = "true" if data.get("timeout") else "false"
                 stage_id = str(data.get("stage_id") or "")
                 reason = str(data.get("reason") or "")
+                if data.get("needs_reclaim"):
+                    needs_reclaim_val = "true"
                 status = data.get("status") or {}
                 if isinstance(status, dict):
                     if not stage_id:
@@ -144,6 +157,8 @@ def _run_action_wait_step(
                         err = status.get("error") or {}
                         if isinstance(err, dict):
                             reason = str(err.get("reason") or "")
+                    if needs_reclaim_val == "false" and status.get("needs_reclaim"):
+                        needs_reclaim_val = "true"
             except Exception:
                 pass
 
@@ -158,8 +173,13 @@ def _run_action_wait_step(
                         err = st.get("error") or {}
                         if isinstance(err, dict):
                             reason = str(err.get("reason") or "")
+                    if needs_reclaim_val == "false" and st.get("needs_reclaim"):
+                        needs_reclaim_val = "true"
                 except Exception:
                     pass
+
+        if needs_reclaim and exit_code == 0:
+            needs_reclaim_val = "true"
 
         if not outcome:
             if exit_code == 0:
@@ -167,7 +187,7 @@ def _run_action_wait_step(
             elif exit_code == 14:
                 outcome = "timeout"
                 timed_out = "true"
-            elif exit_code in (11, 12):
+            elif exit_code in (11, 12, 13) or (exit_code == 1 and observed in ("done", "blocked", "failed", "queued")):
                 outcome = "mismatch"
             else:
                 outcome = "error"
@@ -192,6 +212,8 @@ def _run_action_wait_step(
             f.write(f"stage-id={stage_id}{nl}")
             f.write(f"stage_id={stage_id}{nl}")
             f.write(f"reason={reason}{nl}")
+            f.write(f"needs-reclaim={needs_reclaim_val}{nl}")
+            f.write(f"needs_reclaim={needs_reclaim_val}{nl}")
             if raw_json.strip():
                 delim = f"ghdel_{uuid.uuid4().hex}"
                 f.write(f"json<<{delim}{nl}{raw_json.strip()}{nl}{delim}{nl}")
@@ -214,6 +236,8 @@ def test_action_wait_met_done(tmp_path: Path) -> None:
     assert out["timed-out"] == "false"
     assert out["stage-id"] == "ci-123"
     assert out["reason"] == ""
+    assert out["needs-reclaim"] == "false"
+    assert out["needs_reclaim"] == "false"
     assert "tests passed" in out["json"]
 
 
@@ -231,6 +255,7 @@ def test_action_wait_mismatch_blocked(tmp_path: Path) -> None:
     assert out["timed-out"] == "false"
     assert out["stage-id"] == "rev-1"
     assert out["reason"] == "waiting for approval"
+    assert out["needs-reclaim"] == "false"
 
 
 def test_action_wait_mismatch_failed(tmp_path: Path) -> None:
@@ -247,6 +272,7 @@ def test_action_wait_mismatch_failed(tmp_path: Path) -> None:
     assert out["timed-out"] == "false"
     assert out["stage-id"] == "dep-2"
     assert out["reason"] == "out of memory"
+    assert out["needs-reclaim"] == "false"
 
 
 def test_action_wait_timeout(tmp_path: Path) -> None:
@@ -262,6 +288,7 @@ def test_action_wait_timeout(tmp_path: Path) -> None:
     assert out["timed-out"] == "true"
     assert out["stage-id"] == "long-1"
     assert "timed out" in out["reason"]
+    assert out["needs-reclaim"] == "false"
 
 
 def test_action_wait_fallback_no_json(tmp_path: Path) -> None:
@@ -278,6 +305,121 @@ def test_action_wait_fallback_no_json(tmp_path: Path) -> None:
     assert out["timed-out"] == "false"
     assert out["stage-id"] == "fb-1"
     assert out["reason"] == "need creds"
+    assert out["needs-reclaim"] == "false"
+
+
+def test_action_wait_needs_reclaim_met(tmp_path: Path) -> None:
+    d = tmp_path / ".stage-signal"
+    proc = subprocess.Popen([sys.executable, "-c", "pass"])
+    proc.wait(timeout=10)
+    assert main(["--dir", str(d), "init", "--project", "reclaim-ci"]) == 0
+    assert main(["--dir", str(d), "start", "--stage", "worker", "--stage-id", "w-1", "--pid", str(proc.pid)]) == 0
+
+    code, out = _run_action_wait_step(d, needs_reclaim=True, timeout="5", poll="0.05")
+    assert code == 0
+    assert out["outcome"] == "met"
+    assert out["state"] == "running"
+    assert out["observed-state"] == "running"
+    assert out["exit-code"] == "0"
+    assert out["timed-out"] == "false"
+    assert out["stage-id"] == "w-1"
+    assert out["needs-reclaim"] == "true"
+    assert out["needs_reclaim"] == "true"
+    assert out["reason"] == ""
+    assert "needs_reclaim" in out["json"]
+
+
+def test_action_wait_needs_reclaim_terminal_mismatch_done(tmp_path: Path) -> None:
+    d = tmp_path / ".stage-signal"
+    assert main(["--dir", str(d), "init"]) == 0
+    assert main(["--dir", str(d), "start", "--stage", "fast-job", "--stage-id", "fast-1"]) == 0
+    assert main(["--dir", str(d), "done", "--summary", "completed cleanly"]) == 0
+
+    code, out = _run_action_wait_step(d, needs_reclaim=True, timeout="2", poll="0.05")
+    # Fail closed: done without reclaim maps to exit code 1 (SPEC §6)
+    assert code == 1
+    assert out["outcome"] == "mismatch"
+    assert out["state"] == "done"
+    assert out["exit-code"] == "1"
+    assert out["timed-out"] == "false"
+    assert out["stage-id"] == "fast-1"
+    assert out["needs-reclaim"] == "false"
+    assert out["needs_reclaim"] == "false"
+
+
+def test_action_wait_needs_reclaim_terminal_mismatch_blocked(tmp_path: Path) -> None:
+    d = tmp_path / ".stage-signal"
+    assert main(["--dir", str(d), "init"]) == 0
+    assert main(["--dir", str(d), "start", "--stage", "gate", "--stage-id", "gate-1"]) == 0
+    assert main(["--dir", str(d), "blocked", "--reason", "needs human review"]) == 0
+
+    code, out = _run_action_wait_step(d, needs_reclaim=True, timeout="2", poll="0.05")
+    assert code == 11
+    assert out["outcome"] == "mismatch"
+    assert out["state"] == "blocked"
+    assert out["exit-code"] == "11"
+    assert out["timed-out"] == "false"
+    assert out["stage-id"] == "gate-1"
+    assert out["reason"] == "needs human review"
+    assert out["needs-reclaim"] == "false"
+
+
+def test_action_wait_needs_reclaim_terminal_mismatch_failed(tmp_path: Path) -> None:
+    d = tmp_path / ".stage-signal"
+    assert main(["--dir", str(d), "init"]) == 0
+    assert main(["--dir", str(d), "start", "--stage", "run", "--stage-id", "run-1"]) == 0
+    assert main(["--dir", str(d), "fail", "--reason", "disk full"]) == 0
+
+    code, out = _run_action_wait_step(d, needs_reclaim=True, timeout="2", poll="0.05")
+    assert code == 12
+    assert out["outcome"] == "mismatch"
+    assert out["state"] == "failed"
+    assert out["exit-code"] == "12"
+    assert out["timed-out"] == "false"
+    assert out["stage-id"] == "run-1"
+    assert out["reason"] == "disk full"
+    assert out["needs-reclaim"] == "false"
+
+
+def test_action_wait_needs_reclaim_timeout(tmp_path: Path) -> None:
+    d = tmp_path / ".stage-signal"
+    # Live process so it stays healthy running
+    proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(10)"])
+    try:
+        assert main(["--dir", str(d), "init"]) == 0
+        assert main(["--dir", str(d), "start", "--stage", "live-job", "--stage-id", "live-1", "--pid", str(proc.pid)]) == 0
+
+        code, out = _run_action_wait_step(d, needs_reclaim=True, timeout="0.2", poll="0.05")
+        assert code == 14
+        assert out["outcome"] == "timeout"
+        assert out["state"] == "running"
+        assert out["exit-code"] == "14"
+        assert out["timed-out"] == "true"
+        assert out["stage-id"] == "live-1"
+        assert out["needs-reclaim"] == "false"
+        assert "timed out" in out["reason"]
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except Exception:
+            pass
+
+
+def test_action_wait_needs_reclaim_fallback_no_json(tmp_path: Path) -> None:
+    d = tmp_path / ".stage-signal"
+    proc = subprocess.Popen([sys.executable, "-c", "pass"])
+    proc.wait(timeout=10)
+    assert main(["--dir", str(d), "init"]) == 0
+    assert main(["--dir", str(d), "start", "--stage", "fb-reclaim", "--stage-id", "fb-r", "--pid", str(proc.pid)]) == 0
+
+    code, out = _run_action_wait_step(d, needs_reclaim=True, timeout="5", poll="0.05", force_no_json=True)
+    assert code == 0
+    assert out["outcome"] == "met"
+    assert out["state"] == "running"
+    assert out["needs-reclaim"] == "true"
+    assert out["needs_reclaim"] == "true"
+    assert out["exit-code"] == "0"
 
 
 def test_example_workflow_branches_on_ci_outcomes() -> None:
@@ -290,4 +432,16 @@ def test_example_workflow_branches_on_ci_outcomes() -> None:
     assert "steps.wait.outputs.reason" in content
     assert "steps.wait.outputs.exit-code" in content
     assert "exit 1" in content
+
+
+def test_example_workflows_branch_on_reclaim_outcomes() -> None:
+    for filename in ("github-action-wait.yml", "github-action-wait-reclaim.yml"):
+        content = (ROOT / "examples" / filename).read_text(encoding="utf-8")
+        assert "continue-on-error: true" in content
+        assert "needs-reclaim: true" in content
+        assert "steps.wait.outputs.needs-reclaim == 'true'" in content
+        assert "steps.wait.outputs.timed-out == 'true'" in content
+        assert "steps.wait.outputs.outcome == 'mismatch'" in content
+        assert "reclaim-needed" in content
+        assert "terminal-without-reclaim" in content
 
