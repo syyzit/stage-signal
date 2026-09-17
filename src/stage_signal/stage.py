@@ -738,6 +738,10 @@ class Stage:
         The stage must already be in state ``running`` (SPEC §4.2/§6).
         Refuses with ``IllegalTransition`` (exit 3) if not running.
 
+        After successful ``Popen``, adopts the child process PID and
+        identity token in STATUS under exclusive lock (preserving
+        stage_id/attempt/session_id) so doctor and reclaim track the child.
+
         While child process is alive, bumps ``heartbeat`` every *every*
         seconds (default 60; validated 1 <= every <= stale_threshold - 1).
 
@@ -802,6 +806,28 @@ class Stage:
                 write_status_mirror=write_status_mirror,
             )
             return 1
+
+        child_pid = proc.pid
+        try:
+            with self._store.locked(exclusive=True):
+                current = self._store.read_status()
+                if current.get("state") == STATE_RUNNING:
+                    try:
+                        child_token = _pid_token(child_pid)
+                    except Exception:
+                        child_token = None
+                    ts = now_iso()
+                    current["pid"] = child_pid
+                    current["pid_token"] = child_token
+                    current["updated_at"] = ts
+                    current["heartbeat_at"] = ts
+                    self._store.write_status(current)
+                    self._store.write_status_md(current)
+        except Exception as exc:
+            print(
+                f"stage-signal: warning: failed to adopt child pid {child_pid}: {exc}",
+                file=sys.stderr,
+            )
 
         is_main_thread = (
             threading.current_thread() is threading.main_thread()

@@ -7,6 +7,7 @@ import os
 import signal
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -370,3 +371,151 @@ def test_cli_supervise_write_status_mirror(stage: Stage) -> None:
     orch_dir = repo_root / ".orch"
     assert (orch_dir / "STATUS.md").is_file()
     assert (orch_dir / "DONE").is_file()
+
+
+def test_supervise_adopts_child_pid_and_token(stage: Stage, tmp_path: Path) -> None:
+    stage.start(stage="test-adopt", pid=999999, session_id="sess-adopt")
+    st0 = stage.status()
+    assert st0["pid"] == 999999
+    assert st0["session_id"] == "sess-adopt"
+    assert st0["stage_id"] == "test-adopt"
+    assert st0["attempt"] == 1
+
+    ready = tmp_path / "child_ready.txt"
+    stop = tmp_path / "child_stop.txt"
+    script = (
+        "import os, pathlib, time\n"
+        f"pathlib.Path(r'{ready}').write_text(str(os.getpid()))\n"
+        f"while not pathlib.Path(r'{stop}').exists():\n"
+        "    time.sleep(0.02)\n"
+    )
+
+    t = threading.Thread(
+        target=stage.supervise,
+        args=([sys.executable, "-c", script],),
+        kwargs={"every": 1.0},
+    )
+    t.start()
+
+    deadline = time.monotonic() + 10.0
+    while not ready.exists() and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert ready.exists(), "child did not start in time"
+    child_pid = int(ready.read_text().strip())
+
+    st_running = stage.status()
+    assert st_running["pid"] == child_pid
+    assert st_running["stage_id"] == "test-adopt"
+    assert st_running["session_id"] == "sess-adopt"
+    assert st_running["attempt"] == 1
+
+    stop.touch()
+    t.join(timeout=10.0)
+    assert not t.is_alive()
+
+    st_done = stage.status()
+    assert st_done["state"] == STATE_DONE
+    assert st_done["pid"] == child_pid
+
+
+def test_supervise_child_pid_reclaim_identity_coherent(stage: Stage, tmp_path: Path) -> None:
+    stage.start(stage="test-reclaim-child", pid=999999)
+
+    ready = tmp_path / "reclaim_ready.txt"
+    script = (
+        "import os, pathlib, time\n"
+        f"pathlib.Path(r'{ready}').write_text(str(os.getpid()))\n"
+        "while True:\n"
+        "    time.sleep(0.05)\n"
+    )
+
+    t = threading.Thread(
+        target=stage.supervise,
+        args=([sys.executable, "-c", script],),
+        kwargs={"every": 1.0},
+    )
+    t.start()
+
+    deadline = time.monotonic() + 10.0
+    while not ready.exists() and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert ready.exists()
+    child_pid = int(ready.read_text().strip())
+
+    st = stage.status()
+    assert st["pid"] == child_pid
+
+    # Doctor reports ok while child alive and not stale
+    diag = stage.diagnose(stale_after=10.0)
+    assert diag["needs_reclaim"] is False
+    assert diag["ok"] is True
+
+    # Make stage stale to trigger needs_reclaim
+    with stage._store.locked(exclusive=True):
+        cur = stage._store.read_status()
+        cur["heartbeat_at"] = "2020-01-01T00:00:00+00:00"
+        stage._store.write_status(cur)
+
+    diag_stale = stage.diagnose(stale_after=10.0)
+    assert diag_stale["needs_reclaim"] is True
+
+    # Reclaim with --kill: checks token identity and terminates the child worker process
+    rec = stage.reclaim(reason="stale worker terminated", kill=True)
+    assert rec["state"] == STATE_QUEUED
+
+    # Supervisor thread joins because child was terminated
+    t.join(timeout=10.0)
+    assert not t.is_alive()
+
+
+def test_supervise_token_capture_failure_fallback(
+    stage: Stage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stage.start(stage="test-token-fallback", pid=999999)
+    monkeypatch.setattr("stage_signal.stage._pid_token", lambda pid: None)
+    code = stage.supervise([sys.executable, "-c", "pass"])
+    assert code == 0
+    st = stage.status()
+    assert st["state"] == STATE_DONE
+    assert st["pid"] is not None
+    assert st["pid"] != 999999
+    assert st["pid_token"] is None
+
+
+def test_cli_supervise_adopts_child_pid(stage: Stage, tmp_path: Path) -> None:
+    stage.start(stage="cli-adopt", pid=999999, session_id="cli-sess-456")
+    ready = tmp_path / "cli_ready.txt"
+    stop = tmp_path / "cli_stop.txt"
+    script = (
+        "import os, pathlib, time\n"
+        f"pathlib.Path(r'{ready}').write_text(str(os.getpid()))\n"
+        f"while not pathlib.Path(r'{stop}').exists():\n"
+        "    time.sleep(0.02)\n"
+    )
+
+    t = threading.Thread(
+        target=main,
+        args=([
+            "--dir", str(stage.dir),
+            "supervise", "--",
+            sys.executable, "-c", script,
+        ],),
+    )
+    t.start()
+
+    deadline = time.monotonic() + 10.0
+    while not ready.exists() and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert ready.exists()
+    child_pid = int(ready.read_text().strip())
+
+    st = stage.status()
+    assert st["pid"] == child_pid
+    assert st["session_id"] == "cli-sess-456"
+    assert st["stage_id"] == "cli-adopt"
+
+    stop.touch()
+    t.join(timeout=10.0)
+    assert not t.is_alive()
+    assert stage.status()["state"] == STATE_DONE
+
