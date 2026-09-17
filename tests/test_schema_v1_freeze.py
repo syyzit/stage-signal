@@ -20,6 +20,8 @@ from stage_signal import (
     ARTIFACT_ENTRY_KEYS,
     DOCTOR_JSON_KEYS,
     DOCTOR_WARNING_KEYS,
+    ERROR_KEYS,
+    ERROR_KINDS,
     EVENT_RECORD_KEYS,
     EVENT_TYPES,
     EXIT_BAD_ARGS,
@@ -36,6 +38,7 @@ from stage_signal import (
     NOTE_ENTRY_KEYS,
     PROOF_KEYS,
     PROOF_VERIFIED_VALUES,
+    RESULT_KEYS,
     SCHEMA_VERSION,
     STATES,
     STATUS_JSON_KEYS,
@@ -998,4 +1001,124 @@ def test_doctor_warning_tolerates_additive_keys() -> None:
     # Readers tolerate extra keys without raising
     assert warning_with_extras.get("future_field") == "some_extra_metadata"
     assert warning_with_extras.get("severity") == "warning"
+
+
+# ============================================================================
+# 8. result/error object keys freeze (SPEC §13.9, issue #113)
+# ============================================================================
+
+
+def test_result_error_keys_freeze() -> None:
+    """RESULT_KEYS / ERROR_KEYS / ERROR_KINDS must match SPEC §13.9 exactly."""
+    assert RESULT_KEYS == ("summary", "git_head", "finished_at")
+    assert len(RESULT_KEYS) == 3
+    assert ERROR_KEYS == ("reason", "kind", "finished_at")
+    assert len(ERROR_KEYS) == 3
+    assert ERROR_KINDS == ("blocked", "failed")
+    assert set(ERROR_KINDS) == {"blocked", "failed"}
+    assert all(isinstance(k, str) for k in RESULT_KEYS + ERROR_KEYS + ERROR_KINDS)
+
+
+def _assert_result_contract(
+    result: dict[str, Any] | None, *, accept_failure: bool
+) -> None:
+    """Validate a non-null result object against the SPEC §13.9 contract."""
+    assert isinstance(result, dict)
+    for k in RESULT_KEYS:
+        assert k in result, f"Key {k!r} missing in result: {result!r}"
+    assert isinstance(result["summary"], str)
+    assert result["git_head"] is None or isinstance(result["git_head"], str)
+    assert isinstance(result["finished_at"], str)
+    assert result["finished_at"]
+    if accept_failure:
+        assert result.get("accepted_failure") is True
+    else:
+        assert "accepted_failure" not in result
+
+
+def _assert_error_contract(error: dict[str, Any] | None, kind: str) -> None:
+    """Validate a non-null error object against the SPEC §13.9 contract."""
+    assert isinstance(error, dict)
+    for k in ERROR_KEYS:
+        assert k in error, f"Key {k!r} missing in error: {error!r}"
+    assert isinstance(error["reason"], str)
+    assert error["reason"]
+    assert error["kind"] == kind
+    assert error["kind"] in ERROR_KINDS
+    assert isinstance(error["finished_at"], str)
+    assert error["finished_at"]
+
+
+def test_result_error_keys_lifecycle_freeze(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """After done / blocked / fail / done --accept-failure, on-disk and
+    status --json non-null result/error objects carry exactly the frozen
+    required keys (SPEC §13.9); null result/error remain valid."""
+    stage_dir = tmp_path / ".stage-signal"
+    monkeypatch.setenv("STAGE_SIGNAL_DIR", str(stage_dir))
+    status_file = stage_dir / "STATUS.json"
+    stage = Stage(str(stage_dir))
+    stage.init(project="result-error-freeze")
+
+    def check_contract(
+        *, result_kind: str | None, error_kind: str | None
+    ) -> None:
+        capsys.readouterr()
+        assert main(["status", "--json"]) in (EXIT_OK, EXIT_BLOCKED, EXIT_FAILED)
+        cli_data = json.loads(capsys.readouterr().out)
+        disk_data = json.loads(status_file.read_text(encoding="utf-8"))
+        for data in (cli_data, disk_data):
+            if result_kind is None:
+                assert data["result"] is None
+            else:
+                _assert_result_contract(
+                    data["result"], accept_failure=result_kind == "accepted_failure"
+                )
+                assert set(RESULT_KEYS) <= data["result"].keys()
+            if error_kind is None:
+                assert data["error"] is None
+            else:
+                _assert_error_contract(data["error"], error_kind)
+                assert set(ERROR_KEYS) <= data["error"].keys()
+
+    # done: result frozen, error null
+    stage.start(stage="build", pid=os.getpid())
+    stage.done(summary="build complete")
+    check_contract(result_kind="done", error_kind=None)
+
+    # blocked: error frozen with kind blocked, result null
+    stage.start(stage="wait", pid=os.getpid())
+    stage.blocked(reason="missing dependency")
+    check_contract(result_kind=None, error_kind="blocked")
+
+    # fail: error frozen with kind failed, result null
+    stage.start(stage="verify", pid=os.getpid())
+    stage.fail(reason="compilation failed")
+    check_contract(result_kind=None, error_kind="failed")
+
+    # done --accept-failure: result frozen + additive accepted_failure
+    stage.done(summary="accepted", accept_failure=True)
+    check_contract(result_kind="accepted_failure", error_kind=None)
+
+
+def test_result_error_tolerates_additive_keys(tmp_path: Path) -> None:
+    """Readers must tolerate additive unknown keys on result/error (SPEC §13.1, §13.9)."""
+    result_with_extra = {
+        "summary": "ok",
+        "git_head": None,
+        "finished_at": "2026-09-17T12:00:00+00:00",
+        "future_metric": 42,
+    }
+    _assert_result_contract(result_with_extra, accept_failure=False)
+    assert result_with_extra.get("future_metric") == 42
+
+    error_with_extra = {
+        "reason": "boom",
+        "kind": "failed",
+        "finished_at": "2026-09-17T12:00:00+00:00",
+        "future_code": "E42",
+    }
+    _assert_error_contract(error_with_extra, "failed")
+    assert error_with_extra.get("future_code") == "E42"
 
