@@ -6,12 +6,28 @@ See `docs/RELEASE.md` for the release procedure.
 
 ## [Unreleased]
 
-- `wait --json` includes a top-level `reason` (`status.error.reason` when
-  blocked/failed, or the short timeout message; otherwise `null`).
-- Composite action exposes a `reason` step output so CI can branch on
-  done / blocked / failed / timeout without scraping logs.
-- Example workflow `examples/github-action-wait.yml` shows copy-paste
-  `if:` branches for those four outcomes.
+- Updated orchestrator examples to branch on `needs_reclaim` rather than
+  string-matching `summary` or treating `ok` as a liveness signal (#66, #69).
+- Added `doctor --exit-reclaim` to exit 10 when `needs_reclaim` is true,
+  preserving existing exit codes when reclaim is not needed (#70, #72).
+- Added `needs_reclaim` boolean to `status --json` output and `Stage.status()`,
+  using the same running-stage `DEAD_PID` or `STALE_HEARTBEAT` detection as
+  `doctor --json` and `Stage.diagnose()` (#71, #73).
+- Added a top-level `reason` to `wait --json` (`status.error.reason` when
+  blocked/failed, or the short timeout message; otherwise `null`) (#74).
+- Added a composite action `reason` step output so CI can branch on
+  done / blocked / failed / timeout without scraping logs (#74).
+- Updated example workflow `examples/github-action-wait.yml` with copy-paste
+  `if:` branches for those four outcomes (#74).
+- Added `fail --if-needs-reclaim` to fail a running stage only when `DEAD_PID`
+  or `STALE_HEARTBEAT` requires reclamation; healthy running and non-running
+  states exit 3 without mutation (#75, #78).
+- Allowed `clear-terminal` from named or idle `queued` states to abandon
+  queued work and reset to idle; calling it from `running` remains illegal
+  (#76, #78).
+- Added `stage-signal events [--tail N] [--type TYPE] [--json]` and
+  `Stage.events(tail=, type=)` to read `events.jsonl` for orchestrator audit,
+  with event-type filtering and tail selection (#80).
 
 ## [0.1.6] — 2026-09-17
 
