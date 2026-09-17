@@ -664,3 +664,31 @@ The canonical event types recorded in `events.jsonl` are frozen:
 - `failed`
 - `clear_terminal`
 
+### 13.6 Event record keys and JSON array freeze (`EVENT_RECORD_KEYS`)
+Every event object written to `events.jsonl` MUST include all eight required
+keys, including keys whose values are `null`:
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `ts` | ISO8601 | Timestamp of the mutation. |
+| `type` | enum | One of the frozen `EVENT_TYPES` (§13.5). |
+| `stage_id` | str\|null | Stage identifier after the mutation. |
+| `stage_name` | str\|null | Human stage name after the mutation. |
+| `state` | enum | Stage state after the mutation. |
+| `attempt` | int ≥ 1 | Attempt counter after the mutation. |
+| `message` | str\|null | Human summary, note, or reason. |
+| `detail` | object | Event-specific extras; `{}` when absent. |
+
+The single source of truth for this required key set is `EVENT_RECORD_KEYS`
+in `stage_signal.constants`, also exported from `stage_signal`.
+Under `schema_version: 1`, event record evolution is **additive-only** (§13.1):
+these keys MUST NOT be removed, renamed, or change semantic meaning.
+Readers MUST tolerate unknown additional keys.
+
+`events --json` emits one JSON **array** of event objects, not NDJSON or a
+wrapper object. `Stage.events()` returns the corresponding `list[dict]`.
+Both are chronological (**newest last**, matching file order), and every
+returned event includes `EVENT_RECORD_KEYS`. No matches produces `[]`.
+The `--type` / `type` and `--tail` / `tail` behavior, defaults, and
+filter-before-tail ordering remain as specified in §5.
+

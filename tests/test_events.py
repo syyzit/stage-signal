@@ -10,6 +10,7 @@ import pytest
 from stage_signal import (
     BadArgsError,
     CorruptStatusError,
+    EVENT_RECORD_KEYS,
     NotInitialized,
     Stage,
 )
@@ -30,6 +31,13 @@ def _subparser(name: str):
         if hasattr(action, "_name_parser_map") and name in action._name_parser_map:
             return action._name_parser_map[name]
     raise AssertionError(f"missing subparser {name!r}")
+
+
+def _assert_frozen_keys(events: list[dict]) -> None:
+    assert events
+    for event in events:
+        for key in EVENT_RECORD_KEYS:
+            assert key in event, f"key {key!r} missing from event {event!r}"
 
 
 def _seed_mixed(stage: Stage) -> list[str]:
@@ -60,6 +68,97 @@ def test_events_help_in_cli() -> None:
         assert event_type in help_compact
     assert str(EVENTS_DEFAULT_TAIL) in help_text
     assert "0 = all" in help_text
+
+
+def test_events_every_record_has_frozen_keys(stage: Stage) -> None:
+    """Library lifecycle events always carry all EVENT_RECORD_KEYS (#105)."""
+    assert stage.events(type="init")[0].keys() >= set(EVENT_RECORD_KEYS)
+    stage.start(stage="m1")
+    stage.heartbeat(note="tick")
+    stage.note("checkpoint")
+    stage.artifact("out.bin", label="bin")
+    stage.done(summary="ok")
+    disk_events = [
+        json.loads(line)
+        for line in (stage.dir / "events.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    _assert_frozen_keys(disk_events)
+    assert stage.events() == disk_events
+    _assert_frozen_keys(stage.events(tail=2))
+    _assert_frozen_keys(stage.events(type="heartbeat"))
+
+
+def test_events_reclaim_trail_has_frozen_keys(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """reclaim's failed + clear_terminal events carry all frozen keys (#105)."""
+    stage = Stage(tmp_path / ".stage-signal")
+    stage.init(project="p")
+    stage.start(stage="m")
+    monkeypatch.setattr("stage_signal.stage._is_pid_alive", lambda pid: False)
+    stage.reclaim("dead pid")
+    disk_events = [
+        json.loads(line)
+        for line in (stage.dir / "events.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert [e["type"] for e in disk_events] == [
+        "init", "start", "failed", "clear_terminal",
+    ]
+    _assert_frozen_keys(disk_events)
+    assert stage.events() == disk_events
+
+
+def test_cli_events_json_is_array_with_frozen_keys(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """events --json is one JSON array, newest last, honoring --type/--tail (#105)."""
+    d = tmp_path / ".stage-signal"
+    monkeypatch.setenv("STAGE_SIGNAL_DIR", str(d))
+    stage = Stage(d)
+    stage.init(project="p")
+    stage.start(stage="m1")
+    stage.heartbeat(note="first tick")
+    stage.note("checkpoint")
+    stage.heartbeat(note="tick")
+    stage.done(summary="ok")
+    capsys.readouterr()
+
+    assert main(["events", "--json", "--tail", "0"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert isinstance(payload, list)
+    assert all(isinstance(e, dict) for e in payload)
+    _assert_frozen_keys(payload)
+    assert [e["type"] for e in payload] == [
+        "init", "start", "heartbeat", "note", "heartbeat", "done",
+    ]
+    assert payload == stage.events()
+
+    assert main(["events", "--json", "--tail", "2"]) == 0
+    assert json.loads(capsys.readouterr().out) == payload[-2:]
+
+    assert main(["events", "--json", "--type", "heartbeat", "--tail", "1"]) == 0
+    beats = json.loads(capsys.readouterr().out)
+    assert isinstance(beats, list)
+    assert [e["type"] for e in beats] == ["heartbeat"]
+    assert beats[-1]["message"] == "tick"
+    _assert_frozen_keys(beats)
+
+    assert beats == stage.events(type="heartbeat", tail=1)
+
+    assert main(["events", "--json", "--type", "failed"]) == 0
+    assert json.loads(capsys.readouterr().out) == []
+
+
+def test_events_tolerate_unknown_keys(
+    stage: Stage, capsys: pytest.CaptureFixture[str]
+) -> None:
+    event = stage.events()[0]
+    event["future_field"] = {"extra": True}
+    with stage._store.locked():
+        stage._store.append_event(event)
+    assert stage.events(tail=1) == [event]
+    assert main(["--dir", str(stage.dir), "events", "--json", "--tail", "1"]) == 0
+    assert json.loads(capsys.readouterr().out) == [event]
 
 
 def test_library_events_not_initialized(tmp_path: Path) -> None:
