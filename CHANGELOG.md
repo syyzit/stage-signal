@@ -6,6 +6,9 @@ See `docs/RELEASE.md` for the release procedure.
 
 ## [Unreleased]
 
+- Froze `wait --json` outcome enum in SPEC §13.11 via exported `WAIT_OUTCOMES`
+  (`"met"`, `"mismatch"`, `"timeout"`), cross-linking §13.3.3 and guaranteeing
+  additive-only outcomes and `timeout` boolean consistency under `schema_version: 1` (#117).
 - Froze stage state machine enums in SPEC §13.12 via exported `STATES` and
   `TERMINAL_STATES`, cross-linking §4 and §13.2, with regression tests covering
   constant freeze, non-terminal/terminal partitions, and lifecycle state assertions

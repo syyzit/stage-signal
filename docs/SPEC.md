@@ -622,13 +622,13 @@ Frozen guaranteed key set (`DOCTOR_JSON_KEYS`):
 `ok`, `needs_reclaim`, `state`, `problems`, `warnings`, `status`, `summary`.
 
 #### 13.3.3 `wait --json` (`WAIT_JSON_KEYS`)
-Guaranteed key set across all outcomes (`outcome`: `"met"`, `"mismatch"`, `"timeout"`):
-- `outcome` (str): `"met"` | `"mismatch"` | `"timeout"`.
+Guaranteed key set across all outcomes (`outcome`: `"met"`, `"mismatch"`, `"timeout"`; see §13.11 `WAIT_OUTCOMES`):
+- `outcome` (str): one of the frozen `WAIT_OUTCOMES` (`"met"`, `"mismatch"`, `"timeout"`; §13.11).
 - `wanted` (str): wanted state target or `"needs_reclaim"`.
 - `observed_state` (str | null): state observed when wait finished.
 - `state` (str | null): alias of `observed_state`.
 - `exit_code` (int): process exit code.
-- `timeout` (bool): `true` if wait timed out; `false` otherwise.
+- `timeout` (bool): `true` if wait timed out (`outcome == "timeout"`); `false` otherwise (§13.11).
 - `stage_id` (str | null): stage identifier at exit.
 - `dir` (str): path to stage directory.
 - `reason` (str | null): failure reason (`status.error.reason`), timeout message, or `null`.
@@ -789,6 +789,31 @@ these keys MUST NOT be removed, renamed, or change semantic meaning.
 Readers MUST tolerate unknown additional keys on the `proof` object.
 Composition and verification semantics remain defined in §9 and `docs/COMPOSE.md`;
 this section freezes the on-wire dictionary keys and closed verified enum under schema version 1.
+
+### 13.11 Wait outcomes enum freeze (`WAIT_OUTCOMES`)
+The machine-readable `wait --json` payload (§13.3.3, `WAIT_JSON_KEYS`) emits a required `outcome` string field indicating the resolution of the wait invocation. The canonical set of allowed values is frozen in `WAIT_OUTCOMES`:
+
+| Outcome | Meaning |
+|---------|---------|
+| `"met"` | The wanted state target (or `--needs-reclaim` condition) was observed; exit code 0 (`EXIT_OK`). |
+| `"mismatch"` | A terminal state other than wanted was observed before target was met, or `--needs-reclaim` encountered a terminal state without reclaim; non-zero observer exit code matching observed state (§13.4). |
+| `"timeout"` | The wait deadline expired before any terminating condition was observed; exit code 14 (`EXIT_WAIT_TIMEOUT`). |
+
+The single source of truth for the wait outcome enum is
+`WAIT_OUTCOMES = ("met", "mismatch", "timeout")` in `stage_signal.constants`, also
+exported from `stage_signal`. The individual constants `WAIT_OUTCOME_MET`,
+`WAIT_OUTCOME_MISMATCH`, and `WAIT_OUTCOME_TIMEOUT` remain exported as aliases.
+
+Under `schema_version: 1`, wait outcome evolution is strictly **additive-only** (§13.1):
+these outcome values MUST NOT be removed, renamed, or change semantic meaning.
+Readers MUST tolerate unknown additional outcome values in `outcome`.
+
+The boolean `timeout` field in `WAIT_JSON_KEYS` remains strictly consistent with `outcome`:
+- `timeout: true` if and only if `outcome == "timeout"`.
+- `timeout: false` for `"met"` and `"mismatch"`.
+
+Wait semantics, timeout handling, and observer exit codes remain defined in §6, §7, and §13.3.3;
+this section freezes the closed outcome enum and its boolean consistency under schema version 1.
 
 ### 13.12 Stage states and terminal states freeze (`STATES`, `TERMINAL_STATES`)
 The canonical stage lifecycle states and their terminal classification are frozen under `schema_version: 1`:

@@ -19,6 +19,9 @@ from .constants import (
     SUPERVISE_DEFAULT_EVERY,
     WAIT_DEFAULT_POLL,
     WAIT_DEFAULT_TIMEOUT,
+    WAIT_OUTCOME_MET,
+    WAIT_OUTCOME_MISMATCH,
+    WAIT_OUTCOME_TIMEOUT,
     state_exit_code,
 )
 from .errors import BadArgsError, StageError, WaitTimeout
@@ -610,7 +613,7 @@ def cmd_wait(args: argparse.Namespace) -> int:
             if is_met
             else _wait_mismatch_exit_code(state, needs_reclaim=needs_reclaim)
         )
-        outcome = "met" if is_met else "mismatch"
+        outcome = WAIT_OUTCOME_MET if is_met else WAIT_OUTCOME_MISMATCH
         if args.json:
             print(json.dumps(
                 _wait_json_payload(
@@ -636,7 +639,7 @@ def cmd_wait(args: argparse.Namespace) -> int:
         if args.json:
             print(json.dumps(
                 _wait_json_payload(
-                    outcome="timeout",
+                    outcome=WAIT_OUTCOME_TIMEOUT,
                     wanted=wanted,
                     status=exc.last_status,
                     exit_code=exc.exit_code,
