@@ -692,6 +692,27 @@ returned event includes `EVENT_RECORD_KEYS`. No matches produces `[]`.
 The `--type` / `type` and `--tail` / `tail` behavior, defaults, and
 filter-before-tail ordering remain as specified in §5.
 
+### 13.7 Artifact and note entry keys freeze (`ARTIFACT_ENTRY_KEYS`, `NOTE_ENTRY_KEYS`)
+Every object in `STATUS.json`'s `artifacts[]` and `notes[]`, including those
+returned by `status --json` / `Stage.status()`, MUST include all required keys
+below. Empty arrays remain valid.
+
+| Entry | Key | Type | Description |
+|-------|-----|------|-------------|
+| `artifacts[]` | `path` | str | Recorded artifact path. |
+| `artifacts[]` | `label` | str\|null | Optional human label; the key MUST be present even when `null`. |
+| `artifacts[]` | `added_at` | ISO8601 | Timestamp when the artifact was recorded. |
+| `notes[]` | `text` | str | Recorded note text. |
+| `notes[]` | `added_at` | ISO8601 | Timestamp when the note was appended. |
+
+The single sources of truth for these required key sets are
+`ARTIFACT_ENTRY_KEYS = ("path", "label", "added_at")` and
+`NOTE_ENTRY_KEYS = ("text", "added_at")` in `stage_signal.constants`, also
+exported from `stage_signal`.
+Under `schema_version: 1`, entry evolution is **additive-only** (§13.1):
+these keys MUST NOT be removed, renamed, or change semantic meaning.
+Readers MUST tolerate unknown additional keys on each entry.
+
 ### 13.8 Doctor warning object and warning codes freeze (`WARNING_CODES`, `WARNING_KEYS`)
 Every warning object contained in `warnings` emitted by `doctor --json` or returned by `Stage.diagnose()` MUST include all three required keys:
 
@@ -710,5 +731,6 @@ The canonical warning code set is frozen in `WARNING_CODES`:
 - `UNPARSEABLE_HEARTBEAT` (`WARNING_CODE_UNPARSEABLE_HEARTBEAT`)
 
 The single source of truth for the warning codes is `WARNING_CODES` in `stage_signal.constants`, also exported from `stage_signal`. The individual `WARNING_CODE_*` constants remain exported as aliases. Orchestrators may stably branch on `warnings[].code` matching one of these identifiers.
+
 
 

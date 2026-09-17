@@ -6,6 +6,9 @@ See `docs/RELEASE.md` for the release procedure.
 
 ## [Unreleased]
 
+- Froze STATUS artifact/note entry keys in SPEC §13.7 via exported
+  `ARTIFACT_ENTRY_KEYS` / `NOTE_ENTRY_KEYS`, with on-disk and `status --json`
+  regression coverage for required keys, null labels, and additive fields (#109).
 - Froze doctor warning object required keys (`WARNING_KEYS`) and canonical warning
   code set (`WARNING_CODES`) in SPEC §13.8, guaranteeing additive-only warning
   contracts for orchestrators branching on `warnings[].code` (#110).

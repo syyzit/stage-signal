@@ -17,6 +17,7 @@ from typing import Any
 import pytest
 
 from stage_signal import (
+    ARTIFACT_ENTRY_KEYS,
     DOCTOR_JSON_KEYS,
     DOCTOR_WARNING_KEYS,
     EVENT_RECORD_KEYS,
@@ -32,6 +33,7 @@ from stage_signal import (
     EXIT_QUEUED,
     EXIT_RUNNING,
     EXIT_WAIT_TIMEOUT,
+    NOTE_ENTRY_KEYS,
     SCHEMA_VERSION,
     STATES,
     STATUS_JSON_KEYS,
@@ -74,6 +76,66 @@ def test_event_record_keys_freeze() -> None:
         "message",
         "detail",
     )
+
+
+def test_artifact_entry_keys_freeze() -> None:
+    assert ARTIFACT_ENTRY_KEYS == ("path", "label", "added_at")
+
+
+def test_note_entry_keys_freeze() -> None:
+    assert NOTE_ENTRY_KEYS == ("text", "added_at")
+
+
+@pytest.mark.parametrize("extra_keys", [False, True])
+def test_artifact_note_entry_keys_on_disk_and_status_json(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], extra_keys: bool
+) -> None:
+    stage_dir = tmp_path / ".stage-signal"
+    stage = Stage(str(stage_dir))
+    stage.init(project="entry-freeze")
+    stage.start(stage="build", pid=os.getpid())
+    status_file = stage_dir / "STATUS.json"
+    prefix = ["--dir", str(stage_dir)]
+    expected_counts = {"artifacts": 0, "notes": 0}
+    commands = [
+        ("artifacts", ["artifact", "dist/out.bin", "--label", "binary"]),
+        ("notes", ["note", "checkpoint 1"]),
+        ("artifacts", ["artifact", "dist/report.json"]),
+        ("notes", ["note", "checkpoint 2"]),
+    ]
+
+    for collection, command in commands:
+        assert main(prefix + command) == EXIT_OK
+        capsys.readouterr()
+        expected_counts[collection] += 1
+        disk_data = json.loads(status_file.read_text(encoding="utf-8"))
+        if extra_keys:
+            disk_data[collection][-1]["future_field"] = {"value": 1}
+            status_file.write_text(json.dumps(disk_data), encoding="utf-8")
+        assert main(prefix + ["status", "--json"]) == EXIT_RUNNING
+        cli_data = json.loads(capsys.readouterr().out)
+        for data in (disk_data, cli_data):
+            for name, required_keys in (
+                ("artifacts", ARTIFACT_ENTRY_KEYS),
+                ("notes", NOTE_ENTRY_KEYS),
+            ):
+                assert len(data[name]) == expected_counts[name]
+                for entry in data[name]:
+                    assert set(required_keys) <= entry.keys()
+                    assert isinstance(entry["added_at"], str)
+                    assert entry["added_at"]
+                    if extra_keys:
+                        assert entry["future_field"] == {"value": 1}
+            assert data["artifacts"][0]["path"] == "dist/out.bin"
+            assert data["artifacts"][0]["label"] == "binary"
+            if expected_counts["artifacts"] == 2:
+                assert data["artifacts"][1]["path"] == "dist/report.json"
+                assert data["artifacts"][1]["label"] is None
+            assert [entry["text"] for entry in data["notes"]] == [
+                f"checkpoint {index + 1}" for index in range(expected_counts["notes"])
+            ]
+        assert cli_data["artifacts"] == disk_data["artifacts"]
+        assert cli_data["notes"] == disk_data["notes"]
 
 
 def test_event_types_freeze() -> None:
