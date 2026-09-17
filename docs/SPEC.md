@@ -612,7 +612,7 @@ Guaranteed key set across all conditions (healthy, warnings, problems, uninitial
 - `needs_reclaim` (bool): `true` when `state == "running"` and `DEAD_PID` or `STALE_HEARTBEAT` applies; `false` otherwise.
 - `state` (str | null): stage state if readable; `null` otherwise.
 - `problems` (list[str]): list of error strings preventing healthy operation.
-- `warnings` (list[object]): list of warning objects (`code`, `message`, `detail`).
+- `warnings` (list[object]): list of warning objects (`code`, `message`, `detail`) conforming to §13.8 (`WARNING_KEYS`, `WARNING_CODES`).
 - `status` (object | null): status snapshot including `heartbeat_age_seconds` if initialized; `null` otherwise.
 - `summary` (str | null): human summary string (`OK: <state>`, `ATTENTION: running needs reclaim`, or `null`).
 
@@ -691,4 +691,24 @@ Both are chronological (**newest last**, matching file order), and every
 returned event includes `EVENT_RECORD_KEYS`. No matches produces `[]`.
 The `--type` / `type` and `--tail` / `tail` behavior, defaults, and
 filter-before-tail ordering remain as specified in §5.
+
+### 13.8 Doctor warning object and warning codes freeze (`WARNING_CODES`, `WARNING_KEYS`)
+Every warning object contained in `warnings` emitted by `doctor --json` or returned by `Stage.diagnose()` MUST include all three required keys:
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `code` | enum | One of the frozen `WARNING_CODES`. |
+| `message` | str | Human-readable explanation of the warning condition. |
+| `detail` | object | Structured warning details; `{}` when absent. |
+
+The single source of truth for the warning object required keys is `WARNING_KEYS` (aliased as `WARNING_REQUIRED_KEYS` / `DOCTOR_WARNING_KEYS`) in `stage_signal.constants`, also exported from `stage_signal`.
+Under `schema_version: 1`, warning object evolution is **additive-only** (§13.1): these keys MUST NOT be removed, renamed, or change semantic meaning. Readers MUST tolerate unknown additional keys. `detail` MUST be an object (dictionary) and may be empty (`{}`).
+
+The canonical warning code set is frozen in `WARNING_CODES`:
+- `STALE_HEARTBEAT` (`WARNING_CODE_STALE_HEARTBEAT`)
+- `DEAD_PID` (`WARNING_CODE_DEAD_PID`)
+- `UNPARSEABLE_HEARTBEAT` (`WARNING_CODE_UNPARSEABLE_HEARTBEAT`)
+
+The single source of truth for the warning codes is `WARNING_CODES` in `stage_signal.constants`, also exported from `stage_signal`. The individual `WARNING_CODE_*` constants remain exported as aliases. Orchestrators may stably branch on `warnings[].code` matching one of these identifiers.
+
 

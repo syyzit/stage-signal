@@ -10,6 +10,7 @@ import json
 import os
 import subprocess
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +18,7 @@ import pytest
 
 from stage_signal import (
     DOCTOR_JSON_KEYS,
+    DOCTOR_WARNING_KEYS,
     EVENT_RECORD_KEYS,
     EVENT_TYPES,
     EXIT_BAD_ARGS,
@@ -36,6 +38,12 @@ from stage_signal import (
     STATUS_REQUIRED_KEYS,
     TERMINAL_STATES,
     WAIT_JSON_KEYS,
+    WARNING_CODE_DEAD_PID,
+    WARNING_CODE_STALE_HEARTBEAT,
+    WARNING_CODE_UNPARSEABLE_HEARTBEAT,
+    WARNING_CODES,
+    WARNING_KEYS,
+    WARNING_REQUIRED_KEYS,
     CorruptStatusError,
     Stage,
     state_exit_code,
@@ -493,3 +501,254 @@ def test_wait_json_needs_reclaim_timeout_path(tmp_path: Path, monkeypatch: pytes
     assert data["timeout"] is True
     assert isinstance(data["reason"], str)
     assert data["needs_reclaim"] is False
+
+
+# ============================================================================
+# 7. Doctor warning codes and warning object keys freeze (SPEC §13.8, issue #110)
+# ============================================================================
+
+
+def test_warning_codes_freeze() -> None:
+    """WARNING_CODES must match the exact 3 frozen codes in canonical order (SPEC §13.8)."""
+    expected = (
+        "STALE_HEARTBEAT",
+        "DEAD_PID",
+        "UNPARSEABLE_HEARTBEAT",
+    )
+    assert WARNING_CODES == expected
+    assert len(WARNING_CODES) == 3
+    assert WARNING_CODE_STALE_HEARTBEAT == "STALE_HEARTBEAT"
+    assert WARNING_CODE_DEAD_PID == "DEAD_PID"
+    assert WARNING_CODE_UNPARSEABLE_HEARTBEAT == "UNPARSEABLE_HEARTBEAT"
+    assert set(WARNING_CODES) == {
+        WARNING_CODE_STALE_HEARTBEAT,
+        WARNING_CODE_DEAD_PID,
+        WARNING_CODE_UNPARSEABLE_HEARTBEAT,
+    }
+    assert all(isinstance(c, str) for c in WARNING_CODES)
+
+
+def test_warning_keys_freeze() -> None:
+    """WARNING_KEYS must match the exact 3 frozen required keys (SPEC §13.8)."""
+    expected = (
+        "code",
+        "message",
+        "detail",
+    )
+    assert WARNING_KEYS == expected
+    assert len(WARNING_KEYS) == 3
+    assert WARNING_REQUIRED_KEYS == expected
+    assert DOCTOR_WARNING_KEYS == expected
+
+
+def _assert_warning_contract(warning: dict[str, Any], expected_code: str | None = None) -> None:
+    """Validate that a warning object satisfies the SPEC §13.8 contract."""
+    assert isinstance(warning, dict)
+    for k in WARNING_KEYS:
+        assert k in warning, f"Key {k!r} missing in warning: {warning!r}"
+    assert warning["code"] in WARNING_CODES, f"Code {warning['code']!r} not in WARNING_CODES"
+    if expected_code is not None:
+        assert warning["code"] == expected_code
+    assert isinstance(warning["message"], str)
+    assert len(warning["message"]) > 0
+    assert isinstance(warning["detail"], dict)
+
+
+def test_doctor_warning_stale_heartbeat_contract(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Doctor emits STALE_HEARTBEAT warning with all frozen keys when heartbeat exceeds threshold."""
+    stage_dir = tmp_path / ".stage-signal"
+    monkeypatch.setenv("STAGE_SIGNAL_DIR", str(stage_dir))
+    stage = Stage(str(stage_dir))
+    stage.init(project="stale-test")
+    stage.start(stage="running-task", pid=os.getpid())
+
+    # Set heartbeat to 600s in the past
+    status_file = stage_dir / "STATUS.json"
+    raw = json.loads(status_file.read_text(encoding="utf-8"))
+    raw["heartbeat_at"] = (datetime.now(timezone.utc) - timedelta(seconds=600)).isoformat()
+    status_file.write_text(json.dumps(raw), encoding="utf-8")
+
+    # Library call
+    diag = stage.diagnose(stale_after=300)
+    assert diag["ok"] is True
+    assert diag["needs_reclaim"] is True
+    stale_warnings = [w for w in diag["warnings"] if w["code"] == WARNING_CODE_STALE_HEARTBEAT]
+    assert len(stale_warnings) == 1
+    _assert_warning_contract(stale_warnings[0], WARNING_CODE_STALE_HEARTBEAT)
+    assert "age" in stale_warnings[0]["detail"]
+    assert "threshold" in stale_warnings[0]["detail"]
+    assert "heartbeat_at" in stale_warnings[0]["detail"]
+
+    # CLI call
+    capsys.readouterr()
+    code = main(["doctor", "--json"])
+    assert code == 0
+    cli_data = json.loads(capsys.readouterr().out)
+    cli_stale = [w for w in cli_data["warnings"] if w["code"] == WARNING_CODE_STALE_HEARTBEAT]
+    assert len(cli_stale) == 1
+    _assert_warning_contract(cli_stale[0], WARNING_CODE_STALE_HEARTBEAT)
+
+
+def test_doctor_warning_stale_heartbeat_null_contract(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Doctor emits STALE_HEARTBEAT warning with all frozen keys when heartbeat_at is null."""
+    stage_dir = tmp_path / ".stage-signal"
+    monkeypatch.setenv("STAGE_SIGNAL_DIR", str(stage_dir))
+    stage = Stage(str(stage_dir))
+    stage.init(project="stale-null-test")
+    stage.start(stage="running-task", pid=os.getpid())
+
+    status_file = stage_dir / "STATUS.json"
+    raw = json.loads(status_file.read_text(encoding="utf-8"))
+    raw["heartbeat_at"] = None
+    status_file.write_text(json.dumps(raw), encoding="utf-8")
+
+    # Library call
+    diag = stage.diagnose(stale_after=300)
+    assert diag["ok"] is True
+    assert diag["needs_reclaim"] is True
+    stale_warnings = [w for w in diag["warnings"] if w["code"] == WARNING_CODE_STALE_HEARTBEAT]
+    assert len(stale_warnings) == 1
+    _assert_warning_contract(stale_warnings[0], WARNING_CODE_STALE_HEARTBEAT)
+    assert stale_warnings[0]["detail"]["age"] is None
+    assert stale_warnings[0]["detail"]["threshold"] == 300.0
+    assert stale_warnings[0]["detail"]["heartbeat_at"] is None
+
+    # CLI call
+    capsys.readouterr()
+    code = main(["doctor", "--json"])
+    assert code == 0
+    cli_data = json.loads(capsys.readouterr().out)
+    cli_stale = [w for w in cli_data["warnings"] if w["code"] == WARNING_CODE_STALE_HEARTBEAT]
+    assert len(cli_stale) == 1
+    _assert_warning_contract(cli_stale[0], WARNING_CODE_STALE_HEARTBEAT)
+
+
+def test_doctor_warning_unparseable_heartbeat_contract(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Doctor emits UNPARSEABLE_HEARTBEAT warning with all frozen keys when heartbeat_at is invalid."""
+    stage_dir = tmp_path / ".stage-signal"
+    monkeypatch.setenv("STAGE_SIGNAL_DIR", str(stage_dir))
+    stage = Stage(str(stage_dir))
+    stage.init(project="unparseable-test")
+    stage.start(stage="running-task", pid=os.getpid())
+
+    status_file = stage_dir / "STATUS.json"
+    raw = json.loads(status_file.read_text(encoding="utf-8"))
+    raw["heartbeat_at"] = "invalid-iso-date"
+    status_file.write_text(json.dumps(raw), encoding="utf-8")
+
+    # Library call
+    diag = stage.diagnose(stale_after=300)
+    assert diag["ok"] is True
+    unp_warnings = [w for w in diag["warnings"] if w["code"] == WARNING_CODE_UNPARSEABLE_HEARTBEAT]
+    assert len(unp_warnings) == 1
+    _assert_warning_contract(unp_warnings[0], WARNING_CODE_UNPARSEABLE_HEARTBEAT)
+    assert unp_warnings[0]["detail"]["heartbeat_at"] == "invalid-iso-date"
+
+    # CLI call
+    capsys.readouterr()
+    code = main(["doctor", "--json"])
+    assert code == 0
+    cli_data = json.loads(capsys.readouterr().out)
+    cli_unp = [w for w in cli_data["warnings"] if w["code"] == WARNING_CODE_UNPARSEABLE_HEARTBEAT]
+    assert len(cli_unp) == 1
+    _assert_warning_contract(cli_unp[0], WARNING_CODE_UNPARSEABLE_HEARTBEAT)
+
+
+def test_doctor_warning_dead_pid_contract(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Doctor emits DEAD_PID warning with all frozen keys when recorded pid is not alive."""
+    stage_dir = tmp_path / ".stage-signal"
+    monkeypatch.setenv("STAGE_SIGNAL_DIR", str(stage_dir))
+    stage = Stage(str(stage_dir))
+    stage.init(project="dead-pid-test")
+
+    proc = subprocess.Popen([sys.executable, "-c", "pass"])
+    proc.wait(timeout=5)
+    dead_pid = proc.pid
+    stage.start(stage="running-task", pid=dead_pid)
+
+    # Library call
+    diag = stage.diagnose()
+    assert diag["ok"] is True
+    assert diag["needs_reclaim"] is True
+    dead_warnings = [w for w in diag["warnings"] if w["code"] == WARNING_CODE_DEAD_PID]
+    assert len(dead_warnings) == 1
+    _assert_warning_contract(dead_warnings[0], WARNING_CODE_DEAD_PID)
+    assert dead_warnings[0]["detail"]["pid"] == dead_pid
+    assert "recovery_hint" in dead_warnings[0]["detail"]
+
+    # CLI call
+    capsys.readouterr()
+    code = main(["doctor", "--json"])
+    assert code == 0
+    cli_data = json.loads(capsys.readouterr().out)
+    cli_dead = [w for w in cli_data["warnings"] if w["code"] == WARNING_CODE_DEAD_PID]
+    assert len(cli_dead) == 1
+    _assert_warning_contract(cli_dead[0], WARNING_CODE_DEAD_PID)
+
+
+def test_doctor_warning_multiple_simultaneous_contract(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Doctor emitting multiple warnings includes all frozen keys and only known codes for all warnings."""
+    stage_dir = tmp_path / ".stage-signal"
+    monkeypatch.setenv("STAGE_SIGNAL_DIR", str(stage_dir))
+    stage = Stage(str(stage_dir))
+    stage.init(project="multi-warn-test")
+
+    proc = subprocess.Popen([sys.executable, "-c", "pass"])
+    proc.wait(timeout=5)
+    dead_pid = proc.pid
+    stage.start(stage="multi-task", pid=dead_pid)
+
+    status_file = stage_dir / "STATUS.json"
+    raw = json.loads(status_file.read_text(encoding="utf-8"))
+    raw["heartbeat_at"] = (datetime.now(timezone.utc) - timedelta(seconds=700)).isoformat()
+    status_file.write_text(json.dumps(raw), encoding="utf-8")
+
+    # Library call
+    diag = stage.diagnose(stale_after=300)
+    assert diag["ok"] is True
+    assert diag["needs_reclaim"] is True
+    assert len(diag["warnings"]) == 2
+    for w in diag["warnings"]:
+        _assert_warning_contract(w)
+    codes = {w["code"] for w in diag["warnings"]}
+    assert codes == {WARNING_CODE_STALE_HEARTBEAT, WARNING_CODE_DEAD_PID}
+    assert codes.issubset(set(WARNING_CODES))
+
+    # CLI call
+    capsys.readouterr()
+    code = main(["doctor", "--json"])
+    assert code == 0
+    cli_data = json.loads(capsys.readouterr().out)
+    assert len(cli_data["warnings"]) == 2
+    for w in cli_data["warnings"]:
+        _assert_warning_contract(w)
+    cli_codes = {w["code"] for w in cli_data["warnings"]}
+    assert cli_codes == {WARNING_CODE_STALE_HEARTBEAT, WARNING_CODE_DEAD_PID}
+    assert cli_codes.issubset(set(WARNING_CODES))
+
+
+def test_doctor_warning_tolerates_additive_keys() -> None:
+    """Warning consumers/readers must tolerate additive unknown keys (SPEC §13.1, §13.8)."""
+    warning_with_extras = {
+        "code": WARNING_CODE_DEAD_PID,
+        "message": "DEAD PID: claiming pid 99999 is not alive",
+        "detail": {"pid": 99999, "recovery_hint": "fail --reason TEXT --if-dead-pid"},
+        "future_field": "some_extra_metadata",
+        "severity": "warning",
+    }
+    # Required keys present and detail is an object
+    _assert_warning_contract(warning_with_extras, WARNING_CODE_DEAD_PID)
+    # Readers tolerate extra keys without raising
+    assert warning_with_extras.get("future_field") == "some_extra_metadata"
+    assert warning_with_extras.get("severity") == "warning"
+
