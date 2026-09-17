@@ -207,7 +207,7 @@ stage-signal fail --reason TEXT [--write-status-mirror]
 stage-signal status [--json]
 stage-signal wait [--state done|blocked|failed|terminal] [--timeout SEC] [--poll SEC] [--json]
 stage-signal clear-terminal [--keep-stage]
-stage-signal doctor [--stale-after SEC] [--json]
+stage-signal doctor [--stale-after SEC] [--json] [--format human|json]
 ```
 
 - `--dir` / `STAGE_SIGNAL_DIR`: stage dir (default `.stage-signal`).
@@ -235,11 +235,17 @@ stage-signal doctor [--stale-after SEC] [--json]
   best-effort checks whether the claiming process is alive (POSIX
   `os.kill(pid, 0)`, Windows API; warning on dead PID). Prints `OK`
   lines / problems; exit 0 when healthy (problems list empty, even with
-  warnings), 1 otherwise. `doctor` and `Stage.diagnose()` default to a
+  warnings), 1 otherwise (problems present). `doctor` and `Stage.diagnose()` default to a
   300-second (5-minute) heartbeat threshold, overridable with `--stale-after SEC`.
   When `running` and `now - heartbeat_at > SEC`, human output prints
-  `WARNING: STALE`; `--json` includes the warning in the diagnose dict
-  (`ok`, `problems`, `warnings`, `status`). Warnings never change stage state.
+  `WARNING: STALE: ...`; default human text is otherwise unchanged.
+  `--json` (or `--format json`) prints a structured JSON object:
+  `{"ok": bool, "state": str|null, "problems": list[str], "warnings": [{"code": str, "message": str, "detail": object}], "status": object|null}`.
+  Structured warning codes include:
+  - `STALE_HEARTBEAT`: heartbeat older than threshold (detail: `{"age": float|null, "threshold": float, "heartbeat_at": str|null}`) or missing entirely.
+  - `DEAD_PID`: claiming process is not alive (detail: `{"pid": int}`).
+  - `UNPARSEABLE_HEARTBEAT`: invalid heartbeat timestamp format (detail: `{"heartbeat_at": str}`).
+  Warnings never change stage state and do not trigger a non-zero exit code (exit 0 on healthy/warnings, 1 on problems, 2 on bad args).
   Passing `stale_after=None` to `Stage.diagnose()` disables heartbeat checks.
 
 ## 7. Exit codes (part of the contract)

@@ -115,7 +115,10 @@ def build_parser() -> argparse.ArgumentParser:
     c = sub.add_parser("doctor", help="check stage dir health")
     c.add_argument("--stale-after", type=float, default=300.0, metavar="SEC",
                    help="warn on running heartbeat older than SEC (default: 300)")
-    c.add_argument("--json", action="store_true", default=False)
+    c.add_argument("--json", action="store_true", default=False,
+                   help="output machine-readable JSON")
+    c.add_argument("--format", choices=["human", "json"], default=None,
+                   help="output format (default: human)")
     c.set_defaults(func=cmd_doctor)
 
     return p
@@ -330,13 +333,15 @@ def cmd_clear_terminal(args: argparse.Namespace) -> int:
 
 def cmd_doctor(args: argparse.Namespace) -> int:
     diag = _stage(args).diagnose(stale_after=args.stale_after)
-    if args.json:
+    as_json = args.json or getattr(args, "format", None) == "json"
+    if as_json:
         print(json.dumps(diag, indent=2))
     else:
         for problem in diag["problems"]:
             print(f"PROBLEM: {problem}")
         for warning in diag["warnings"]:
-            print(f"WARNING: {warning}")
+            msg = warning.get("message", str(warning)) if isinstance(warning, dict) else str(warning)
+            print(f"WARNING: {msg}")
         if diag["ok"]:
             st = diag["status"]
             print(f"OK: {st['state'] if st else 'uninitialized dir exists'}")
