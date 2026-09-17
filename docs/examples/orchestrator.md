@@ -5,7 +5,7 @@ This guide explains how an **outer orchestrator** coordinates coding agents acro
 In this architecture, **Google Antigravity (`agy`)** and **OpenCode (`opencode`)** operate as **equal peers**:
 - Neither CLI has a privileged position or custom status protocol.
 - Both consume the same task prompts instructing them to emit lifecycle signals.
-- The outer orchestrator supervises both runners using identical commands (`status --json`, `doctor --json`, `wait`).
+- The outer orchestrator supervises both runners using identical commands (`status --json`, `wait`, `wait --needs-reclaim`, `doctor --json`).
 
 ---
 
@@ -17,7 +17,7 @@ A multi-agent orchestrator (such as AGLoop, a custom shell watchdog, or a CI coo
 +--------------------------------------------------------------------------------+
 |                         Outer Orchestrator / Watchdog                          |
 |  - Manages queues, milestone assignment, and worktree creation                 |
-|  - Supervises runner health via: stage-signal doctor --json                    |
+|  - Supervises runner health via: stage-signal wait --needs-reclaim             |
 |  - Observes lifecycle state via: stage-signal status --json / wait             |
 +---------------------------------------+----------------------------------------+
                                         |
@@ -94,8 +94,8 @@ The orchestrator inspects exit codes from `status`, `wait`, or `doctor` commands
 
 | Exit Code | Meaning | CLI States |
 | :--- | :--- | :--- |
-| `0` | Success / Done | `state: done` |
-| `1` | Error / Corrupt directory | Schema violation or disk error |
+| `0` | Success / Done / wait met | `state: done`, or `wait --needs-reclaim` when reclaim is needed |
+| `1` | Error / Corrupt directory | Schema violation or disk error; `wait --needs-reclaim` ending in `done` without reclaim |
 | `2` | Bad CLI Arguments | Flag syntax error |
 | `3` | Illegal Transition / Proof Failure | Invalid lifecycle transition |
 | `10` | Running / Needs Reclaim | `state: running` (or `doctor --exit-reclaim` when `needs_reclaim` is true) |
@@ -159,9 +159,9 @@ are maintained outside the tracked worktree.
 
 ---
 
-## 3. Outer Watchdog: Reading `doctor`, `doctor --json`, and `status --json`
+## 3. Outer Watchdog: `wait --needs-reclaim`, `doctor --json`, and `status --json`
 
-While the agent runs, the outer orchestrator runs a non-blocking watchdog loop that polls the lane's health and status.
+While the agent runs, the outer orchestrator can **block** until reclaim is needed instead of sleeping on `doctor`. Snapshot `doctor --json` / `status --json` remain available for inspection; they are not the reclaim poll loop.
 
 ### Snapshot Inspection: `status --json`
 
@@ -192,9 +192,33 @@ Output:
 
 The exit code matches the current state (`10` for running, `0` for done, etc.).
 
-### Health Supervision: `doctor --json`
+### Reclaim loop: `wait --needs-reclaim`
 
-The orchestrator should not merely rely on wall-clock timeouts. It can proactively detect crashed or hung agents using `doctor --json`:
+Do **not** cron-sleep on `doctor --json` / `doctor --exit-reclaim` to notice a dead PID or stale heartbeat. Block on the first-class waiter, then fail, audit, and reset:
+
+```bash
+# Exit 0 when needs_reclaim becomes true (running + DEAD_PID or STALE_HEARTBEAT).
+# Healthy running keeps polling (never treat status/doctor exit 10 as success).
+# Terminal without reclaim fails closed: done=1, blocked=11, failed=12.
+# Timeout=14; not initialized=15.
+if stage-signal --dir "$WORKTREE/.stage-signal" wait --needs-reclaim --timeout 3600 --poll 5; then
+  stage-signal --dir "$WORKTREE/.stage-signal" fail \
+    --reason "watchdog reclaim (DEAD_PID or STALE_HEARTBEAT)" --if-needs-reclaim
+  # First-class audit (newest last). --json prints a JSON array, not NDJSON.
+  stage-signal --dir "$WORKTREE/.stage-signal" events --tail 20 --type failed
+  # Return the worktree to idle, or restart the agent on a fresh start.
+  stage-signal --dir "$WORKTREE/.stage-signal" clear-terminal
+  stage-signal --dir "$WORKTREE/.stage-signal" events --tail 5 --type clear_terminal
+fi
+```
+
+`wait --json --needs-reclaim` uses the same payload shape as `wait --json` (`outcome`, `wanted`, `observed_state` / `state`, `exit_code`, `timeout`, `stage_id`, `dir`, `reason`, `status`) with `wanted: "needs_reclaim"` and an always-present top-level `needs_reclaim` boolean (also nested on `status`). The [watchdog example](../../examples/orchestrator-watchdog.sh) exposes this as `--wait-reclaim`.
+
+`--if-dead-pid` remains the narrower DEAD_PID-only gate. `--if-dead-pid` and `--if-needs-reclaim` are mutually exclusive.
+
+### Health snapshot: `doctor --json`
+
+`doctor --json` is a **snapshot** (warnings, `needs_reclaim`, problems) — not the reclaim poll loop. Use it to inspect why `wait --needs-reclaim` returned, or for a one-shot `--exit-reclaim` check:
 
 ```bash
 stage-signal --dir "$WORKTREE/.stage-signal" doctor --json
@@ -286,20 +310,7 @@ fi
 
 Warning checks are secondary detail for choosing a response, not the primary health gate. A stale heartbeat does not prove the PID is dead: do not call `fail --if-dead-pid` for a stale-only live runner. The [watchdog example](../../examples/orchestrator-watchdog.sh) logs ATTENTION and returns `0` from its reclaim check in that case; `--once` still returns the observed running-state code `10`. Guarded fail rechecks the current PID under lock and can refuse if the snapshot has changed.
 
-To reclaim **either** `DEAD_PID` or `STALE_HEARTBEAT` in one shot (same `needs_reclaim` semantics as `doctor` / `status` / `Stage.diagnose()`), use `fail --if-needs-reclaim` instead of `--if-dead-pid`. After reclaim (or abandon), audit with `events` — do not scrape `events.jsonl`:
-
-```bash
-# One-shot fail gate: writes failed + reason ONLY when needs_reclaim is true.
-# Healthy running and non-running states: exit 3, no mutation.
-if stage-signal --dir "$WORKTREE/.stage-signal" fail \
-  --reason "watchdog reclaim (DEAD_PID or STALE_HEARTBEAT)" --if-needs-reclaim; then
-  echo "Stage reclaimed as failed."
-  # First-class audit (newest last). --json prints a JSON array, not NDJSON.
-  stage-signal --dir "$WORKTREE/.stage-signal" events --tail 20 --type failed
-else
-  echo "Reclaim not needed or refused (exit $?); no mutation." >&2
-fi
-```
+To reclaim **either** `DEAD_PID` or `STALE_HEARTBEAT` in one shot (same `needs_reclaim` semantics as `doctor` / `status` / `Stage.diagnose()`), prefer the blocking loop above (`wait --needs-reclaim` → `fail --if-needs-reclaim`). The fail gate itself writes `failed` + reason only when reclaim is needed; healthy running and non-running states exit 3 with no mutation.
 
 `--if-dead-pid` remains the narrower DEAD_PID-only gate. `--if-dead-pid` and `--if-needs-reclaim` are mutually exclusive.
 
@@ -440,37 +451,34 @@ PID_OC=$!
 echo "Dispatched agy (PID: $PID_AGY) in $WT_AGY"
 echo "Dispatched opencode (PID: $PID_OC) in $WT_OC"
 
-# 4. Outer Watchdog Loop: supervise health & monitor completion
-check_lane() {
+# 4. Outer Watchdog: wait for completion; reclaim via wait --needs-reclaim
+#    (no doctor sleep loop). Run reclaim wait in the background per lane.
+reclaim_lane() {
   local name="$1"
   local wt="$2"
 
-  # Run doctor to check for dead PIDs or stale heartbeats
-  local doc_json
-  doc_json=$(stage-signal --dir "$wt/.stage-signal" doctor --json 2>/dev/null || echo '{"ok":false}')
-
-  if printf '%s\n' "$doc_json" | jq -e '.needs_reclaim == true' >/dev/null; then
-    echo "[$name] ATTENTION: running needs reclaim; inspect doctor warning details." >&2
-
-    if printf '%s\n' "$doc_json" | jq -e '.warnings[] | select(.code == "DEAD_PID")' >/dev/null; then
-      echo "[$name] WARNING: Dead PID detected by doctor! Process crashed." >&2
-    fi
-
-    if printf '%s\n' "$doc_json" | jq -e '.warnings[] | select(.code == "STALE_HEARTBEAT")' >/dev/null; then
-      echo "[$name] WARNING: Stale heartbeat detected by doctor! Agent may be hung." >&2
+  if stage-signal --dir "$wt/.stage-signal" wait --needs-reclaim --timeout 1800 --poll 10; then
+    echo "[$name] needs_reclaim; failing via --if-needs-reclaim" >&2
+    if stage-signal --dir "$wt/.stage-signal" fail \
+      --reason "[$name] watchdog reclaim (DEAD_PID or STALE_HEARTBEAT)" --if-needs-reclaim; then
+      stage-signal --dir "$wt/.stage-signal" events --tail 20 --type failed >&2 || true
     fi
   fi
-
-  # Check status code
-  stage-signal --dir "$wt/.stage-signal" status >/dev/null 2>&1
-  local status_code=$?
-  echo "$status_code"
 }
+
+check_lane() {
+  local wt="$1"
+  stage-signal --dir "$wt/.stage-signal" status >/dev/null 2>&1
+  echo $?
+}
+
+reclaim_lane "agy" "$WT_AGY" &
+reclaim_lane "opencode" "$WT_OC" &
 
 echo "Monitoring lanes..."
 while true; do
-  STATUS_AGY=$(check_lane "agy" "$WT_AGY")
-  STATUS_OC=$(check_lane "opencode" "$WT_OC")
+  STATUS_AGY=$(check_lane "$WT_AGY")
+  STATUS_OC=$(check_lane "$WT_OC")
 
   echo "Current status: agy=$STATUS_AGY (10=running, 0=done), opencode=$STATUS_OC"
 
@@ -494,5 +502,5 @@ echo "Lane opencode finished with code $STATUS_OC"
 
 - [ ] **One Worktree Per Lane**: Separate directories, separate branches, separate `.stage-signal/` folders.
 - [ ] **Accurate PIDs**: Pass the live PID to `start --pid` so `doctor` can spot process deaths.
-- [ ] **Automated Health Checks**: Run `doctor --json` in your poll loop and branch on `.needs_reclaim == true`, never `.summary` or `.ok`. Inspect `.warnings[]` secondarily: reclaim `DEAD_PID` with `fail --if-dead-pid`, or reclaim both `DEAD_PID` and `STALE_HEARTBEAT` with `fail --if-needs-reclaim`.
+- [ ] **Automated Health Checks**: Block with `wait --needs-reclaim` then `fail --if-needs-reclaim` (optional `events` audit, then `clear-terminal` / restart). Do not sleep-loop `doctor`. Snapshot `doctor --json` still exists for inspection; branch on `.needs_reclaim == true`, never `.summary` or `.ok`. `fail --if-dead-pid` remains the narrower DEAD_PID-only gate.
 - [ ] **Clean Resets**: Use `stage-signal clear-terminal` to reset a terminal *or* parked queued worktree back to `queued -` between tasks. From `running`, reclaim first. After `fail --if-needs-reclaim` / `clear-terminal`, audit with `stage-signal events --tail 20` (optional `--type failed|clear_terminal`, `--json` for a JSON array).

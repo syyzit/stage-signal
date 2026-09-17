@@ -186,6 +186,38 @@ def test_watchdog_needs_reclaim(tmp_path: Path, dead_pid: bool, stale: bool) -> 
         assert "fail --if-dead-pid" not in result.stderr
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="watchdog requires a POSIX shell")
+@pytest.mark.parametrize("dead_pid,stale", [(True, False), (False, True)])
+def test_watchdog_wait_reclaim(tmp_path: Path, dead_pid: bool, stale: bool) -> None:
+    root = Path(__file__).resolve().parents[1]
+    stage = Stage(tmp_path / ".stage-signal")
+    stage.init()
+    pid = os.getpid()
+    if dead_pid:
+        process = subprocess.Popen([sys.executable, "-c", "pass"])
+        process.wait(timeout=10)
+        pid = process.pid
+    status = stage.start(stage="watchdog-wait", pid=pid)
+    if stale:
+        status["heartbeat_at"] = "2000-01-01T00:00:00+00:00"
+        (stage.dir / "STATUS.json").write_text(json.dumps(status))
+    env = dict(os.environ)
+    env["PATH"] = str(Path(sys.executable).parent) + os.pathsep + env.get("PATH", "")
+    env["PYTHONPATH"] = str(root / "src")
+    command = [
+        "sh", str(root / "examples/orchestrator-watchdog.sh"),
+        "--dir", str(stage.dir), "--wait-reclaim", "--timeout", "5", "--poll", "0.05",
+    ]
+
+    result = subprocess.run(command, env=env, capture_output=True, text=True, timeout=10)
+
+    assert result.returncode == 12, result.stderr
+    assert stage.status()["state"] == "failed"
+    assert "needs_reclaim" in stage.status()["error"]["reason"]
+    events = [json.loads(line) for line in (stage.dir / "events.jsonl").read_text().splitlines()]
+    assert events[-1]["type"] == "failed"
+
+
 def test_parse_meta_kv_basic() -> None:
     assert _parse_meta(["a=1", "b=2"]) == {"a": "1", "b": "2"}
 
@@ -311,6 +343,8 @@ def test_wait_help_documents_json() -> None:
     assert "--json" in help_text
     assert "JSON object" in help_text
     assert "reason" in help_text
+    assert "--needs-reclaim" in help_text
+    assert "needs_reclaim" in help_text
 
 
 def test_cli_wait_json_met_done(tmp_path, monkeypatch, capsys) -> None:
@@ -335,7 +369,9 @@ def test_cli_wait_json_met_done(tmp_path, monkeypatch, capsys) -> None:
     assert data["stage_id"] == "m1-id"
     assert data["dir"] == str(d)
     assert data["reason"] is None
+    assert data["needs_reclaim"] is False
     assert data["status"]["state"] == "done"
+    assert data["status"]["needs_reclaim"] is False
     assert data["status"]["result"]["summary"] == "all good"
 
     # wait --json with explicit --state done
@@ -371,6 +407,8 @@ def test_cli_wait_json_timeout(tmp_path, monkeypatch, capsys) -> None:
     assert "timed out" in data["reason"]
     assert data["status"]["state"] == "running"
     assert data["status"]["stage_name"] == "m-running"
+    assert data["needs_reclaim"] is False
+    assert data["status"]["needs_reclaim"] is False
 
 
 def test_cli_wait_json_mismatch_blocked(tmp_path, monkeypatch, capsys) -> None:
@@ -476,6 +514,161 @@ def test_cli_wait_human_default_preserved(tmp_path, monkeypatch, capsys) -> None
     captured = capsys.readouterr()
     assert captured.out == ""
     assert "stage-signal: error: wait timed out after 0.2s" in captured.err
+
+
+def test_cli_wait_needs_reclaim_mutually_exclusive_with_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    d = tmp_path / ".stage-signal"
+    monkeypatch.setenv("STAGE_SIGNAL_DIR", str(d))
+    assert main(["init"]) == 0
+    capsys.readouterr()
+    assert main(["wait", "--needs-reclaim", "--state", "done", "--timeout", "1"]) == 2
+    assert "cannot be combined with --state" in capsys.readouterr().err
+
+
+def test_cli_wait_needs_reclaim_dead_pid_json(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    d = tmp_path / ".stage-signal"
+    monkeypatch.setenv("STAGE_SIGNAL_DIR", str(d))
+    process = subprocess.Popen([sys.executable, "-c", "pass"])
+    process.wait(timeout=10)
+    assert main(["init"]) == 0
+    assert main(["start", "--stage", "m-dead", "--stage-id", "id-dead", "--pid", str(process.pid)]) == 0
+    capsys.readouterr()
+
+    assert main(["wait", "--json", "--needs-reclaim", "--timeout", "5", "--poll", "0.05"]) == 0
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    data = json.loads(captured.out)
+    assert data["outcome"] == "met"
+    assert data["wanted"] == "needs_reclaim"
+    assert data["observed_state"] == "running"
+    assert data["state"] == "running"
+    assert data["exit_code"] == 0
+    assert data["timeout"] is False
+    assert data["stage_id"] == "id-dead"
+    assert data["dir"] == str(d)
+    assert data["reason"] is None
+    assert data["needs_reclaim"] is True
+    assert data["status"]["state"] == "running"
+    assert data["status"]["needs_reclaim"] is True
+
+
+def test_cli_wait_needs_reclaim_stale_json(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    d = tmp_path / ".stage-signal"
+    monkeypatch.setenv("STAGE_SIGNAL_DIR", str(d))
+    stage = Stage(d)
+    stage.init()
+    stage.start(stage="m-stale", pid=os.getpid())
+    status_file = d / "STATUS.json"
+    raw = json.loads(status_file.read_text(encoding="utf-8"))
+    raw["heartbeat_at"] = "2000-01-01T00:00:00+00:00"
+    status_file.write_text(json.dumps(raw), encoding="utf-8")
+    capsys.readouterr()
+
+    assert main(["wait", "--json", "--needs-reclaim", "--timeout", "5", "--poll", "0.05"]) == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data["outcome"] == "met"
+    assert data["wanted"] == "needs_reclaim"
+    assert data["needs_reclaim"] is True
+    assert data["status"]["needs_reclaim"] is True
+    assert data["observed_state"] == "running"
+
+
+def test_cli_wait_needs_reclaim_healthy_running_no_early_exit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    d = tmp_path / ".stage-signal"
+    monkeypatch.setenv("STAGE_SIGNAL_DIR", str(d))
+    assert main(["init"]) == 0
+    assert main(["start", "--stage", "m-live", "--pid", str(os.getpid())]) == 0
+    capsys.readouterr()
+
+    assert main(["wait", "--json", "--needs-reclaim", "--timeout", "0.25", "--poll", "0.05"]) == 14
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    data = json.loads(captured.out)
+    assert data["outcome"] == "timeout"
+    assert data["wanted"] == "needs_reclaim"
+    assert data["observed_state"] == "running"
+    assert data["exit_code"] == 14
+    assert data["timeout"] is True
+    assert data["needs_reclaim"] is False
+    assert data["status"]["state"] == "running"
+    assert data["status"]["needs_reclaim"] is False
+
+
+@pytest.mark.parametrize("setup,expected_code,reason", [
+    ("done", 1, None),
+    ("blocked", 11, "waiting on api key"),
+    ("failed", 12, "syntax error"),
+])
+def test_cli_wait_needs_reclaim_terminal_without_reclaim_fails_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    setup: str,
+    expected_code: int,
+    reason: str | None,
+) -> None:
+    d = tmp_path / ".stage-signal"
+    monkeypatch.setenv("STAGE_SIGNAL_DIR", str(d))
+    assert main(["init"]) == 0
+    assert main(["start", "--stage", "m-term", "--stage-id", "id-term"]) == 0
+    if setup == "done":
+        assert main(["done", "--summary", "all good"]) == 0
+    elif setup == "blocked":
+        assert main(["blocked", "--reason", reason or "blocked"]) == 0
+    else:
+        assert main(["fail", "--reason", reason or "failed"]) == 0
+    capsys.readouterr()
+
+    assert main(["wait", "--json", "--needs-reclaim", "--timeout", "5", "--poll", "0.05"]) == expected_code
+    captured = capsys.readouterr()
+    assert captured.out != ""
+    data = json.loads(captured.out)
+    assert data["outcome"] == "mismatch"
+    assert data["wanted"] == "needs_reclaim"
+    assert data["observed_state"] == setup
+    assert data["state"] == setup
+    assert data["exit_code"] == expected_code
+    assert data["timeout"] is False
+    assert data["needs_reclaim"] is False
+    assert data["status"]["needs_reclaim"] is False
+    assert data["reason"] == reason
+
+    # Human mismatch also fails closed (never silent success).
+    assert main(["wait", "--needs-reclaim", "--timeout", "5", "--poll", "0.05"]) == expected_code
+    human = capsys.readouterr()
+    assert human.out == ""
+    assert f"wait ended in {setup} (wanted needs_reclaim)" in human.err
+
+
+def test_cli_wait_needs_reclaim_not_initialized(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("STAGE_SIGNAL_DIR", str(tmp_path / "nope" / ".stage-signal"))
+    assert main(["wait", "--needs-reclaim", "--timeout", "1"]) == 15
+    assert main(["wait", "--json", "--needs-reclaim", "--timeout", "1"]) == 15
+
+
+def test_cli_wait_needs_reclaim_human_met(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    d = tmp_path / ".stage-signal"
+    monkeypatch.setenv("STAGE_SIGNAL_DIR", str(d))
+    process = subprocess.Popen([sys.executable, "-c", "pass"])
+    process.wait(timeout=10)
+    assert main(["init"]) == 0
+    assert main(["start", "--stage", "m-human-reclaim", "--pid", str(process.pid)]) == 0
+    capsys.readouterr()
+    assert main(["wait", "--needs-reclaim", "--timeout", "5", "--poll", "0.05"]) == 0
+    out = capsys.readouterr().out
+    assert "wait met: needs_reclaim" in out
 
 
 def test_cli_dogfood_meta_and_git_refresh(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

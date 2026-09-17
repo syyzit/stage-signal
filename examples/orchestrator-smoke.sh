@@ -40,6 +40,11 @@ pass "done -> done"
 ST wait --state done --timeout 1 >/dev/null || fail "wait done should exit 0"
 pass "wait --state done -> exit 0"
 
+ST wait --needs-reclaim --timeout 1 >/dev/null 2>&1
+code=$?
+[ "$code" -eq 1 ] || fail "wait --needs-reclaim on done should exit 1, got $code"
+pass "wait --needs-reclaim on done -> exit 1"
+
 ST clear-terminal >/dev/null || fail "clear-terminal"
 [ "$(STATE_OF)" = "queued" ] || fail "expected queued after clear-terminal"
 pass "clear-terminal -> queued"
@@ -67,5 +72,9 @@ pass "status on blocked -> exit 11"
 
 ST doctor >/dev/null || fail "doctor should exit 0 on healthy dir"
 pass "doctor -> exit 0"
+
+ST start --stage reclaim --pid 999999999 >/dev/null || fail "start reclaim dead pid"
+ST wait --needs-reclaim --timeout 2 --poll 0.1 >/dev/null || fail "wait --needs-reclaim on DEAD_PID should exit 0"
+pass "wait --needs-reclaim on DEAD_PID -> exit 0"
 
 echo "ALL SMOKE CHECKS PASSED"

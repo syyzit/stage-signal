@@ -257,7 +257,8 @@ stage-signal blocked --reason TEXT [--write-status-mirror]
 stage-signal fail --reason TEXT [--if-dead-pid|--if-needs-reclaim] [--write-status-mirror]
 stage-signal status [--json]
 stage-signal events [--tail N] [--type TYPE] [--json]
-stage-signal wait [--state done|blocked|failed|terminal] [--timeout SEC] [--poll SEC] [--json]
+stage-signal wait [--state done|blocked|failed|terminal] [--needs-reclaim]
+             [--timeout SEC] [--poll SEC] [--json]
 stage-signal clear-terminal [--keep-stage]
 stage-signal doctor [--stale-after SEC] [--json] [--format human|json]
 ```
@@ -275,14 +276,34 @@ stage-signal doctor [--stale-after SEC] [--json] [--format human|json]
   Exit 0 when the wanted condition is met. If a *different* terminal state is
   reached first, exit with that state's code (11/12) — not 0, not 14.
   Exit 14 only on true timeout. `wait` on a non-initialized dir is exit 15.
+  `--needs-reclaim` is an alternate wait target (cannot be combined with
+  `--state` other than the default `terminal`). It polls until
+  `needs_reclaim` is true under the same detection as `status --json` /
+  `doctor` / `Stage.diagnose()` (default 300s stale threshold): `running`
+  plus `DEAD_PID` or `STALE_HEARTBEAT`. Exit 0 when that boolean becomes
+  true. Healthy `running` keeps polling — never treat `status` / `doctor
+  --exit-reclaim` exit 10 as wait success. `queued` also keeps polling
+  (reclaim can only become true after `start`). Terminal
+  `done`/`blocked`/`failed` without reclaim **fails closed** immediately:
+  reuse the existing mismatch codes (`blocked` → 11, `failed` → 12);
+  `done` cannot reuse 0, so it exits **1**. Library:
+  `Stage.wait(..., needs_reclaim=True)` (keyword-only) shares this poll
+  loop; a terminal-without-reclaim snapshot is returned (not raised) so
+  the caller maps the non-zero mismatch. The reclaim loop for
+  orchestrators is `wait --needs-reclaim` → `fail --if-needs-reclaim` →
+  optional `events` audit → `clear-terminal` / restart — not a hand-rolled
+  `doctor` sleep.
   `--json` prints one JSON object on stdout across all outcomes (`outcome`:
   `"met"` | `"mismatch"` | `"timeout"`, `wanted`, `observed_state` / `state`,
-  `exit_code`, `timeout`, `stage_id`, `dir`, `reason`, and the `status`
-  snapshot) with human output omitted, preserving the exit-code contract.
-  `reason` is a short string when the observed state is `blocked` or `failed`
-  (from `status.error.reason`) or when the wait timed out (the timeout
-  message); otherwise `null`. Human default output is unchanged without
-  `--json`.
+  `exit_code`, `timeout`, `stage_id`, `dir`, `reason`, `needs_reclaim`, and
+  the `status` snapshot) with human output omitted, preserving the
+  exit-code contract. `wanted` is the `--state` value, or `"needs_reclaim"`
+  when `--needs-reclaim` is set. Top-level `needs_reclaim` is the same
+  boolean as `status --json` / `doctor --json` (also nested on `status`
+  when a snapshot is present). `reason` is a short string when the observed
+  state is `blocked` or `failed` (from `status.error.reason`) or when the
+  wait timed out (the timeout message); otherwise `null`. Human default
+  output is unchanged without `--json`.
 - `status` prints human text by default (including heartbeat age, e.g.
   `heartbeat: <ISO> (age 42s)`, when a heartbeat is recorded); with `--json`, it
   prints the status payload as a JSON object, including dynamic
@@ -337,7 +358,8 @@ stage-signal doctor [--stale-after SEC] [--json] [--format human|json]
   - `UNPARSEABLE_HEARTBEAT`: invalid heartbeat timestamp format (detail: `{"heartbeat_at": str}`).
   Warnings never change stage state and do not trigger a non-zero exit code (exit 0 on healthy/warnings, 1 on problems, 2 on bad args); orchestrators should branch on the `needs_reclaim` boolean rather than string-matching `summary` or scraping human warning text.
   Passing `--exit-reclaim` causes `doctor` to exit 10 when `needs_reclaim` is true (while still printing human/JSON output as requested). When `--exit-reclaim` is set and `needs_reclaim` is false, standard exit codes are preserved (0 on healthy/warnings, 1 on problems, 2 on bad args). Without the flag, behavior is unchanged (reclaim warnings stay exit 0).
-  Orchestrators that branch on `needs_reclaim` can reclaim in one shot with
+  Orchestrators that need to **wait** until `needs_reclaim` is true should
+  use `wait --needs-reclaim` (not a `doctor` sleep loop), then reclaim with
   `fail --reason TEXT --if-needs-reclaim` (covers both `DEAD_PID` and
   `STALE_HEARTBEAT`). `fail --if-dead-pid` remains the narrower DEAD_PID-only
   gate. `doctor` itself never mutates.
@@ -347,8 +369,8 @@ stage-signal doctor [--stale-after SEC] [--json] [--format human|json]
 
 | Code | Meaning |
 |------|---------|
-| 0 | OK / wait condition met |
-| 1 | Generic error (IO, corrupt file incl. unsupported schema version, doctor problems) |
+| 0 | OK / wait condition met (including `wait --needs-reclaim` when `needs_reclaim` is true) |
+| 1 | Generic error (IO, corrupt file incl. unsupported schema version, doctor problems); also `wait --needs-reclaim` when the stage reached `done` without reclaim (fail closed; cannot reuse 0) |
 | 2 | Bad args |
 | 3 | Illegal transition / failed `--require-proof` gate |
 | 10 | State is `running` (`status`/`wait` mismatch reporting); or `doctor --exit-reclaim` when `needs_reclaim` is true |
