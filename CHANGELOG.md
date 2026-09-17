@@ -6,6 +6,20 @@ See `docs/RELEASE.md` for the release procedure.
 
 ## [Unreleased]
 
+## [0.1.4] — 2026-09-17
+
+- Added explicit `DEAD_PID` recovery hint (`reclaim with 'fail --reason TEXT --if-dead-pid'`)
+  to `stage-signal doctor` message and detail in both human and JSON outputs, guiding
+  operators on process reclamation without manual state editing (#44, #50).
+- Added dynamic `heartbeat_age_seconds` (number of elapsed seconds, or `null` if no
+  heartbeat recorded) to `stage-signal status --json` output and dictionary payloads (#44, #50).
+- Added human-readable heartbeat age (`heartbeat: <iso> (age <Ns>)`) to `stage-signal status`
+  output when a heartbeat is present (#51, #52).
+- Dropped committed `.agloop-oc-DONE.md` receipt and added `.agloop-*-DONE.md` patterns
+  to `.gitignore` to prevent agent completion receipts from polluting git worktrees (#47, #49).
+- Documented isolated worktree dogfooding guidelines, shared `.venv` editable import
+  pitfalls, and `PYTHONPATH` pinning in `CONTRIBUTING.md` and `docs/examples/orchestrator.md` (#48, #53).
+
 ## [0.1.3] — 2026-09-17
 
 - Reset `clear-terminal` to true idle `queued` state by clearing stage identity
@@ -87,7 +101,8 @@ GitHub release and tag: [`v0.1.0`](https://github.com/syyzit/stage-signal/releas
 - Stdlib only, Python `>=3.11`. Entry point `stage-signal`
   (`python -m stage_signal` alias).
 
-[Unreleased]: https://github.com/syyzit/stage-signal/compare/v0.1.3...HEAD
+[Unreleased]: https://github.com/syyzit/stage-signal/compare/v0.1.4...HEAD
+[0.1.4]: https://github.com/syyzit/stage-signal/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/syyzit/stage-signal/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/syyzit/stage-signal/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/syyzit/stage-signal/compare/v0.1.0...v0.1.1
