@@ -9,12 +9,14 @@ from typing import Any, Callable, Optional, Sequence
 
 from . import __version__
 from .constants import (
+    DEFAULT_STALE_THRESHOLD,
     ENV_DIR,
     EVENT_TYPES,
     EVENTS_DEFAULT_TAIL,
     EXIT_ERROR,
     EXIT_OK,
     EXIT_RUNNING,
+    SUPERVISE_DEFAULT_EVERY,
     WAIT_DEFAULT_POLL,
     WAIT_DEFAULT_TIMEOUT,
     state_exit_code,
@@ -254,6 +256,53 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument("--exit-reclaim", action="store_true", default=False,
                    help="exit 10 when needs_reclaim is true (default: exit 0 on warnings)")
     c.set_defaults(func=cmd_doctor)
+
+    c = sub.add_parser(
+        "supervise",
+        help="supervise child command with auto-heartbeat (running only)",
+        description=(
+            "Run and supervise CMD, automatically bumping stage heartbeat every "
+            "--every seconds while the child process is alive. The stage must "
+            "already be in state 'running' (refuses with exit 3 otherwise). "
+            "Exit 0 maps to stage done; non-zero maps to stage fail. "
+            "SIGINT/SIGTERM are forwarded to the child process. "
+            "Exit code matches child exit code (or 128+SIG on signal, "
+            "2 on bad args, 3 on illegal transition, 15 if not initialized)."
+        ),
+    )
+    c.add_argument(
+        "--every",
+        type=float,
+        default=SUPERVISE_DEFAULT_EVERY,
+        metavar="SEC",
+        help=(
+            f"heartbeat interval in seconds (default: {int(SUPERVISE_DEFAULT_EVERY)}; "
+            f"must be between 1 and {int(DEFAULT_STALE_THRESHOLD - 1)})"
+        ),
+    )
+    c.add_argument(
+        "--dir",
+        default=argparse.SUPPRESS,
+        help=f"stage dir (default: ${ENV_DIR} or .stage-signal)",
+    )
+    c.add_argument(
+        "--summary",
+        default=None,
+        help="summary for done on exit 0 (default: 'command succeeded (exit 0): CMD')",
+    )
+    c.add_argument(
+        "--reason",
+        default=None,
+        help="reason for fail on non-zero exit (default: 'command failed with exit code N: CMD')",
+    )
+    c.add_argument("--write-status-mirror", action="store_true", default=None)
+    c.add_argument(
+        "cmd",
+        nargs=argparse.REMAINDER,
+        metavar="CMD",
+        help="command and arguments to run (prefix with --)",
+    )
+    c.set_defaults(func=cmd_supervise)
 
     return p
 
@@ -623,3 +672,22 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     if getattr(args, "exit_reclaim", False) and diag.get("needs_reclaim"):
         return EXIT_RUNNING
     return EXIT_OK if diag["ok"] else EXIT_ERROR
+
+
+def cmd_supervise(args: argparse.Namespace) -> int:
+    raw_cmd = getattr(args, "cmd", None) or []
+    cmd = list(raw_cmd)
+    if cmd and cmd[0] == "--":
+        cmd = cmd[1:]
+    if not cmd:
+        raise BadArgsError(
+            "supervise requires a command to run (e.g. stage-signal supervise -- CMD [ARGS...])"
+        )
+    return _stage(args).supervise(
+        cmd,
+        every=args.every,
+        summary=getattr(args, "summary", None),
+        reason=getattr(args, "reason", None),
+        write_status_mirror=getattr(args, "write_status_mirror", None),
+    )
+

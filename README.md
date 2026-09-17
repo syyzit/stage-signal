@@ -96,11 +96,13 @@ stage-signal wait --needs-reclaim --timeout 900 --poll 5 &&
 # stage-signal reclaim --reason "audit then clear" --kill --keep-failed
 # audit the reclaim (do not scrape events.jsonl with tail/jq):
 stage-signal events --tail 20 --type failed
-stage-signal events --tail 5 --type clear_terminal
-# snapshot health / structured warnings (STALE_HEARTBEAT, DEAD_PID):
+# or snapshot health / structured warnings (STALE_HEARTBEAT, DEAD_PID):
 stage-signal doctor --json
 # or a one-shot exit 10 when reclaim is already needed (without requiring jq):
 stage-signal doctor --exit-reclaim
+
+# supervise a child command with automatic heartbeats until exit (done on 0, fail on non-zero):
+stage-signal supervise -- pytest -v
 ```
 
 The `--pid $$` example uses the POSIX shell process ID. On Windows, pass the
@@ -164,7 +166,20 @@ Multi-stage queues (same contract, one dir walked against a queue file):
 `examples/queue-orchestrator.sh --queue examples/sample-queue.md [--dir PATH] [--once]`
 — `done` advances (exit 0), `blocked`/`failed` stop with 11/12,
 `running`/`queued` wait (or exit 10/13 with `--once` for cron).
-Smoke: `examples/queue-orchestrator-smoke.sh`.
+### Auto-heartbeating child commands: `supervise`
+
+Agents running long commands (builds, test suites, multi-step tasks) often forget to emit periodic heartbeats, leading to false `needs_reclaim` / stale watchdog alerts. Wrap execution with `stage-signal supervise`:
+
+```bash
+# Stage must already be running:
+stage-signal start --stage test-suite --pid $$
+
+# Supervise automatically bumps heartbeat every --every seconds (default 60s),
+# forwards SIGINT/SIGTERM to child, and transitions to done on exit 0 or fail on non-zero:
+stage-signal supervise --every 30 -- pytest -v
+```
+
+`supervise` returns the child process exit code (or `128 + SIGNUM` on signal termination; standard error codes 2, 3, 15 on bad args or setup failures).
 
 ### Driving coding agents (agy, OpenCode, etc.)
 

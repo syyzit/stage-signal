@@ -6,16 +6,20 @@ import copy
 from datetime import datetime, timezone
 import errno
 import os
+import shlex
 import shutil
 import signal
 import subprocess
 import sys
-from pathlib import Path
-from typing import Any, Optional
+import threading
 import time
+from pathlib import Path
+from typing import Any, Optional, Sequence
 
 from .constants import (
     DEFAULT_MIRROR_DIRNAME,
+    DEFAULT_STALE_THRESHOLD,
+    SUPERVISE_DEFAULT_EVERY,
     ENV_STATUS_MIRROR,
     ENV_PROJECT,
     ENV_PROOF_REF,
@@ -715,6 +719,174 @@ class Stage:
             detail={"keep_stage": keep_stage},
         )
 
+    # -- supervisor -------------------------------------------------------
+
+    def supervise(
+        self,
+        cmd: Sequence[str] | str,
+        *,
+        every: float = SUPERVISE_DEFAULT_EVERY,
+        stale_threshold: float = DEFAULT_STALE_THRESHOLD,
+        summary: Optional[str] = None,
+        reason: Optional[str] = None,
+        write_status_mirror: Optional[bool] = None,
+        cwd: Optional[Path | str] = None,
+        env: Optional[dict[str, str]] = None,
+    ) -> int:
+        """Supervise a child command, auto-heartbeating while running (SPEC §6).
+
+        The stage must already be in state ``running`` (SPEC §4.2/§6).
+        Refuses with ``IllegalTransition`` (exit 3) if not running.
+
+        While child process is alive, bumps ``heartbeat`` every *every*
+        seconds (default 60; validated 1 <= every <= stale_threshold - 1).
+
+        When child exits 0, transitions to ``done`` with *summary*.
+        When child exits non-zero, transitions to ``failed`` with *reason*.
+        Signals (SIGINT, SIGTERM) are forwarded to the child process,
+        and the terminal transition is recorded before returning.
+
+        Returns the exit code of the child process (or 128 + sig on signal).
+        """
+        if (
+            not isinstance(every, (int, float))
+            or isinstance(every, bool)
+            or every < 1.0
+            or every > (stale_threshold - 1.0)
+        ):
+            raise BadArgsError(
+                f"--every must be between 1 and {int(stale_threshold - 1)} seconds (got {every})"
+            )
+
+        if isinstance(cmd, str):
+            cmd_list = shlex.split(cmd) if cmd.strip() else []
+        elif isinstance(cmd, (list, tuple)):
+            cmd_list = [str(arg) for arg in cmd]
+        else:
+            raise BadArgsError(
+                f"cmd must be a sequence of strings or a string (got {type(cmd).__name__})"
+            )
+
+        if not cmd_list:
+            raise BadArgsError("supervise requires a non-empty command")
+
+        st = self.status()
+        current_state = st.get("state")
+        if current_state != STATE_RUNNING:
+            raise IllegalTransition(
+                f"supervise requires state 'running' (current state: {current_state!r})"
+            )
+
+        cmd_display = " ".join(shlex.quote(str(arg)) for arg in cmd_list)
+        try:
+            proc = subprocess.Popen(
+                cmd_list,
+                cwd=cwd,
+                env=env,
+            )
+        except FileNotFoundError as exc:
+            self.fail(
+                reason=f"command not found: {cmd_list[0]}",
+                write_status_mirror=write_status_mirror,
+            )
+            return 127
+        except PermissionError as exc:
+            self.fail(
+                reason=f"permission denied: {cmd_list[0]}",
+                write_status_mirror=write_status_mirror,
+            )
+            return 126
+        except OSError as exc:
+            self.fail(
+                reason=f"failed to execute command {cmd_list[0]}: {exc}",
+                write_status_mirror=write_status_mirror,
+            )
+            return 1
+
+        is_main_thread = (
+            threading.current_thread() is threading.main_thread()
+            and hasattr(signal, "signal")
+        )
+        old_handlers: dict[int, Any] = {}
+
+        def _forward_signal(signum: int, _frame: Any) -> None:
+            try:
+                proc.send_signal(signum)
+            except (ProcessLookupError, OSError):
+                pass
+            except ValueError:
+                try:
+                    proc.terminate()
+                except (ProcessLookupError, OSError):
+                    pass
+
+        if is_main_thread:
+            for sig_name in ("SIGINT", "SIGTERM"):
+                if hasattr(signal, sig_name):
+                    sig = getattr(signal, sig_name)
+                    try:
+                        old_handlers[sig] = signal.signal(sig, _forward_signal)
+                    except (ValueError, OSError):
+                        pass
+
+        try:
+            next_heartbeat = time.monotonic() + every
+            while True:
+                now = time.monotonic()
+                time_left = next_heartbeat - now
+                if time_left <= 0:
+                    if proc.poll() is not None:
+                        break
+                    try:
+                        self.heartbeat()
+                    except StageError:
+                        pass
+                    next_heartbeat = time.monotonic() + every
+                    time_left = every
+
+                wait_slice = max(0.01, min(time_left, 1.0))
+                try:
+                    proc.wait(timeout=wait_slice)
+                    break
+                except subprocess.TimeoutExpired:
+                    pass
+        finally:
+            if is_main_thread:
+                for sig, old_h in old_handlers.items():
+                    try:
+                        signal.signal(sig, old_h)
+                    except (ValueError, OSError):
+                        pass
+
+        rc = proc.returncode
+        if rc is None:
+            rc = proc.wait()
+
+        if rc < 0:
+            sig_num = -rc
+            try:
+                sig_name = signal.Signals(sig_num).name
+            except (ValueError, AttributeError):
+                sig_name = f"SIG{sig_num}"
+            exit_code = 128 + sig_num
+            default_fail_reason = f"command terminated by {sig_name}: {cmd_display}"
+        else:
+            exit_code = rc
+            default_fail_reason = f"command failed with exit code {exit_code}: {cmd_display}"
+
+        if exit_code == 0:
+            self.done(
+                summary=summary or f"command succeeded (exit 0): {cmd_display}",
+                write_status_mirror=write_status_mirror,
+            )
+        else:
+            self.fail(
+                reason=reason or default_fail_reason,
+                write_status_mirror=write_status_mirror,
+            )
+
+        return exit_code
+
     # -- observers --------------------------------------------------------
 
     def status(self) -> dict[str, Any]:
@@ -808,7 +980,9 @@ class Stage:
             time.sleep(min(poll, remaining))
             last = self.status()
 
-    def diagnose(self, *, stale_after: Optional[float] = 300.0) -> dict[str, Any]:
+    def diagnose(
+        self, *, stale_after: Optional[float] = DEFAULT_STALE_THRESHOLD
+    ) -> dict[str, Any]:
         """Check dir health. Returns {"ok", "needs_reclaim", "state", "problems", "warnings", "status", "summary"}."""
         problems: list[str] = []
         warnings: list[dict[str, Any]] = []
@@ -926,7 +1100,7 @@ def _signal_pid_best_effort(pid: int, sig: int) -> None:
 def _reclaim_diagnostics(
     status: Optional[dict[str, Any]],
     *,
-    stale_after: Optional[float] = 300.0,
+    stale_after: Optional[float] = DEFAULT_STALE_THRESHOLD,
 ) -> tuple[list[dict[str, Any]], bool]:
     warnings: list[dict[str, Any]] = []
     if status is None or status.get("state") != STATE_RUNNING:
