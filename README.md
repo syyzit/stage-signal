@@ -160,7 +160,7 @@ The agent CLI invocation line is pluggable — everything else stays identical:
 | **agy** (Antigravity CLI) | `agy -p "$PROMPT" --dangerously-skip-permissions --print-timeout 45m` |
 | **OpenCode** | `opencode run --dir "$REPO" --auto -m "$MODEL" "$PROMPT"` |
 
-See [`examples/cli-orchestrator-loop.md`](examples/cli-orchestrator-loop.md) for the end-to-end loop guide and [`examples/multi-cli-loop.sh`](examples/multi-cli-loop.sh) for a thin runner reusing `examples/queue-orchestrator.sh`.
+See [`docs/examples/orchestrator.md`](docs/examples/orchestrator.md) for the dual-CLI peer orchestrator guide with parallel worktrees and watchdog health checks, [`examples/cli-orchestrator-loop.md`](examples/cli-orchestrator-loop.md) for the end-to-end loop guide, and [`examples/multi-cli-loop.sh`](examples/multi-cli-loop.sh) for a thin runner reusing `examples/queue-orchestrator.sh`.
 
 #### Idle vs. Queued in Orchestrators
 
@@ -288,6 +288,7 @@ pytest + both smokes + packaging check via `python -m build` /
 
 - `docs/SPEC.md` — normative contract (schema, CLI, exit codes)
 - `docs/COMPOSE.md` — proof interop (`--proof-ref` / `--require-proof`)
+- `docs/examples/orchestrator.md` — dual-CLI orchestrator example (agy + OpenCode as peers)
 - `docs/RELEASE.md` — release procedure (manual; no upload from agent loops)
 - `docs/PRIOR_ART.md` — background research
 - `CHANGELOG.md` — release notes
