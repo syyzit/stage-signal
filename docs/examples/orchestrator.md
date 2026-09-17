@@ -207,7 +207,8 @@ Healthy output:
   "state": "running",
   "problems": [],
   "warnings": [],
-  "status": { ... }
+  "status": { ... },
+  "summary": "OK: running"
 }
 ```
 
@@ -255,12 +256,19 @@ When an anomaly occurs, `doctor --json` populates the `warnings` array with mach
    }
    ```
 
-#### Branching on Warnings with `jq`
+#### Branching on Summary and Warnings with `jq`
+
+Orchestrators can branch directly on `.summary` without scraping warning lines or parsing arrays:
 
 ```bash
 doc_json=$(stage-signal --dir "$WORKTREE/.stage-signal" doctor --json)
 
-# Check for dead runner process
+# Check if doctor flags that running needs reclaim (STALE or DEAD_PID)
+if [ "$(echo "$doc_json" | jq -r .summary)" = "ATTENTION: running needs reclaim" ]; then
+  echo "Stage running state is unhealthy and requires reclaim!"
+fi
+
+# Check for dead runner process specifically
 if echo "$doc_json" | jq -e '.warnings[] | select(.code == "DEAD_PID")' >/dev/null; then
   echo "Process died without completing stage! Handling crash..."
   if stage-signal --dir "$WORKTREE/.stage-signal" fail \

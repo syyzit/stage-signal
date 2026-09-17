@@ -446,15 +446,19 @@ def test_wait_validates(stage: Stage) -> None:
 def test_diagnose(stage: Stage, stage_dir: Path) -> None:
     diag = stage.diagnose()
     assert diag["ok"] and not diag["problems"]
+    assert diag["summary"] == "OK: queued"
     missing = Stage(stage_dir.parent / "nope" / ".stage-signal")
     diag2 = missing.diagnose()
     assert not diag2["ok"]
+    assert diag2["summary"] is None
     stage.start(stage="m")
     diag3 = stage.diagnose(stale_after=10**9)
     assert diag3["ok"] and not diag3["warnings"]
+    assert diag3["summary"] == "OK: running"
     diag4 = stage.diagnose(stale_after=0)
     assert diag4["ok"] and diag4["warnings"] and diag4["warnings"][0]["code"] == "STALE_HEARTBEAT"
     assert "STALE" in diag4["warnings"][0]["message"]
+    assert diag4["summary"] == "ATTENTION: running needs reclaim"
 
 
 def test_state_exit_codes() -> None:

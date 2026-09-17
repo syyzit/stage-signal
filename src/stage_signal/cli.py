@@ -356,7 +356,6 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         for warning in diag["warnings"]:
             msg = warning.get("message", str(warning)) if isinstance(warning, dict) else str(warning)
             print(f"WARNING: {msg}")
-        if diag["ok"]:
-            st = diag["status"]
-            print(f"OK: {st['state'] if st else 'uninitialized dir exists'}")
+        if diag.get("summary"):
+            print(diag["summary"])
     return 0 if diag["ok"] else 1
