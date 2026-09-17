@@ -90,6 +90,8 @@ stage-signal wait --state terminal --timeout 900
 stage-signal wait --json --state terminal --timeout 900
 # reset terminal state back to true idle queued:
 stage-signal clear-terminal
+# check directory health and inspect structured warnings (STALE_HEARTBEAT, DEAD_PID):
+stage-signal doctor --json
 ```
 
 The `--pid $$` example uses the POSIX shell process ID. On Windows, pass the
@@ -114,6 +116,7 @@ Exact schema and exit codes: see `docs/SPEC.md` (normative) and
 `1` generic/corrupt, `10` running, `11` blocked, `12` failed, `13` queued,
 `14` wait timeout, `15` not initialized, `2` bad args, `3` illegal transition.
 `wait --json` prints a structured JSON object (`outcome`, `wanted`, `observed_state`, `exit_code`, `timeout`, `stage_id`, `dir`, `status`) to stdout while preserving these exit codes.
+`doctor --json` prints machine-readable health diagnostics with structured warnings (`ok`, `state`, `warnings`: `[{code, message, detail}]`, `status`) so orchestrators can branch on codes (`STALE_HEARTBEAT`, `DEAD_PID`) without regex.
 
 `start --meta` is repeatable and accepts two forms per entry (merged in
 order, later wins):

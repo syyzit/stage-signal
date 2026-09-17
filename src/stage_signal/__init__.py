@@ -4,6 +4,9 @@ from .constants import (
     SCHEMA_VERSION,
     STATES,
     TERMINAL_STATES,
+    WARNING_CODE_DEAD_PID,
+    WARNING_CODE_STALE_HEARTBEAT,
+    WARNING_CODE_UNPARSEABLE_HEARTBEAT,
     state_exit_code,
 )
 from .errors import (
@@ -37,4 +40,7 @@ __all__ = [
     "SCHEMA_VERSION",
     "STATES",
     "TERMINAL_STATES",
+    "WARNING_CODE_DEAD_PID",
+    "WARNING_CODE_STALE_HEARTBEAT",
+    "WARNING_CODE_UNPARSEABLE_HEARTBEAT",
 ]

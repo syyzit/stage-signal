@@ -43,8 +43,9 @@ def test_diagnose_running_live_pid(tmp_path: Path) -> None:
 
     diag = stage.diagnose()
     assert diag["ok"] is True
+    assert diag["state"] == "running"
     assert not diag["problems"]
-    assert not any("DEAD PID" in w for w in diag["warnings"])
+    assert not any(w["code"] == "DEAD_PID" for w in diag["warnings"])
 
 
 def test_diagnose_running_dead_pid(tmp_path: Path) -> None:
@@ -61,10 +62,12 @@ def test_diagnose_running_dead_pid(tmp_path: Path) -> None:
 
     diag = stage.diagnose()
     assert diag["ok"] is True  # Warning alone does not cause ok to be False
+    assert diag["state"] == "running"
     assert not diag["problems"]
-    dead_warnings = [w for w in diag["warnings"] if "DEAD PID" in w]
+    dead_warnings = [w for w in diag["warnings"] if w["code"] == "DEAD_PID"]
     assert len(dead_warnings) == 1
-    assert f"DEAD PID: claiming pid {dead_pid} is not alive (state still running)" in dead_warnings[0]
+    assert f"DEAD PID: claiming pid {dead_pid} is not alive (state still running)" in dead_warnings[0]["message"]
+    assert dead_warnings[0]["detail"] == {"pid": dead_pid}
 
     # SPEC §4: library never auto-mutates state on staleness/dead PID
     status = stage.status()
@@ -86,8 +89,9 @@ def test_diagnose_running_null_pid(tmp_path: Path) -> None:
 
     diag = stage.diagnose()
     assert diag["ok"] is True
+    assert diag["state"] == "running"
     assert not diag["problems"]
-    assert not any("DEAD PID" in w for w in diag["warnings"])
+    assert not any(w["code"] == "DEAD_PID" for w in diag["warnings"])
 
 
 def test_diagnose_non_running_dead_pid(tmp_path: Path) -> None:
@@ -104,7 +108,8 @@ def test_diagnose_non_running_dead_pid(tmp_path: Path) -> None:
 
     diag = stage.diagnose()
     assert diag["ok"] is True
-    assert not any("DEAD PID" in w for w in diag["warnings"])
+    assert diag["state"] == "done"
+    assert not any(w["code"] == "DEAD_PID" for w in diag["warnings"])
 
 
 def test_cli_doctor_human_and_json_live_pid(sdir: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -123,8 +128,9 @@ def test_cli_doctor_human_and_json_live_pid(sdir: Path, capsys: pytest.CaptureFi
     assert main(["doctor", "--json"]) == 0
     data = json.loads(capsys.readouterr().out)
     assert data["ok"] is True
+    assert data["state"] == "running"
     assert data["problems"] == []
-    assert not any("DEAD PID" in w for w in data["warnings"])
+    assert not any(w["code"] == "DEAD_PID" for w in data["warnings"])
     assert data["status"]["state"] == "running"
     assert data["status"]["pid"] == live_pid
 
@@ -149,8 +155,13 @@ def test_cli_doctor_human_and_json_dead_pid(sdir: Path, capsys: pytest.CaptureFi
     assert main(["doctor", "--json"]) == 0
     data = json.loads(capsys.readouterr().out)
     assert data["ok"] is True
+    assert data["state"] == "running"
     assert data["problems"] == []
-    assert expected_warning in data["warnings"]
+    assert len(data["warnings"]) == 1
+    w = data["warnings"][0]
+    assert w["code"] == "DEAD_PID"
+    assert w["message"] == expected_warning
+    assert w["detail"] == {"pid": dead_pid}
     assert data["status"]["state"] == "running"
     assert data["status"]["pid"] == dead_pid
 
@@ -173,8 +184,9 @@ def test_doctor_default_heartbeat_threshold(
 
     diag = stage.diagnose()
     assert diag["ok"] is True
+    assert diag["state"] == state
     assert diag["problems"] == []
-    assert any("STALE" in w for w in diag["warnings"]) is stale
+    assert (any(w["code"] == "STALE_HEARTBEAT" for w in diag["warnings"])) is stale
     assert stage.diagnose(stale_after=3600)["warnings"] == []
     assert stage.diagnose(stale_after=None)["warnings"] == []
 
@@ -185,10 +197,15 @@ def test_doctor_default_heartbeat_threshold(
     assert main(["doctor", "--json"]) == 0
     data = json.loads(capsys.readouterr().out)
     assert data["ok"] is True
+    assert data["state"] == state
     assert data["problems"] == []
-    assert any("STALE" in w for w in data["warnings"]) is stale
+    assert (any(w["code"] == "STALE_HEARTBEAT" for w in data["warnings"])) is stale
     if stale:
-        assert "threshold 300s" in data["warnings"][0]
+        assert data["warnings"][0]["code"] == "STALE_HEARTBEAT"
+        assert "threshold 300s" in data["warnings"][0]["message"]
+        assert data["warnings"][0]["detail"]["threshold"] == 300.0
+        assert data["warnings"][0]["detail"]["heartbeat_at"] == raw["heartbeat_at"]
+        assert data["warnings"][0]["detail"]["age"] >= 590
     assert data["status"] == raw
     assert main(["doctor", "--stale-after", "3600", "--json"]) == 0
     assert json.loads(capsys.readouterr().out)["warnings"] == []
@@ -202,7 +219,9 @@ def test_cli_doctor_json_uninitialized(tmp_path: Path, capsys: pytest.CaptureFix
     assert main(["--dir", str(empty_dir), "doctor", "--json"]) == 1
     data = json.loads(capsys.readouterr().out)
     assert data["ok"] is False
+    assert data["state"] is None
     assert len(data["problems"]) > 0
+    assert data["warnings"] == []
     assert data["status"] is None
 
 
@@ -212,7 +231,10 @@ def test_cli_doctor_json_missing_dir(tmp_path: Path, capsys: pytest.CaptureFixtu
     assert main(["--dir", str(missing_dir), "doctor", "--json"]) == 1
     data = json.loads(capsys.readouterr().out)
     assert data["ok"] is False
+    assert data["state"] is None
     assert any("missing dir" in p for p in data["problems"])
+    assert data["warnings"] == []
+    assert data["status"] is None
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX signal-zero probe is unsafe on Windows")
@@ -301,3 +323,209 @@ def test_is_pid_alive_edge_cases() -> None:
     assert _is_pid_alive("1234") is None  # type: ignore[arg-type]
     assert _is_pid_alive(True) is None  # type: ignore[arg-type]
     assert _is_pid_alive(False) is None  # type: ignore[arg-type]
+
+
+def test_doctor_json_clean_ok_shapes(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """Verify clean OK JSON shapes across queued, running, done, blocked, and failed states."""
+    d = tmp_path / ".stage-signal"
+    stage = Stage(d)
+    stage.init(project="clean-proj")
+
+    # 1. Queued
+    assert main(["--dir", str(d), "doctor", "--json"]) == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data["ok"] is True
+    assert data["state"] == "queued"
+    assert data["problems"] == []
+    assert data["warnings"] == []
+    assert data["status"]["state"] == "queued"
+    assert data["status"]["project"] == "clean-proj"
+
+    # 2. Running (live PID)
+    stage.start(stage="step-1", pid=os.getpid())
+    assert main(["--dir", str(d), "doctor", "--json"]) == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data["ok"] is True
+    assert data["state"] == "running"
+    assert data["problems"] == []
+    assert data["warnings"] == []
+    assert data["status"]["state"] == "running"
+
+    # 3. Done
+    stage.done(summary="all good")
+    assert main(["--dir", str(d), "doctor", "--json"]) == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data["ok"] is True
+    assert data["state"] == "done"
+    assert data["problems"] == []
+    assert data["warnings"] == []
+    assert data["status"]["state"] == "done"
+
+    # 4. Blocked
+    stage.start(stage="step-2", pid=os.getpid())
+    stage.blocked(reason="waiting for auth")
+    assert main(["--dir", str(d), "doctor", "--json"]) == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data["ok"] is True
+    assert data["state"] == "blocked"
+    assert data["problems"] == []
+    assert data["warnings"] == []
+    assert data["status"]["state"] == "blocked"
+
+    # 5. Failed
+    stage.start(stage="step-3", pid=os.getpid())
+    stage.fail(reason="crash")
+    assert main(["--dir", str(d), "doctor", "--json"]) == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data["ok"] is True
+    assert data["state"] == "failed"
+    assert data["problems"] == []
+    assert data["warnings"] == []
+    assert data["status"]["state"] == "failed"
+
+
+def test_doctor_running_no_heartbeat(sdir: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """Running stage with no heartbeat produces structured STALE_HEARTBEAT warning."""
+    assert main(["start", "--stage", "m", "--pid", str(os.getpid())]) == 0
+    status_file = sdir / "STATUS.json"
+    raw = json.loads(status_file.read_text())
+    raw["heartbeat_at"] = None
+    status_file.write_text(json.dumps(raw))
+    capsys.readouterr()
+
+    # Human output
+    assert main(["doctor"]) == 0
+    out = capsys.readouterr().out
+    assert "WARNING: STALE: running with no heartbeat recorded" in out
+    assert "OK: running" in out
+
+    # JSON output
+    assert main(["doctor", "--json"]) == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data["ok"] is True
+    assert data["state"] == "running"
+    assert data["problems"] == []
+    assert len(data["warnings"]) == 1
+    w = data["warnings"][0]
+    assert w["code"] == "STALE_HEARTBEAT"
+    assert w["message"] == "STALE: running with no heartbeat recorded"
+    assert w["detail"]["age"] is None
+    assert w["detail"]["threshold"] == 300.0
+    assert w["detail"]["heartbeat_at"] is None
+
+
+def test_doctor_running_unparseable_heartbeat(sdir: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """Running stage with unparseable heartbeat produces structured UNPARSEABLE_HEARTBEAT warning."""
+    assert main(["start", "--stage", "m", "--pid", str(os.getpid())]) == 0
+    status_file = sdir / "STATUS.json"
+    raw = json.loads(status_file.read_text())
+    raw["heartbeat_at"] = "garbage-date"
+    status_file.write_text(json.dumps(raw))
+    capsys.readouterr()
+
+    # Human output
+    assert main(["doctor"]) == 0
+    out = capsys.readouterr().out
+    assert "WARNING: unparseable heartbeat_at" in out
+    assert "OK: running" in out
+
+    # JSON output
+    assert main(["doctor", "--json"]) == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data["ok"] is True
+    assert data["state"] == "running"
+    assert data["problems"] == []
+    assert len(data["warnings"]) == 1
+    w = data["warnings"][0]
+    assert w["code"] == "UNPARSEABLE_HEARTBEAT"
+    assert w["message"] == "unparseable heartbeat_at"
+    assert w["detail"] == {"heartbeat_at": "garbage-date"}
+
+
+def test_doctor_multiple_warnings_simultaneously(sdir: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """A running stage with both dead PID and stale heartbeat yields both structured warnings."""
+    proc = subprocess.Popen([sys.executable, "-c", "pass"])
+    proc.wait()
+    dead_pid = proc.pid
+
+    assert main(["start", "--stage", "multi", "--pid", str(dead_pid)]) == 0
+    status_file = sdir / "STATUS.json"
+    raw = json.loads(status_file.read_text())
+    raw["heartbeat_at"] = (datetime.now(timezone.utc) - timedelta(seconds=700)).isoformat()
+    status_file.write_text(json.dumps(raw))
+    capsys.readouterr()
+
+    # Human output has both warnings
+    assert main(["doctor"]) == 0
+    out = capsys.readouterr().out
+    assert "WARNING: STALE: running with heartbeat" in out
+    assert f"WARNING: DEAD PID: claiming pid {dead_pid} is not alive" in out
+    assert "OK: running" in out
+
+    # JSON output has both structured warnings
+    assert main(["doctor", "--json"]) == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data["ok"] is True
+    assert data["state"] == "running"
+    assert data["problems"] == []
+    assert len(data["warnings"]) == 2
+
+    codes = {w["code"] for w in data["warnings"]}
+    assert codes == {"STALE_HEARTBEAT", "DEAD_PID"}
+
+    hb_w = next(w for w in data["warnings"] if w["code"] == "STALE_HEARTBEAT")
+    assert "threshold 300s" in hb_w["message"]
+    assert hb_w["detail"]["threshold"] == 300.0
+    assert hb_w["detail"]["age"] >= 690
+
+    pid_w = next(w for w in data["warnings"] if w["code"] == "DEAD_PID")
+    assert f"claiming pid {dead_pid}" in pid_w["message"]
+    assert pid_w["detail"] == {"pid": dead_pid}
+
+
+def test_doctor_format_flag_support(sdir: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """Verify --format json matches --json and --format human works as default."""
+    capsys.readouterr()
+    assert main(["doctor", "--format", "json"]) == 0
+    data_format = json.loads(capsys.readouterr().out)
+
+    assert main(["doctor", "--json"]) == 0
+    data_json = json.loads(capsys.readouterr().out)
+
+    assert data_format == data_json
+
+    assert main(["doctor", "--format", "human"]) == 0
+    out = capsys.readouterr().out
+    assert "OK: queued" in out
+
+
+def test_doctor_exit_codes_semantics(tmp_path: Path) -> None:
+    """Verify doctor exit codes: 0 for healthy/warnings, 1 for problems, 2 for bad args."""
+    # 1. Healthy dir -> exit 0
+    d = tmp_path / "healthy"
+    stage = Stage(d)
+    stage.init(project="healthy-proj")
+    assert main(["--dir", str(d), "doctor"]) == 0
+    assert main(["--dir", str(d), "doctor", "--json"]) == 0
+
+    # 2. Healthy dir with warning (dead PID) -> still exit 0
+    proc = subprocess.Popen([sys.executable, "-c", "pass"])
+    proc.wait()
+    stage.start(stage="task", pid=proc.pid)
+    assert main(["--dir", str(d), "doctor"]) == 0
+    assert main(["--dir", str(d), "doctor", "--json"]) == 0
+
+    # 3. Problem: corrupt STATUS.json -> exit 1
+    (d / "STATUS.json").write_text("{corrupt json")
+    assert main(["--dir", str(d), "doctor"]) == 1
+    assert main(["--dir", str(d), "doctor", "--json"]) == 1
+
+    # 4. Problem: missing directory -> exit 1
+    missing = tmp_path / "nonexistent"
+    assert main(["--dir", str(missing), "doctor"]) == 1
+    assert main(["--dir", str(missing), "doctor", "--json"]) == 1
+
+    # 5. Bad CLI args -> exit 2
+    with pytest.raises(SystemExit) as exc:
+        main(["--dir", str(d), "doctor", "--stale-after", "not_a_number"])
+    assert exc.value.code == 2

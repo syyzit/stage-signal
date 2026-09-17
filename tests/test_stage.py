@@ -385,7 +385,8 @@ def test_diagnose(stage: Stage, stage_dir: Path) -> None:
     diag3 = stage.diagnose(stale_after=10**9)
     assert diag3["ok"] and not diag3["warnings"]
     diag4 = stage.diagnose(stale_after=0)
-    assert diag4["ok"] and diag4["warnings"] and "STALE" in diag4["warnings"][0]
+    assert diag4["ok"] and diag4["warnings"] and diag4["warnings"][0]["code"] == "STALE_HEARTBEAT"
+    assert "STALE" in diag4["warnings"][0]["message"]
 
 
 def test_state_exit_codes() -> None:

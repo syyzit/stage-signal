@@ -25,6 +25,9 @@ from .constants import (
     STATE_QUEUED,
     STATE_RUNNING,
     TERMINAL_STATES,
+    WARNING_CODE_DEAD_PID,
+    WARNING_CODE_STALE_HEARTBEAT,
+    WARNING_CODE_UNPARSEABLE_HEARTBEAT,
     state_exit_code,
 )
 from .errors import (
@@ -599,15 +602,20 @@ class Stage:
                 last = copy.deepcopy(self._store.read_status())
 
     def diagnose(self, *, stale_after: Optional[float] = 300.0) -> dict[str, Any]:
-        """Check dir health. Returns {"ok", "problems", "warnings", "status"}."""
+        """Check dir health. Returns {"ok", "state", "problems", "warnings", "status"}."""
         problems: list[str] = []
-        warnings: list[str] = []
+        warnings: list[dict[str, Any]] = []
         status: Optional[dict[str, Any]] = None
         store = self._store
         if not store.dir.is_dir():
             problems.append(f"missing dir: {store.dir}")
-            return {"ok": False, "problems": problems,
-                    "warnings": warnings, "status": None}
+            return {
+                "ok": False,
+                "state": None,
+                "problems": problems,
+                "warnings": warnings,
+                "status": None,
+            }
         if not store.is_initialized:
             problems.append(f"missing STATUS: {store.status_path}")
         else:
@@ -635,27 +643,56 @@ class Stage:
                     hb = _dt.fromisoformat(str(status["heartbeat_at"]))
                     age = (_dt.now().astimezone() - hb).total_seconds()
                     if age > stale_after:
-                        warnings.append(
-                            f"STALE: running with heartbeat {age:.0f}s ago "
-                            f"(threshold {stale_after:g}s)"
-                        )
+                        warnings.append({
+                            "code": WARNING_CODE_STALE_HEARTBEAT,
+                            "message": (
+                                f"STALE: running with heartbeat {age:.0f}s ago "
+                                f"(threshold {stale_after:g}s)"
+                            ),
+                            "detail": {
+                                "age": age,
+                                "threshold": stale_after,
+                                "heartbeat_at": status.get("heartbeat_at"),
+                            },
+                        })
                 except ValueError:
-                    warnings.append("unparseable heartbeat_at")
+                    warnings.append({
+                        "code": WARNING_CODE_UNPARSEABLE_HEARTBEAT,
+                        "message": "unparseable heartbeat_at",
+                        "detail": {
+                            "heartbeat_at": status.get("heartbeat_at"),
+                        },
+                    })
             elif status.get("state") == STATE_RUNNING:
-                warnings.append("STALE: running with no heartbeat recorded")
+                warnings.append({
+                    "code": WARNING_CODE_STALE_HEARTBEAT,
+                    "message": "STALE: running with no heartbeat recorded",
+                    "detail": {
+                        "age": None,
+                        "threshold": stale_after,
+                        "heartbeat_at": None,
+                    },
+                })
         if status is not None and status.get("state") == STATE_RUNNING:
             pid = status.get("pid")
             if isinstance(pid, int) and not isinstance(pid, bool):
                 try:
                     alive = _is_pid_alive(pid)
                     if alive is False:
-                        warnings.append(
-                            f"DEAD PID: claiming pid {pid} is not alive (state still running)"
-                        )
+                        warnings.append({
+                            "code": WARNING_CODE_DEAD_PID,
+                            "message": (
+                                f"DEAD PID: claiming pid {pid} is not alive (state still running)"
+                            ),
+                            "detail": {
+                                "pid": pid,
+                            },
+                        })
                 except Exception:
                     pass
         return {
             "ok": not problems,
+            "state": status.get("state") if isinstance(status, dict) else None,
             "problems": problems,
             "warnings": warnings,
             "status": status,
