@@ -87,6 +87,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     c = sub.add_parser("fail", help="mark stage hard-failed")
     c.add_argument("--reason", required=True)
+    c.add_argument(
+        "--if-dead-pid",
+        action="store_true",
+        default=False,
+        help="when running, require a confirmed dead claiming pid; otherwise use normal fail rules",
+    )
     c.add_argument("--write-status-mirror", action="store_true", default=None)
     c.set_defaults(func=cmd_fail)
 
@@ -257,7 +263,9 @@ def cmd_blocked(args: argparse.Namespace) -> int:
 
 def cmd_fail(args: argparse.Namespace) -> int:
     st = _stage(args).fail(
-        args.reason, write_status_mirror=args.write_status_mirror
+        args.reason,
+        if_dead_pid=args.if_dead_pid,
+        write_status_mirror=args.write_status_mirror,
     )
     print(f"failed {_one_line(st)}: {args.reason}")
     return 0

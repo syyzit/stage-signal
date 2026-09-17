@@ -289,6 +289,9 @@ def test_windows_liveness_mock(monkeypatch: pytest.MonkeyPatch) -> None:
     mock_kernel32.GetLastError = MagicMock(return_value=87)
     assert _is_pid_alive_windows(1234) is False
 
+    mock_kernel32.GetLastError = MagicMock(return_value=6)
+    assert _is_pid_alive_windows(1234) is None
+
     # 3. OpenProcess succeeds, GetExitCodeProcess returns STILL_ACTIVE (259) -> alive (True)
     mock_kernel32.OpenProcess = MagicMock(return_value=42)
     mock_kernel32.CloseHandle = MagicMock()
@@ -308,6 +311,10 @@ def test_windows_liveness_mock(monkeypatch: pytest.MonkeyPatch) -> None:
 
     mock_kernel32.GetExitCodeProcess = fake_exit_code_dead
     assert _is_pid_alive_windows(1234) is False
+
+    mock_kernel32.GetExitCodeProcess = MagicMock(return_value=0)
+    assert _is_pid_alive_windows(1234) is None
+    mock_kernel32.CloseHandle.assert_called_with(42)
 
     # 5. OpenProcess raises unexpected exception -> returns None
     mock_kernel32.OpenProcess = MagicMock(side_effect=RuntimeError("ctypes boom"))

@@ -118,6 +118,11 @@ Exact schema and exit codes: see `docs/SPEC.md` (normative) and
 `wait --json` prints a structured JSON object (`outcome`, `wanted`, `observed_state`, `exit_code`, `timeout`, `stage_id`, `dir`, `status`) to stdout while preserving these exit codes.
 `doctor --json` prints machine-readable health diagnostics with structured warnings (`ok`, `state`, `warnings`: `[{code, message, detail}]`, `status`) so orchestrators can branch on codes (`STALE_HEARTBEAT`, `DEAD_PID`) without regex.
 
+To act on a `DEAD_PID` warning, `fail --reason TEXT --if-dead-pid` hard-fails a
+`running` stage only after confirming the claiming PID is a valid positive
+integer that is actually dead; a live, invalid, or undeterminable PID aborts
+with exit 3 and no mutation (outside `running`, normal fail rules apply).
+
 `start --meta` is repeatable and accepts two forms per entry (merged in
 order, later wins):
 
