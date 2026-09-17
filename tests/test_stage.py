@@ -5,6 +5,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 import json
 import os
+import signal
 import subprocess
 import sys
 import time
@@ -35,6 +36,38 @@ def stage(stage_dir: Path) -> Stage:
     s = Stage(stage_dir)
     s.init(project="testproj")
     return s
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX signals")
+@pytest.mark.parametrize("ignore_term", [False, True])
+def test_reclaim_kill_child(stage: Stage, ignore_term: bool) -> None:
+    script = (
+        "import signal, time; "
+        + ("signal.signal(signal.SIGTERM, signal.SIG_IGN); " if ignore_term else "")
+        + "print('ready', flush=True); time.sleep(60)"
+    )
+    process = subprocess.Popen(
+        [sys.executable, "-c", script], stdout=subprocess.PIPE, text=True,
+    )
+    try:
+        assert process.stdout.readline().strip() == "ready"
+        status = stage.start(stage="kill", pid=process.pid)
+        status["heartbeat_at"] = "2000-01-01T00:00:00+00:00"
+        (stage.dir / "STATUS.json").write_text(json.dumps(status))
+        result = stage.reclaim("stale worker", kill=True)
+        assert process.wait(timeout=5) == -(
+            signal.SIGKILL if ignore_term else signal.SIGTERM
+        )
+        assert result["state"] == "queued"
+        assert result["pid"] is None
+        assert [event["type"] for event in stage.events()][-2:] == [
+            "failed", "clear_terminal",
+        ]
+    finally:
+        if process.poll() is None:
+            process.kill()
+        process.wait(timeout=5)
+        process.stdout.close()
 
 
 def test_init_creates_queued_status(stage_dir: Path) -> None:
