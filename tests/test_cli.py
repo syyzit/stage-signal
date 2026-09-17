@@ -50,6 +50,44 @@ def test_cli_fail_if_dead_pid_refuses_without_mutation(
     assert {name: (stage.dir / name).read_bytes() for name in before} == before
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="watchdog requires a POSIX shell")
+@pytest.mark.parametrize("dead_pid,stale", [(False, False), (False, True), (True, False), (True, True)])
+def test_watchdog_needs_reclaim(tmp_path: Path, dead_pid: bool, stale: bool) -> None:
+    root = Path(__file__).resolve().parents[1]
+    stage = Stage(tmp_path / ".stage-signal")
+    stage.init()
+    pid = os.getpid()
+    if dead_pid:
+        process = subprocess.Popen([sys.executable, "-c", "pass"])
+        process.wait(timeout=10)
+        pid = process.pid
+    status = stage.start(stage="watchdog", pid=pid)
+    if stale:
+        status["heartbeat_at"] = "2000-01-01T00:00:00+00:00"
+        (stage.dir / "STATUS.json").write_text(json.dumps(status))
+    before = {name: (stage.dir / name).read_bytes() for name in ("STATUS.json", "STATUS.md", "events.jsonl")}
+    env = dict(os.environ)
+    env["PATH"] = str(Path(sys.executable).parent) + os.pathsep + env.get("PATH", "")
+    env["PYTHONPATH"] = str(root / "src")
+    command = ["sh", str(root / "examples/orchestrator-watchdog.sh"),
+               "--dir", str(stage.dir), "--once", "--doctor-reclaim"]
+
+    result = subprocess.run(command, env=env, capture_output=True, text=True, timeout=10)
+
+    assert result.returncode == (12 if dead_pid else 10), result.stderr
+    if dead_pid:
+        assert stage.status()["state"] == "failed"
+        assert f"claiming pid {pid} is dead (DEAD_PID)" in stage.status()["error"]["reason"]
+        after = {name: (stage.dir / name).read_bytes() for name in before}
+        repeated = subprocess.run(command, env=env, capture_output=True, text=True, timeout=10)
+        assert repeated.returncode == 12
+        assert {name: (stage.dir / name).read_bytes() for name in before} == after
+    else:
+        assert {name: (stage.dir / name).read_bytes() for name in before} == before
+        assert ("ATTENTION" in result.stderr) is stale
+        assert "fail --if-dead-pid" not in result.stderr
+
+
 def test_parse_meta_kv_basic() -> None:
     assert _parse_meta(["a=1", "b=2"]) == {"a": "1", "b": "2"}
 

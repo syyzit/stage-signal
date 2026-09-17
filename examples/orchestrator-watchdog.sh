@@ -126,10 +126,15 @@ try:
 except Exception as exc:
     print(f'unparseable doctor output: {exc}', file=sys.stderr)
     sys.exit(1)
+if diag.get('needs_reclaim') is not True:
+    sys.exit(0)
 for w in diag.get('warnings', []):
     if w.get('code') == 'DEAD_PID':
         print(w.get('detail', {}).get('pid', ''))
         break
+else:
+    print('orchestrator-watchdog: ATTENTION: running needs reclaim without DEAD_PID '
+          '(e.g. STALE_HEARTBEAT); inspect runner; no guarded fail attempted', file=sys.stderr)
 " "$tmp")"
   rc=$?
   rm -f "$tmp"
@@ -141,8 +146,9 @@ for w in diag.get('warnings', []):
   if ST fail --reason "reclaimed by orchestrator-watchdog: claiming pid $pid is dead (DEAD_PID)" --if-dead-pid; then
     echo "orchestrator-watchdog: stage reclaimed as failed" >&2
     return 12
+  else
+    rc=$?
   fi
-  rc=$?
   echo "orchestrator-watchdog: fail --if-dead-pid refused or failed (exit $rc); no mutation" >&2
   return "$rc"
 }
