@@ -29,6 +29,14 @@ def test_locked_live_posix_or_platform(tmp_path: Path) -> None:
                         other_fh.fileno(),
                         store_mod.fcntl.LOCK_EX | store_mod.fcntl.LOCK_NB,
                     )
+        elif store_mod.msvcrt is not None:
+            with open(store.lock_path, "r+b", buffering=0) as other_fh:
+                with pytest.raises(OSError):
+                    store_mod.msvcrt.locking(
+                        other_fh.fileno(), store_mod.msvcrt.LK_NBLCK, 1
+                    )
+                with pytest.raises(PermissionError):
+                    other_fh.read(1)
 
     # After exit, other acquire must succeed on POSIX
     if store_mod.fcntl is not None:
@@ -38,6 +46,18 @@ def test_locked_live_posix_or_platform(tmp_path: Path) -> None:
                 store_mod.fcntl.LOCK_EX | store_mod.fcntl.LOCK_NB,
             )
             store_mod.fcntl.flock(other_fh.fileno(), store_mod.fcntl.LOCK_UN)
+    elif store_mod.msvcrt is not None:
+        with open(store.lock_path, "r+b", buffering=0) as other_fh:
+            store_mod.msvcrt.locking(
+                other_fh.fileno(), store_mod.msvcrt.LK_NBLCK, 1
+            )
+            try:
+                assert other_fh.read(1) == b"\0"
+            finally:
+                other_fh.seek(0)
+                store_mod.msvcrt.locking(
+                    other_fh.fileno(), store_mod.msvcrt.LK_UNLCK, 1
+                )
 
     # 2. Shared lock
     with store.locked(exclusive=False):
@@ -241,4 +261,5 @@ def test_locked_seeds_empty_lockfile(tmp_path: Path) -> None:
     store.locks_dir.mkdir(parents=True)
     store.lock_path.touch()
     with store.locked():
-        assert store.lock_path.read_bytes() == b"\0"
+        assert store.lock_path.stat().st_size == 1
+    assert store.lock_path.read_bytes() == b"\0"
