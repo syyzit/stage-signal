@@ -273,8 +273,9 @@ def test_fail_help_documents_if_needs_reclaim() -> None:
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="watchdog requires a POSIX shell")
+@pytest.mark.parametrize("flag", ["--doctor-reclaim", "--needs-reclaim"])
 @pytest.mark.parametrize("dead_pid,stale", [(False, False), (False, True), (True, False), (True, True)])
-def test_watchdog_needs_reclaim(tmp_path: Path, dead_pid: bool, stale: bool) -> None:
+def test_watchdog_needs_reclaim(tmp_path: Path, flag: str, dead_pid: bool, stale: bool) -> None:
     root = Path(__file__).resolve().parents[1]
     stage = Stage(tmp_path / ".stage-signal")
     stage.init()
@@ -292,22 +293,29 @@ def test_watchdog_needs_reclaim(tmp_path: Path, dead_pid: bool, stale: bool) -> 
     env["PATH"] = str(Path(sys.executable).parent) + os.pathsep + env.get("PATH", "")
     env["PYTHONPATH"] = str(root / "src")
     command = ["sh", str(root / "examples/orchestrator-watchdog.sh"),
-               "--dir", str(stage.dir), "--once", "--doctor-reclaim"]
+               "--dir", str(stage.dir), "--once", flag]
 
     result = subprocess.run(command, env=env, capture_output=True, text=True, timeout=10)
 
-    assert result.returncode == (12 if dead_pid else 10), result.stderr
-    if dead_pid:
+    needs_reclaim = dead_pid or stale
+    assert result.returncode == (12 if needs_reclaim else 10), result.stderr
+    if needs_reclaim:
         assert stage.status()["state"] == "failed"
-        assert f"claiming pid {pid} is dead (DEAD_PID)" in stage.status()["error"]["reason"]
+        reason = stage.status()["error"]["reason"]
+        assert "needs_reclaim" in reason
+        if dead_pid:
+            assert f"DEAD_PID pid={pid}" in reason
+        if stale:
+            assert "STALE_HEARTBEAT" in reason
+        events = stage.events(type="failed")
+        assert len(events) == 1
+        assert events[0]["detail"] == {"reclaim": True, "keep_failed": True}
         after = {name: (stage.dir / name).read_bytes() for name in before}
         repeated = subprocess.run(command, env=env, capture_output=True, text=True, timeout=10)
         assert repeated.returncode == 12
         assert {name: (stage.dir / name).read_bytes() for name in before} == after
     else:
         assert {name: (stage.dir / name).read_bytes() for name in before} == before
-        assert ("ATTENTION" in result.stderr) is stale
-        assert "fail --if-dead-pid" not in result.stderr
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="watchdog requires a POSIX shell")

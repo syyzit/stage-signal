@@ -21,9 +21,12 @@
 #   --timeout SEC    wait timeout in seconds (default: 3600)
 #   --poll SEC       poll interval in seconds (default: 5)
 #   --once           single status check, no blocking wait (cron style)
+#   --doctor-reclaim, --needs-reclaim
+#                    snapshot reclaim on needs_reclaim (DEAD_PID or STALE_HEARTBEAT)
+#                    via reclaim --keep-failed (use with --once)
 #   --wait-reclaim   block on wait --needs-reclaim, then reclaim --keep-failed
 #                    (cannot combine with --once; use --once --doctor-reclaim
-#                    for a snapshot DEAD_PID-only reclaim)
+#                    for a snapshot)
 #
 # Exit code follows the observed-state contract (see README / docs/SPEC.md):
 #   0 condition met, 10 running, 11 blocked, 12 failed,
@@ -53,7 +56,7 @@ while [ $# -gt 0 ]; do
     --timeout) TIMEOUT="${2:?--timeout needs SEC}"; shift 2 ;;
     --poll) POLL="${2:?--poll needs SEC}"; shift 2 ;;
     --once) ONCE=1; shift ;;
-    --doctor-reclaim) DOCTOR_RECLAIM=1; shift ;;
+    --doctor-reclaim|--needs-reclaim) DOCTOR_RECLAIM=1; shift ;;
     --wait-reclaim) WAIT_RECLAIM=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "orchestrator-watchdog: unknown arg: $1" >&2; usage >&2; exit 2 ;;
@@ -105,39 +108,34 @@ print('%s %s (attempt %s)' % (st.get('state'), st.get('stage_name') or '-', st.g
   return "$st_code"
 }
 
-# Opt-in reclaim of a crashed runner (default off): run `doctor --json` and,
-# only on a DEAD_PID warning while the stage is still `running`, call
-# `fail --reason TEXT --if-dead-pid` (guarded reclaim, SPEC §Terminal). The
-# guard refuses (exit 3, no mutation) if the pid is live or liveness unknown,
-# and never mutates outside `running`; `doctor` itself stays advisory-only.
-# STALE_HEARTBEAT-only (live runner) logs ATTENTION and does not fail: a stale
-# heartbeat does not prove the PID is dead. For the first-class blocking
-# reclaim loop (DEAD_PID or STALE_HEARTBEAT), use `--wait-reclaim` which
-# calls `wait --needs-reclaim` then `fail --if-needs-reclaim` (same
-# needs_reclaim semantics as diagnose/doctor/status). `--doctor-reclaim`
-# stays DEAD_PID-only so a hung-but-alive runner is not auto-failed.
-# The snapshot shown after reclaim may lag by one poll cycle. Exit codes:
-#   0 no DEAD_PID warning (or reclaim succeeded)
+# Opt-in reclaim for needs_reclaim (default off): run `doctor --json` and,
+# when `needs_reclaim` is true (DEAD_PID or STALE_HEARTBEAT while still
+# `running`), call `reclaim --reason TEXT --keep-failed` (guarded reclaim,
+# SPEC §Terminal). The guard refuses (exit 3, no mutation) if needs_reclaim
+# is false under the lock, and never mutates outside `running`; `doctor` itself
+# stays advisory-only. Aligns `--once --doctor-reclaim` (and `--once --needs-reclaim`)
+# with full `needs_reclaim` semantics (matching `--wait-reclaim`).
+# Exit codes:
+#   0 no reclaim needed
 #   1 doctor failed to produce JSON (no reclaim attempted)
 #   12 reclaim performed; stage is now `failed`
-#   3 guard refused (live/unknown pid) — no mutation, rerun after crash
-#     confirmation
+#   3 guard refused (needs_reclaim false under lock) — no mutation
 #
 # Manual check (reclaim path):
 #   stage-signal --dir .stage-signal init
 #   stage-signal --dir .stage-signal start --stage t1 --pid 999999999
 #   ./examples/orchestrator-watchdog.sh --dir .stage-signal --once --doctor-reclaim
 #   # -> exit 12, STATUS.json state=failed, one `failed` event appended
-#   # Repeat: exit 12 (no DEAD_PID left; --once observes failed), no new event
+#   # Repeat: exit 12 (no reclaim needed; --once observes failed), no new event
 doctor_reclaim() {
-  local tmp rc pid
+  local tmp rc reason
   tmp="$(mktemp "${TMPDIR:-/tmp}/stage-signal-watchdog.XXXXXX")" || return 1
   if ! ST doctor --json >"$tmp" || [ ! -s "$tmp" ]; then
     rm -f "$tmp"
     echo "orchestrator-watchdog: doctor --json failed; refusing to reclaim" >&2
     return 1
   fi
-  pid="$(python3 -c "
+  reason="$(python3 -c "
 import json, sys
 try:
     with open(sys.argv[1], encoding='utf-8') as fh:
@@ -147,22 +145,24 @@ except Exception as exc:
     sys.exit(1)
 if diag.get('needs_reclaim') is not True:
     sys.exit(0)
+codes = []
 for w in diag.get('warnings', []):
-    if w.get('code') == 'DEAD_PID':
-        print(w.get('detail', {}).get('pid', ''))
-        break
-else:
-    print('orchestrator-watchdog: ATTENTION: running needs reclaim without DEAD_PID '
-          '(e.g. STALE_HEARTBEAT); inspect runner; no guarded fail attempted', file=sys.stderr)
+    c = w.get('code')
+    if c == 'DEAD_PID':
+        pid = w.get('detail', {}).get('pid')
+        codes.append(f'DEAD_PID pid={pid}' if pid else 'DEAD_PID')
+    elif c == 'STALE_HEARTBEAT':
+        codes.append('STALE_HEARTBEAT')
+print(' or '.join(codes) if codes else 'DEAD_PID or STALE_HEARTBEAT')
 " "$tmp")"
   rc=$?
   rm -f "$tmp"
   [ "$rc" -eq 0 ] || return 1
-  if [ -z "$pid" ]; then
+  if [ -z "$reason" ]; then
     return 0
   fi
-  echo "orchestrator-watchdog: DEAD_PID warning for pid $pid; reclaiming via guarded fail" >&2
-  if ST fail --reason "reclaimed by orchestrator-watchdog: claiming pid $pid is dead (DEAD_PID)" --if-dead-pid; then
+  echo "orchestrator-watchdog: needs_reclaim ($reason); reclaiming via reclaim --keep-failed" >&2
+  if ST reclaim --reason "reclaimed by orchestrator-watchdog: needs_reclaim ($reason)" --keep-failed; then
     echo "orchestrator-watchdog: stage reclaimed as failed" >&2
     # First-class audit (newest last). Do not scrape events.jsonl.
     ST events --tail 20 --type failed >&2 || true
@@ -170,7 +170,7 @@ else:
   else
     rc=$?
   fi
-  echo "orchestrator-watchdog: fail --if-dead-pid refused or failed (exit $rc); no mutation" >&2
+  echo "orchestrator-watchdog: reclaim refused or failed (exit $rc); no mutation" >&2
   return "$rc"
 }
 

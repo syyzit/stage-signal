@@ -6,6 +6,9 @@ See `docs/RELEASE.md` for the release procedure.
 
 ## [Unreleased]
 
+- Aligned watchdog example `examples/orchestrator-watchdog.sh --once --doctor-reclaim`
+  (and `--once --needs-reclaim`) with full `needs_reclaim` (DEAD_PID or STALE_HEARTBEAT),
+  calling `reclaim --reason ... --keep-failed` instead of DEAD_PID-only fail (#89).
 - Added `stage-signal reclaim --reason TEXT [--keep-failed]` and `Stage.reclaim()`
   for one-shot fail+clear when `needs_reclaim` is true, resetting to idle queued
   under a single exclusive lock; exits 3 with no mutation when reclaim is not needed (#84).

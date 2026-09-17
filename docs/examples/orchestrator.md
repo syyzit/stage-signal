@@ -341,7 +341,7 @@ if printf '%s\n' "$doc_json" | jq -e '.needs_reclaim == true' >/dev/null; then
 fi
 ```
 
-Warning checks are secondary detail for choosing a response, not the primary health gate. A stale heartbeat does not prove the PID is dead: do not call `fail --if-dead-pid` for a stale-only live runner. The [watchdog example](../../examples/orchestrator-watchdog.sh) logs ATTENTION and returns `0` from its reclaim check in that case; `--once` still returns the observed running-state code `10`. Guarded fail rechecks the current PID under lock and can refuse if the snapshot has changed.
+Warning checks are secondary detail for choosing a response, not the primary health gate. A stale heartbeat does not prove the PID is dead: do not call `fail --if-dead-pid` for a stale-only live runner. To reclaim **either** `DEAD_PID` or `STALE_HEARTBEAT` in one shot (same `needs_reclaim` semantics as `doctor` / `status` / `Stage.diagnose()`), call `reclaim --reason TEXT` (or `reclaim --keep-failed` to leave `state=failed` for audit). The [watchdog example](../../examples/orchestrator-watchdog.sh) aligns `--once --doctor-reclaim` (and `--once --needs-reclaim`) with full `needs_reclaim` (DEAD_PID or STALE_HEARTBEAT), calling `reclaim --reason ... --keep-failed` (exit 12) rather than ignoring stale heartbeats. In blocking loops, `--wait-reclaim` runs `wait --needs-reclaim` → `reclaim --keep-failed`. Guarded fail and reclaim recheck `needs_reclaim` under lock and refuse (exit 3) if the snapshot has changed.
 
 To reclaim **either** `DEAD_PID` or `STALE_HEARTBEAT` in one shot (same `needs_reclaim` semantics as `doctor` / `status` / `Stage.diagnose()`), prefer the blocking loop above (`wait --needs-reclaim` → `reclaim`). The reclaim command writes `failed` + reason and resets to idle queued under a single lock only when reclaim is needed; healthy running and non-running states exit 3 with no mutation. Pass `--keep-failed` to audit before manual `clear-terminal`.
 
@@ -368,9 +368,9 @@ case $? in
     ;;
   10)
     echo "ATTENTION: stage needs reclaim (dead PID or stale heartbeat)" >&2
-    # Attempt guarded reclaim if dead PID
-    stage-signal --dir "$WORKTREE/.stage-signal" fail \
-      --reason "Agent process died unexpectedly (DEAD_PID)" --if-dead-pid || true
+    # One-shot reclaim (DEAD_PID or STALE_HEARTBEAT); leaves failed for audit
+    stage-signal --dir "$WORKTREE/.stage-signal" reclaim \
+      --reason "Agent needs reclaim (DEAD_PID or STALE_HEARTBEAT)" --keep-failed || true
     ;;
   1)
     echo "Doctor reported problems (e.g. uninitialized, corrupt file)" >&2
