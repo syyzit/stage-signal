@@ -37,7 +37,7 @@ from .errors import (
     NotInitialized,
     WaitTimeout,
 )
-from .store import StageStore, now_iso
+from .store import StageStore
 
 __all__ = [
     "Stage",
@@ -722,6 +722,11 @@ class Stage:
 
 def _now_dt() -> datetime:
     return datetime.now().astimezone()
+
+
+def now_iso() -> str:
+    """Current local time as ISO-8601 with timezone offset."""
+    return _now_dt().isoformat()
 
 
 def _compute_heartbeat_age_seconds(

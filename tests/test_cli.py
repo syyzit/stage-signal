@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import json
 import os
 import subprocess
@@ -498,5 +499,134 @@ def test_cli_done_accept_failure_illegal_on_running(tmp_path: Path, monkeypatch:
     assert main(["done", "--accept-failure", "--summary", "not failed"]) == 3
     err = capsys.readouterr().err
     assert "done --accept-failure only allowed from state 'failed'" in err
+
+
+def test_cli_status_json_heartbeat_age_seconds_null_when_no_heartbeat(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    d = tmp_path / ".stage-signal"
+    monkeypatch.setenv("STAGE_SIGNAL_DIR", str(d))
+    assert main(["init", "--project", "testproj"]) == 0
+    capsys.readouterr()
+
+    # In queued state without heartbeat, heartbeat_age_seconds must be null
+    assert main(["status", "--json"]) == 13  # queued
+    data = json.loads(capsys.readouterr().out)
+    assert data["state"] == "queued"
+    assert data["heartbeat_at"] is None
+    assert data["heartbeat_age_seconds"] is None
+
+    st = Stage(d).status()
+    assert st["heartbeat_age_seconds"] is None
+
+
+def test_cli_status_json_heartbeat_age_seconds_non_negative_after_heartbeat(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    d = tmp_path / ".stage-signal"
+    monkeypatch.setenv("STAGE_SIGNAL_DIR", str(d))
+    assert main(["init", "--project", "testproj"]) == 0
+    assert main(["start", "--stage", "task1"]) == 0
+    capsys.readouterr()
+
+    # After start, heartbeat_age_seconds must be a non-negative number
+    assert main(["status", "--json"]) == 10  # running
+    data = json.loads(capsys.readouterr().out)
+    assert data["state"] == "running"
+    assert isinstance(data["heartbeat_age_seconds"], (int, float))
+    assert data["heartbeat_age_seconds"] >= 0.0
+
+    st = Stage(d).status()
+    assert isinstance(st["heartbeat_age_seconds"], (int, float))
+    assert st["heartbeat_age_seconds"] >= 0.0
+
+
+def test_status_heartbeat_age_seconds_frozen_time_progression(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    d = tmp_path / ".stage-signal"
+    monkeypatch.setenv("STAGE_SIGNAL_DIR", str(d))
+    stage = Stage(d)
+    stage.init(project="testproj")
+
+    current_time = datetime(2026, 9, 17, 12, 0, 0, tzinfo=timezone.utc)
+
+    def fake_now_dt() -> datetime:
+        return current_time
+
+    monkeypatch.setattr("stage_signal.stage._now_dt", fake_now_dt)
+    monkeypatch.setattr("stage_signal.store.now_iso", lambda: current_time.isoformat())
+
+    stage.start(stage="frozen-test")
+    st0 = stage.status()
+    assert st0["heartbeat_age_seconds"] == pytest.approx(0.0)
+
+    # Advance time by 45.5 seconds
+    current_time = datetime(2026, 9, 17, 12, 0, 45, 500000, tzinfo=timezone.utc)
+    st1 = stage.status()
+    assert st1["heartbeat_age_seconds"] == pytest.approx(45.5)
+
+    # Also verify in CLI status --json
+    capsys.readouterr()
+    assert main(["status", "--json"]) == 10
+    cli_data = json.loads(capsys.readouterr().out)
+    assert cli_data["heartbeat_age_seconds"] == pytest.approx(45.5)
+
+    # Advance time by another 100 seconds
+    current_time = datetime(2026, 9, 17, 12, 2, 25, 500000, tzinfo=timezone.utc)
+    st2 = stage.status()
+    assert st2["heartbeat_age_seconds"] == pytest.approx(145.5)
+
+    # Explicit heartbeat resets age back to 0.0
+    stage.heartbeat(note="tick")
+    st3 = stage.status()
+    assert st3["heartbeat_age_seconds"] == pytest.approx(0.0)
+
+    # Advance time by 10 seconds
+    current_time = datetime(2026, 9, 17, 12, 2, 35, 500000, tzinfo=timezone.utc)
+    st4 = stage.status()
+    assert st4["heartbeat_age_seconds"] == pytest.approx(10.0)
+
+    # Verify doctor --json status payload also reflects heartbeat_age_seconds
+    capsys.readouterr()
+    assert main(["doctor", "--json"]) == 0
+    doc_data = json.loads(capsys.readouterr().out)
+    assert doc_data["status"]["heartbeat_age_seconds"] == pytest.approx(10.0)
+
+
+def test_status_heartbeat_age_seconds_unparseable_heartbeat(tmp_path: Path) -> None:
+    d = tmp_path / ".stage-signal"
+    stage = Stage(d)
+    stage.init(project="testproj")
+    stage.start(stage="unparseable")
+
+    # Corrupt heartbeat_at timestamp in STATUS.json
+    status_file = d / "STATUS.json"
+    raw = json.loads(status_file.read_text(encoding="utf-8"))
+    raw["heartbeat_at"] = "not-a-valid-timestamp"
+    status_file.write_text(json.dumps(raw), encoding="utf-8")
+
+    st = stage.status()
+    assert st["heartbeat_age_seconds"] is None
+
+
+def test_status_heartbeat_age_seconds_sleep_based_increase(tmp_path: Path) -> None:
+    import time
+
+    d = tmp_path / ".stage-signal"
+    stage = Stage(d)
+    stage.init(project="testproj")
+    stage.start(stage="sleep-test")
+
+    age1 = stage.status()["heartbeat_age_seconds"]
+    assert isinstance(age1, (int, float))
+    assert age1 >= 0.0
+
+    time.sleep(0.05)
+    age2 = stage.status()["heartbeat_age_seconds"]
+    assert isinstance(age2, (int, float))
+    assert age2 > age1
+
+
 
 

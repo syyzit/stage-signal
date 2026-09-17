@@ -94,6 +94,13 @@ Field rules:
 Timestamps are ISO-8601 with timezone (UTC if none determinable, suffix `+00:00`).
 `init` creates a STATUS with `state: "queued"` and null stage fields.
 
+When status is queried via `status --json` or `Stage.status()` (as well as the
+`status` snapshot in `doctor --json` and `wait --json`), the serialized payload
+includes a dynamically computed `heartbeat_age_seconds`: number of elapsed
+seconds since `heartbeat_at` (float ≥ 0), or `null` when no heartbeat timestamp
+is recorded or unparseable. This dynamic field is computed on read and is not
+persisted to `STATUS.json` on disk.
+
 ## 4. States & transitions
 
 ```
@@ -182,7 +189,7 @@ means. `doctor` reports staleness; it does not change state.
 Similarly, when `state == running` and a claiming `pid` is recorded, `doctor`
 performs an advisory best-effort liveness check (POSIX `os.kill(pid, 0)` /
 Windows API). If the claiming PID is dead while the stage is still `running`,
-`doctor` reports a warning (`DEAD PID: claiming pid N is not alive (state still running)`).
+`doctor` reports a warning (`DEAD PID: claiming pid N is not alive (state still running); reclaim with 'fail --reason TEXT --if-dead-pid'`).
 The check is strictly advisory: the library never auto-transitions or mutates
 state; orchestrators decide whether to clear, fail, or restart.
 
@@ -234,7 +241,9 @@ stage-signal doctor [--stale-after SEC] [--json] [--format human|json]
   `"met"` | `"mismatch"` | `"timeout"`, `wanted`, `observed_state`, `exit_code`,
   `timeout`, `stage_id`, `dir`, and the `status` snapshot) with human output
   omitted, preserving the exit-code contract.
-- `status` prints human text by default, raw `STATUS.json` with `--json`.
+- `status` prints human text by default; with `--json`, it prints the status
+  payload as a JSON object, including dynamic `heartbeat_age_seconds` (number of
+  elapsed seconds since `heartbeat_at`, or `null` when no heartbeat is recorded).
   Its exit code always reflects state (§7), so orchestrators can
   `stage-signal status` / `wait` in shell `if` directly.
 - `doctor` checks: dir exists, STATUS parses + schema ok, events.jsonl
@@ -250,7 +259,8 @@ stage-signal doctor [--stale-after SEC] [--json] [--format human|json]
   `{"ok": bool, "state": str|null, "problems": list[str], "warnings": [{"code": str, "message": str, "detail": object}], "status": object|null}`.
   Structured warning codes include:
   - `STALE_HEARTBEAT`: heartbeat older than threshold (detail: `{"age": float|null, "threshold": float, "heartbeat_at": str|null}`) or missing entirely.
-  - `DEAD_PID`: claiming process is not alive (detail: `{"pid": int}`).
+  - `DEAD_PID`: claiming process is not alive (detail: `{"pid": int, "recovery_hint": str}`).
+    The warning message includes an explicit recovery hint naming `fail --reason TEXT --if-dead-pid`.
   - `UNPARSEABLE_HEARTBEAT`: invalid heartbeat timestamp format (detail: `{"heartbeat_at": str}`).
   Warnings never change stage state and do not trigger a non-zero exit code (exit 0 on healthy/warnings, 1 on problems, 2 on bad args).
   Passing `stale_after=None` to `Stage.diagnose()` disables heartbeat checks.
