@@ -6,6 +6,9 @@ See `docs/RELEASE.md` for the release procedure.
 
 ## [Unreleased]
 
+- Froze doctor warning object required keys (`WARNING_KEYS`) and canonical warning
+  code set (`WARNING_CODES`) in SPEC §13.8, guaranteeing additive-only warning
+  contracts for orchestrators branching on `warnings[].code` (#110).
 - Froze required event record keys via exported `EVENT_RECORD_KEYS` and the
   `events --json` / `Stage.events()` array contract in SPEC §13.6, with
   lifecycle, reclaim-trail, and filtering regression coverage (#105).
