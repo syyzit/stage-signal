@@ -3,8 +3,13 @@ description: >-
   Wait on a stage-signal stage without a preinstalled venv.
   Installs stage-signal from PyPI then runs
   `stage-signal --dir <dir> wait --state <state> --timeout <timeout>`.
-  Exposes step outputs (state, outcome, exit-code, timed-out, stage-id, json)
-  so downstream steps can branch on terminal states without scraping logs.
+  Exposes step outputs (state, outcome, exit-code, timed-out, stage-id,
+  reason, json) so downstream steps can branch on done / blocked / failed /
+  timeout without scraping logs or collapsing 11/12/14 into a generic failure.
+  Use `continue-on-error: true` on this step, then `if:` on `state` /
+  `timed-out` / `reason` (see examples/github-action-wait.yml).
+  Inputs: dir, state, timeout, poll, python-version, version, cache,
+  cache-dependency-path, pip-cache.
   Exit codes: 0 done/OK (wait condition met), 1 generic/corrupt,
   2 bad args, 3 illegal transition, 10 running, 11 blocked,
   12 failed, 13 queued, 14 wait timeout, 15 not initialized.
@@ -77,6 +82,9 @@ outputs:
   stage_id:
     description: 'Stage ID (alias for stage-id)'
     value: ${{ steps.wait.outputs.stage_id }}
+  reason:
+    description: 'Short blocked/failed reason or timeout message (empty otherwise)'
+    value: ${{ steps.wait.outputs.reason }}
   json:
     description: 'Raw JSON string emitted by wait --json if available'
     value: ${{ steps.wait.outputs.json }}
@@ -153,6 +161,7 @@ runs:
         outcome = ""
         timed_out = "false"
         stage_id = ""
+        reason = ""
         raw_json = ""
 
         if os.path.exists(json_path):
@@ -166,6 +175,15 @@ runs:
                     exit_code = int(data.get("exit_code", exit_code))
                     timed_out = "true" if data.get("timeout") else "false"
                     stage_id = str(data.get("stage_id") or "")
+                    reason = str(data.get("reason") or "")
+                    status = data.get("status") or {}
+                    if isinstance(status, dict):
+                        if not stage_id:
+                            stage_id = str(status.get("stage_id") or "")
+                        if not reason:
+                            err = status.get("error") or {}
+                            if isinstance(err, dict):
+                                reason = str(err.get("reason") or "")
             except Exception:
                 pass
 
@@ -177,6 +195,10 @@ runs:
                         st = json.load(f)
                     state = str(st.get("state") or "")
                     stage_id = str(st.get("stage_id") or "")
+                    if not reason:
+                        err = st.get("error") or {}
+                        if isinstance(err, dict):
+                            reason = str(err.get("reason") or "")
                 except Exception:
                     pass
 
@@ -193,6 +215,10 @@ runs:
 
         if exit_code == 14:
             timed_out = "true"
+            if not reason:
+                reason = "wait timed out"
+
+        reason = " ".join(reason.splitlines()).strip()
 
         if gh_output:
             with open(gh_output, "a", encoding="utf-8") as f:
@@ -206,6 +232,7 @@ runs:
                 f.write(f"timed_out={timed_out}\n")
                 f.write(f"stage-id={stage_id}\n")
                 f.write(f"stage_id={stage_id}\n")
+                f.write(f"reason={reason}\n")
                 if raw_json.strip():
                     delim = f"ghdel_{uuid.uuid4().hex}"
                     f.write(f"json<<{delim}\n{raw_json.strip()}\n{delim}\n")

@@ -107,7 +107,15 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument("--state", default="terminal", choices=list(WAIT_CHOICES))
     c.add_argument("--timeout", type=float, default=WAIT_DEFAULT_TIMEOUT)
     c.add_argument("--poll", type=float, default=WAIT_DEFAULT_POLL)
-    c.add_argument("--json", action="store_true", default=False)
+    c.add_argument(
+        "--json",
+        action="store_true",
+        default=False,
+        help=(
+            "print one JSON object on stdout (state, stage_id, exit_code, "
+            "reason when blocked/failed/timeout); omit human text"
+        ),
+    )
     c.set_defaults(func=cmd_wait)
 
     c = sub.add_parser(
@@ -199,6 +207,51 @@ def _one_line(status: dict[str, Any]) -> str:
         f"{status.get('stage_name') or '-'} "
         f"(attempt {status.get('attempt')})"
     )
+
+
+def _status_reason(status: Optional[dict[str, Any]]) -> Optional[str]:
+    """Short blocked/failed reason from a STATUS snapshot, else None."""
+    if not status:
+        return None
+    err = status.get("error")
+    if isinstance(err, dict):
+        reason = err.get("reason")
+        if isinstance(reason, str) and reason.strip():
+            return reason
+    return None
+
+
+def _wait_json_payload(
+    *,
+    outcome: str,
+    wanted: str,
+    status: Optional[dict[str, Any]],
+    exit_code: int,
+    timed_out: bool,
+    dir_path: str,
+    reason: Optional[str] = None,
+) -> dict[str, Any]:
+    """Machine-readable wait result (SPEC §6). Human text is omitted."""
+    state = None
+    stage_id = None
+    if status:
+        raw_state = status.get("state")
+        state = str(raw_state) if raw_state is not None else None
+        stage_id = status.get("stage_id")
+    if reason is None:
+        reason = _status_reason(status)
+    return {
+        "outcome": outcome,
+        "wanted": wanted,
+        "observed_state": state,
+        "state": state,
+        "exit_code": exit_code,
+        "timeout": timed_out,
+        "stage_id": stage_id,
+        "dir": dir_path,
+        "reason": reason,
+        "status": status,
+    }
 
 
 # -- commands -----------------------------------------------------------
@@ -305,18 +358,17 @@ def cmd_wait(args: argparse.Namespace) -> int:
         exit_code = 0 if is_met else state_exit_code(state)
         outcome = "met" if is_met else "mismatch"
         if args.json:
-            result = {
-                "outcome": outcome,
-                "wanted": args.state,
-                "observed_state": state,
-                "state": state,
-                "exit_code": exit_code,
-                "timeout": False,
-                "stage_id": st.get("stage_id"),
-                "dir": str(stage_obj.dir),
-                "status": st,
-            }
-            print(json.dumps(result, indent=2))
+            print(json.dumps(
+                _wait_json_payload(
+                    outcome=outcome,
+                    wanted=args.state,
+                    status=st,
+                    exit_code=exit_code,
+                    timed_out=False,
+                    dir_path=str(stage_obj.dir),
+                ),
+                indent=2,
+            ))
             return exit_code
         if is_met:
             print(f"wait met: {state} {_one_line(st)}")
@@ -326,20 +378,18 @@ def cmd_wait(args: argparse.Namespace) -> int:
         return exit_code
     except WaitTimeout as exc:
         if args.json:
-            st = exc.last_status
-            state = str(st.get("state")) if st else None
-            result = {
-                "outcome": "timeout",
-                "wanted": args.state,
-                "observed_state": state,
-                "state": state,
-                "exit_code": exc.exit_code,
-                "timeout": True,
-                "stage_id": st.get("stage_id") if st else None,
-                "dir": str(stage_obj.dir),
-                "status": st,
-            }
-            print(json.dumps(result, indent=2))
+            print(json.dumps(
+                _wait_json_payload(
+                    outcome="timeout",
+                    wanted=args.state,
+                    status=exc.last_status,
+                    exit_code=exc.exit_code,
+                    timed_out=True,
+                    dir_path=str(stage_obj.dir),
+                    reason=str(exc),
+                ),
+                indent=2,
+            ))
             return exc.exit_code
         raise
 

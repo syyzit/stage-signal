@@ -211,6 +211,8 @@ def test_wait_help_documents_json() -> None:
     assert wait_parser is not None
     help_text = wait_parser.format_help()
     assert "--json" in help_text
+    assert "JSON object" in help_text
+    assert "reason" in help_text
 
 
 def test_cli_wait_json_met_done(tmp_path, monkeypatch, capsys) -> None:
@@ -234,6 +236,7 @@ def test_cli_wait_json_met_done(tmp_path, monkeypatch, capsys) -> None:
     assert data["timeout"] is False
     assert data["stage_id"] == "m1-id"
     assert data["dir"] == str(d)
+    assert data["reason"] is None
     assert data["status"]["state"] == "done"
     assert data["status"]["result"]["summary"] == "all good"
 
@@ -266,6 +269,8 @@ def test_cli_wait_json_timeout(tmp_path, monkeypatch, capsys) -> None:
     assert data["timeout"] is True
     assert data["stage_id"] == "m-running"
     assert data["dir"] == str(d)
+    assert data["reason"] is not None
+    assert "timed out" in data["reason"]
     assert data["status"]["state"] == "running"
     assert data["status"]["stage_name"] == "m-running"
 
@@ -291,6 +296,7 @@ def test_cli_wait_json_mismatch_blocked(tmp_path, monkeypatch, capsys) -> None:
     assert data["timeout"] is False
     assert data["stage_id"] == "id-block"
     assert data["dir"] == str(d)
+    assert data["reason"] == "waiting on api key"
     assert data["status"]["state"] == "blocked"
     assert data["status"]["error"]["reason"] == "waiting on api key"
 
@@ -316,6 +322,7 @@ def test_cli_wait_json_mismatch_failed(tmp_path, monkeypatch, capsys) -> None:
     assert data["timeout"] is False
     assert data["stage_id"] == "id-fail"
     assert data["dir"] == str(d)
+    assert data["reason"] == "syntax error"
     assert data["status"]["state"] == "failed"
     assert data["status"]["error"]["reason"] == "syntax error"
 
@@ -339,6 +346,7 @@ def test_cli_wait_json_matching_non_done_terminal(tmp_path, monkeypatch, capsys)
     assert data["state"] == "blocked"
     assert data["exit_code"] == 0
     assert data["timeout"] is False
+    assert data["reason"] == "blocked on external dep"
 
 
 def test_cli_wait_human_default_preserved(tmp_path, monkeypatch, capsys) -> None:

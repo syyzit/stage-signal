@@ -239,9 +239,13 @@ stage-signal doctor [--stale-after SEC] [--json] [--format human|json]
   reached first, exit with that state's code (11/12) — not 0, not 14.
   Exit 14 only on true timeout. `wait` on a non-initialized dir is exit 15.
   `--json` prints one JSON object on stdout across all outcomes (`outcome`:
-  `"met"` | `"mismatch"` | `"timeout"`, `wanted`, `observed_state`, `exit_code`,
-  `timeout`, `stage_id`, `dir`, and the `status` snapshot) with human output
-  omitted, preserving the exit-code contract.
+  `"met"` | `"mismatch"` | `"timeout"`, `wanted`, `observed_state` / `state`,
+  `exit_code`, `timeout`, `stage_id`, `dir`, `reason`, and the `status`
+  snapshot) with human output omitted, preserving the exit-code contract.
+  `reason` is a short string when the observed state is `blocked` or `failed`
+  (from `status.error.reason`) or when the wait timed out (the timeout
+  message); otherwise `null`. Human default output is unchanged without
+  `--json`.
 - `status` prints human text by default (including heartbeat age, e.g.
   `heartbeat: <ISO> (age 42s)`, when a heartbeat is recorded); with `--json`, it
   prints the status payload as a JSON object, including dynamic

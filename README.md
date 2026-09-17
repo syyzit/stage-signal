@@ -117,7 +117,7 @@ Exact schema and exit codes: see `docs/SPEC.md` (normative) and
 `status` / `wait` exit codes are part of the contract: `0` done/OK,
 `1` generic/corrupt, `10` running, `11` blocked, `12` failed, `13` queued,
 `14` wait timeout, `15` not initialized, `2` bad args, `3` illegal transition.
-`wait --json` prints a structured JSON object (`outcome`, `wanted`, `observed_state`, `exit_code`, `timeout`, `stage_id`, `dir`, `status`) to stdout while preserving these exit codes.
+`wait --json` prints a structured JSON object (`outcome`, `wanted`, `observed_state` / `state`, `exit_code`, `timeout`, `stage_id`, `dir`, `reason`, `status`) to stdout while preserving these exit codes. `reason` is the blocked/failed error text, or a short timeout message; `null` otherwise.
 `status` prints human text by default (including heartbeat age, e.g. `heartbeat: <ISO> (age 42s)`, only while `running` with a valid heartbeat). `status --json` includes dynamic `heartbeat_age_seconds` (number while running with a valid heartbeat; otherwise `null`) and the always-present boolean `needs_reclaim` with the same semantics as in `doctor --json` (`true` exactly when `running` and a `DEAD_PID` or `STALE_HEARTBEAT` warning applies, computed by the same detection logic as `doctor`; otherwise `false`).
 `doctor --json` (or `--format json`) and `Stage.diagnose()` provide machine-readable health diagnostics (`ok`, `needs_reclaim`, `state`, `problems`, `warnings`: `[{code, message, detail}]`, `status`, `summary`). The always-present boolean `needs_reclaim` is `true` exactly when the state is `running` and a `DEAD_PID` or `STALE_HEARTBEAT` warning applies; otherwise it is `false`, including healthy running, non-running states, and missing/unreadable status without reclaim warnings. Orchestrators should branch on `needs_reclaim` instead of string-matching `summary` or treating `ok` as a liveness signal. The summary still reports `ATTENTION: running needs reclaim` for reclaim warnings when there are no problems. `ok` means no problems: reclaim warnings alone preserve `ok: true` and exit 0 (exit 1 on problems), and `needs_reclaim` remains independent of any problems.
 To enable thin shell or watchdog scripts to branch on exit codes without requiring `jq`, `doctor --exit-reclaim` exits 10 when `needs_reclaim` is true (while still printing human or JSON output as requested). When `needs_reclaim` is false, it preserves existing exit codes (0 healthy/warnings, 1 problems, 2 bad args). Without `--exit-reclaim`, doctor retains its default advisory exit 0 on warnings.
@@ -200,6 +200,7 @@ The action exposes step outputs so downstream steps can branch without log scrap
 - `exit-code` / `exit_code`: numeric wait exit code (`0`, `11`, `12`, `14`, `15`)
 - `timed-out` / `timed_out`: `"true"` or `"false"`
 - `stage-id` / `stage_id`: stage identifier if present in status
+- `reason`: short blocked/failed reason or timeout message (empty otherwise)
 - `json`: raw machine-readable JSON emitted by `wait --json`
 
 #### Branching without scraping logs
@@ -212,24 +213,34 @@ Because non-zero exit codes (11 blocked, 12 failed, 14 timeout) fail the step by
   uses: syyzit/stage-signal@v0.1.6
   continue-on-error: true
   with:
-    state: done
+    state: terminal
     timeout: 600
 
-- name: Notify on blocked
+- name: Done
+  if: steps.wait.outputs.state == 'done'
+  run: echo "Stage done: ${{ steps.wait.outputs.stage-id }}"
+
+- name: Blocked
   if: steps.wait.outputs.state == 'blocked'
-  run: echo "Stage blocked: ${{ steps.wait.outputs.stage-id }}"
+  run: echo "Stage blocked: ${{ steps.wait.outputs.reason }}"
 
-- name: Alert on timeout
+- name: Failed
+  if: steps.wait.outputs.state == 'failed'
+  run: echo "Stage failed: ${{ steps.wait.outputs.reason }}"
+
+- name: Timed out
   if: steps.wait.outputs.timed-out == 'true'
-  run: echo "Stage timed out after 600s"
+  run: echo "Wait timed out: ${{ steps.wait.outputs.reason }}"
 
-# Optionally enforce job failure if wait was not met:
-- name: Fail if not met
-  if: steps.wait.outputs.outcome != 'met'
-  run: exit ${{ steps.wait.outputs.exit-code }}
+# Optionally enforce job failure unless the stage is done:
+- name: Fail unless done
+  if: steps.wait.outputs.state != 'done'
+  run: |
+    echo "not done: state=${{ steps.wait.outputs.state }} reason=${{ steps.wait.outputs.reason }}"
+    exit 1
 ```
 
-See [`examples/github-action-wait.yml`](examples/github-action-wait.yml) for a complete copyable workflow that waits on an existing `.stage-signal/` directory. The composite action's steps use `shell: bash` (available on GitHub-hosted Ubuntu, macOS, and Windows runners). Pin the action ref (`@v0.1.6`) independently from the optional `version` input (PyPI package pin).
+See [`examples/github-action-wait.yml`](examples/github-action-wait.yml) for a complete copyable workflow that waits on an existing `.stage-signal/` directory and branches on `done` / `blocked` / `failed` / `timeout`. The composite action's steps use `shell: bash` (available on GitHub-hosted Ubuntu, macOS, and Windows runners). Pin the action ref (`@v0.1.6`) independently from the optional `version` input (PyPI package pin). Waiting for `terminal` with `continue-on-error: true` keeps 11/12/14 from collapsing into a generic failed step so later `if:` branches can read `state` / `timed-out` / `reason`.
 
 For distinguishable blocked/failed/timeout in CI without log scraping, use the action `outputs` (see above) with `continue-on-error` on the wait step when you need downstream `if:` branches.
 
