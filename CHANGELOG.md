@@ -6,6 +6,7 @@ See `docs/RELEASE.md` for the release procedure.
 
 ## [Unreleased]
 
+- Proved `reclaim --kill` (Python API and CLI) signals the adopted child PID rather than the supervisor wrapper after `supervise`, asserting signal delivery target and adopt heartbeat event (#106).
 - Locked `schema_version 1` read contract in SPEC Appendix §13 and added
   comprehensive regression tests ensuring `status --json`, `doctor --json`, and
   `wait --json` (including timeout path) preserve frozen key sets, exit codes,

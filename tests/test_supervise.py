@@ -444,8 +444,11 @@ def test_supervise_adopts_child_pid_and_token(stage: Stage, tmp_path: Path) -> N
     assert st_done["pid"] == child_pid
 
 
-def test_supervise_child_pid_reclaim_identity_coherent(stage: Stage, tmp_path: Path) -> None:
-    stage.start(stage="test-reclaim-child", pid=999999)
+def test_supervise_child_pid_reclaim_identity_coherent(
+    stage: Stage, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    supervisor_pid = os.getpid()
+    stage.start(stage="test-reclaim-child", pid=supervisor_pid)
 
     ready = tmp_path / "reclaim_ready.txt"
     script = (
@@ -467,16 +470,30 @@ def test_supervise_child_pid_reclaim_identity_coherent(stage: Stage, tmp_path: P
         time.sleep(0.02)
     assert ready.exists()
     child_pid = int(ready.read_text().strip())
+    assert child_pid != supervisor_pid
 
     st = stage.status()
+    while st["pid"] != child_pid and time.monotonic() < deadline:
+        time.sleep(0.02)
+        st = stage.status()
     assert st["pid"] == child_pid
+    assert st["state"] == STATE_RUNNING
+
+    # Adopt heartbeat event recorded with previous supervisor pid and adopted child pid
+    hb_events = stage.events(type="heartbeat")
+    assert any(
+        e.get("message") == f"adopted child pid {child_pid}"
+        and e.get("detail", {}).get("pid") == child_pid
+        and e.get("detail", {}).get("previous_pid") == supervisor_pid
+        for e in hb_events
+    )
 
     # Doctor reports ok while child alive and not stale
     diag = stage.diagnose(stale_after=10.0)
     assert diag["needs_reclaim"] is False
     assert diag["ok"] is True
 
-    # Make stage stale to trigger needs_reclaim
+    # Make stage stale to trigger needs_reclaim without killing child
     with stage._store.locked(exclusive=True):
         cur = stage._store.read_status()
         cur["heartbeat_at"] = "2020-01-01T00:00:00+00:00"
@@ -485,13 +502,35 @@ def test_supervise_child_pid_reclaim_identity_coherent(stage: Stage, tmp_path: P
     diag_stale = stage.diagnose(stale_after=10.0)
     assert diag_stale["needs_reclaim"] is True
 
+    # Assert STATUS pid was adopted child before reclaim
+    assert stage.status()["pid"] == child_pid
+
+    # Intercept signal delivery to verify target PID is child_pid, not supervisor_pid
+    signals_sent: list[tuple[int, int]] = []
+    orig_kill = os.kill
+
+    def tracking_kill(pid: int, sig: int) -> None:
+        if sig != 0:
+            signals_sent.append((pid, sig))
+        orig_kill(pid, sig)
+
+    monkeypatch.setattr(os, "kill", tracking_kill)
+
     # Reclaim with --kill: checks token identity and terminates the child worker process
     rec = stage.reclaim(reason="stale worker terminated", kill=True)
     assert rec["state"] == STATE_QUEUED
 
+    # Signals targeted the adopted child, never the supervisor process
+    assert len(signals_sent) >= 1
+    assert all(target_pid == child_pid for target_pid, _ in signals_sent)
+    assert supervisor_pid not in [target_pid for target_pid, _ in signals_sent]
+    assert (child_pid, signal.SIGTERM) in signals_sent
+
     # Supervisor thread joins because child was terminated
     t.join(timeout=10.0)
     assert not t.is_alive()
+    assert stage.status()["state"] == STATE_FAILED
+
 
 
 def test_supervise_token_capture_failure_fallback(
@@ -551,4 +590,87 @@ def test_cli_supervise_adopts_child_pid(stage: Stage, tmp_path: Path) -> None:
     t.join(timeout=10.0)
     assert not t.is_alive()
     assert stage.status()["state"] == STATE_DONE
+
+
+def test_cli_supervise_reclaim_kill_signals_adopted_child(
+    stage: Stage, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    supervisor_pid = os.getpid()
+    stage.start(stage="cli-reclaim-adopt", pid=supervisor_pid, session_id="cli-reclaim-sess")
+    ready = tmp_path / "cli_reclaim_ready.txt"
+    script = (
+        "import os, pathlib, time\n"
+        f"pathlib.Path(r'{ready}').write_text(str(os.getpid()))\n"
+        "while True:\n"
+        "    time.sleep(0.05)\n"
+    )
+
+    t = threading.Thread(
+        target=main,
+        args=([
+            "--dir", str(stage.dir),
+            "supervise", "--",
+            sys.executable, "-c", script,
+        ],),
+    )
+    t.start()
+
+    deadline = time.monotonic() + 10.0
+    while not ready.exists() and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert ready.exists()
+    child_pid = int(ready.read_text().strip())
+    assert child_pid != supervisor_pid
+
+    st = stage.status()
+    while st["pid"] != child_pid and time.monotonic() < deadline:
+        time.sleep(0.02)
+        st = stage.status()
+    assert st["pid"] == child_pid
+    assert st["state"] == STATE_RUNNING
+
+    # Adopt heartbeat event recorded
+    events = stage.events(type="heartbeat")
+    assert any(
+        e.get("message") == f"adopted child pid {child_pid}"
+        and e.get("detail", {}).get("pid") == child_pid
+        and e.get("detail", {}).get("previous_pid") == supervisor_pid
+        for e in events
+    )
+
+    # Force needs_reclaim via stale heartbeat without killing child yet
+    with stage._store.locked(exclusive=True):
+        cur = stage._store.read_status()
+        cur["heartbeat_at"] = "2020-01-01T00:00:00+00:00"
+        stage._store.write_status(cur)
+
+    assert stage.diagnose(stale_after=10.0)["needs_reclaim"] is True
+    # Child PID preserved in STATUS right before reclaim
+    assert stage.status()["pid"] == child_pid
+
+    signals_sent: list[tuple[int, int]] = []
+    orig_kill = os.kill
+
+    def tracking_kill(pid: int, sig: int) -> None:
+        if sig != 0:
+            signals_sent.append((pid, sig))
+        orig_kill(pid, sig)
+
+    monkeypatch.setattr(os, "kill", tracking_kill)
+
+    exit_code = main([
+        "--dir", str(stage.dir),
+        "reclaim", "--reason", "stale adopted worker via cli", "--kill",
+    ])
+    assert exit_code == 0
+
+    assert len(signals_sent) >= 1
+    assert all(target_pid == child_pid for target_pid, _ in signals_sent)
+    assert supervisor_pid not in [target_pid for target_pid, _ in signals_sent]
+    assert (child_pid, signal.SIGTERM) in signals_sent
+
+    t.join(timeout=10.0)
+    assert not t.is_alive()
+    assert stage.status()["state"] == STATE_FAILED
+
 

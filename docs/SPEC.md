@@ -430,6 +430,8 @@ stage-signal supervise [--every SEC] [--dir DIR] [--summary SUMMARY] [--reason R
   `failed` for watchdog inspection before manual `clear-terminal`. `--kill` (default false)
   opts into best-effort termination of a valid, alive recorded PID before mutation,
   only after the guard passes; see §4 rule 7 for timing, platform behavior, and limits.
+  When running under `supervise`, `doctor` and `reclaim --kill` track and signal the adopted
+  child PID rather than the supervisor wrapper process (see `supervise` below).
   It is compatible with `--keep-failed`. Mutators do not support `--json`.
 - `supervise [--every SEC] [--dir DIR] [--summary SUMMARY] [--reason REASON] [--write-status-mirror] -- CMD [ARGS...]`:
   Runs and supervises a child process `CMD`, automatically bumping stage `heartbeat` every `--every`
