@@ -255,16 +255,9 @@ def validate_status(data: Any, *, source: str = "STATUS.json") -> None:
             f"{source}: unsupported schema_version "
             f"{data.get('schema_version')!r} (expected 1)"
         )
-    from .constants import STATES  # local import: avoid cycle at module load
+    from .constants import STATES, STATUS_REQUIRED_KEYS  # local import: avoid cycle at module load
 
-    required = (
-        "schema_version", "project", "stage_id", "stage_name", "state",
-        "attempt", "session_id", "pid", "model", "variant", "repo_path",
-        "git_branch", "git_head", "started_at", "updated_at", "heartbeat_at",
-        "heartbeat_note", "result", "error", "artifacts", "proof",
-        "notes", "meta",
-    )
-    missing = [k for k in required if k not in data]
+    missing = [k for k in STATUS_REQUIRED_KEYS if k not in data]
     if missing:
         raise CorruptStatusError(f"{source}: missing keys: {', '.join(missing)}")
     if data["state"] not in STATES:
