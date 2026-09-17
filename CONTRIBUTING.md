@@ -12,6 +12,13 @@ source .venv/bin/activate
 pip install -e ".[dev]"
 ```
 
+## Agent receipts
+
+Write OpenCode completion receipts to `.agloop/OC-DONE.md` in the active
+worktree. The `.agloop/` directory is gitignored; receipts are local orchestrator
+state and must never be committed. Do not write receipts at the repository root
+(such as `.agloop-oc-DONE.md`).
+
 ## Tests
 
 Run the test suite and both orchestrator smoke tests before submitting a pull
