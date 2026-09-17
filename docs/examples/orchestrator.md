@@ -98,7 +98,7 @@ The orchestrator inspects exit codes from `status`, `wait`, or `doctor` commands
 | `1` | Error / Corrupt directory | Schema violation or disk error |
 | `2` | Bad CLI Arguments | Flag syntax error |
 | `3` | Illegal Transition / Proof Failure | Invalid lifecycle transition |
-| `10` | Running | `state: running` |
+| `10` | Running / Needs Reclaim | `state: running` (or `doctor --exit-reclaim` when `needs_reclaim` is true) |
 | `11` | Blocked | `state: blocked` |
 | `12` | Failed | `state: failed` |
 | `13` | Queued | `state: queued` |
@@ -285,6 +285,29 @@ fi
 ```
 
 Warning checks are secondary detail for choosing a response, not the primary health gate. A stale heartbeat does not prove the PID is dead: do not call `fail --if-dead-pid` for a stale-only live runner. The [watchdog example](../../examples/orchestrator-watchdog.sh) logs ATTENTION and returns `0` from its reclaim check in that case; `--once` still returns the observed running-state code `10`. Guarded fail rechecks the current PID under lock and can refuse if the snapshot has changed.
+
+#### Branching on Exit Code: `doctor --exit-reclaim` (without `jq`)
+
+For thin shell or watchdog snippets that avoid `jq`, pass `--exit-reclaim` to `doctor`. When `--exit-reclaim` is set, `doctor` exits **10** when `needs_reclaim` is true (while still printing human or JSON diagnostic output as requested). When `needs_reclaim` is false, it preserves existing exit codes (0 healthy/warnings, 1 problems, 2 bad args):
+
+```bash
+# Doctor exits 10 if needs_reclaim is true (DEAD_PID or STALE_HEARTBEAT)
+stage-signal --dir "$WORKTREE/.stage-signal" doctor --exit-reclaim
+case $? in
+  0)
+    # Healthy running, non-running state, or warning without reclaim
+    ;;
+  10)
+    echo "ATTENTION: stage needs reclaim (dead PID or stale heartbeat)" >&2
+    # Attempt guarded reclaim if dead PID
+    stage-signal --dir "$WORKTREE/.stage-signal" fail \
+      --reason "Agent process died unexpectedly (DEAD_PID)" --if-dead-pid || true
+    ;;
+  1)
+    echo "Doctor reported problems (e.g. uninitialized, corrupt file)" >&2
+    ;;
+esac
+```
 
 ---
 

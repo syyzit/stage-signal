@@ -10,6 +10,9 @@ from typing import Any, Callable, Optional, Sequence
 from . import __version__
 from .constants import (
     ENV_DIR,
+    EXIT_ERROR,
+    EXIT_OK,
+    EXIT_RUNNING,
     WAIT_DEFAULT_POLL,
     WAIT_DEFAULT_TIMEOUT,
     state_exit_code,
@@ -125,6 +128,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="output machine-readable JSON")
     c.add_argument("--format", choices=["human", "json"], default=None,
                    help="output format (default: human)")
+    c.add_argument("--exit-reclaim", action="store_true", default=False,
+                   help="exit 10 when needs_reclaim is true (default: exit 0 on warnings)")
     c.set_defaults(func=cmd_doctor)
 
     return p
@@ -358,4 +363,6 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             print(f"WARNING: {msg}")
         if diag.get("summary"):
             print(diag["summary"])
-    return 0 if diag["ok"] else 1
+    if getattr(args, "exit_reclaim", False) and diag.get("needs_reclaim"):
+        return EXIT_RUNNING
+    return EXIT_OK if diag["ok"] else EXIT_ERROR
