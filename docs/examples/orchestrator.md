@@ -286,7 +286,7 @@ fi
 
 Warning checks are secondary detail for choosing a response, not the primary health gate. A stale heartbeat does not prove the PID is dead: do not call `fail --if-dead-pid` for a stale-only live runner. The [watchdog example](../../examples/orchestrator-watchdog.sh) logs ATTENTION and returns `0` from its reclaim check in that case; `--once` still returns the observed running-state code `10`. Guarded fail rechecks the current PID under lock and can refuse if the snapshot has changed.
 
-To reclaim **either** `DEAD_PID` or `STALE_HEARTBEAT` in one shot (same `needs_reclaim` semantics as `doctor` / `status` / `Stage.diagnose()`), use `fail --if-needs-reclaim` instead of `--if-dead-pid`:
+To reclaim **either** `DEAD_PID` or `STALE_HEARTBEAT` in one shot (same `needs_reclaim` semantics as `doctor` / `status` / `Stage.diagnose()`), use `fail --if-needs-reclaim` instead of `--if-dead-pid`. After reclaim (or abandon), audit with `events` — do not scrape `events.jsonl`:
 
 ```bash
 # One-shot fail gate: writes failed + reason ONLY when needs_reclaim is true.
@@ -294,6 +294,8 @@ To reclaim **either** `DEAD_PID` or `STALE_HEARTBEAT` in one shot (same `needs_r
 if stage-signal --dir "$WORKTREE/.stage-signal" fail \
   --reason "watchdog reclaim (DEAD_PID or STALE_HEARTBEAT)" --if-needs-reclaim; then
   echo "Stage reclaimed as failed."
+  # First-class audit (newest last). --json prints a JSON array, not NDJSON.
+  stage-signal --dir "$WORKTREE/.stage-signal" events --tail 20 --type failed
 else
   echo "Reclaim not needed or refused (exit $?); no mutation." >&2
 fi
@@ -306,6 +308,7 @@ A parked `queued` stage (named or idle, no PID/heartbeat) cannot be `clear-termi
 ```bash
 # Abandon a stuck queued stage (never started / parked) back to idle.
 stage-signal --dir "$WORKTREE/.stage-signal" clear-terminal
+stage-signal --dir "$WORKTREE/.stage-signal" events --tail 5 --type clear_terminal
 ```
 
 #### Branching on Exit Code: `doctor --exit-reclaim` (without `jq`)
@@ -492,4 +495,4 @@ echo "Lane opencode finished with code $STATUS_OC"
 - [ ] **One Worktree Per Lane**: Separate directories, separate branches, separate `.stage-signal/` folders.
 - [ ] **Accurate PIDs**: Pass the live PID to `start --pid` so `doctor` can spot process deaths.
 - [ ] **Automated Health Checks**: Run `doctor --json` in your poll loop and branch on `.needs_reclaim == true`, never `.summary` or `.ok`. Inspect `.warnings[]` secondarily: reclaim `DEAD_PID` with `fail --if-dead-pid`, or reclaim both `DEAD_PID` and `STALE_HEARTBEAT` with `fail --if-needs-reclaim`.
-- [ ] **Clean Resets**: Use `stage-signal clear-terminal` to reset a terminal *or* parked queued worktree back to `queued -` between tasks. From `running`, reclaim first.
+- [ ] **Clean Resets**: Use `stage-signal clear-terminal` to reset a terminal *or* parked queued worktree back to `queued -` between tasks. From `running`, reclaim first. After `fail --if-needs-reclaim` / `clear-terminal`, audit with `stage-signal events --tail 20` (optional `--type failed|clear_terminal`, `--json` for a JSON array).

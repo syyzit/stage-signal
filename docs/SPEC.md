@@ -222,6 +222,24 @@ Each event: `{"ts": ISO8601, "type": str, "stage_id": str|null,
 `message` is the human summary (note text / reason / heartbeat note).
 `detail` carries extras (artifact path+label, proof ref, pid, session).
 
+Orchestrators **must not scrape** `events.jsonl` with `tail`/`jq`. The first-class
+read path is:
+
+- CLI: `stage-signal events [--tail N] [--type TYPE] [--json]`
+- Library: `Stage.events(*, tail=None, type=None) -> list[dict]`
+
+Human CLI output is chronological (**newest last**, matching file order).
+`--tail N` keeps the last N matching events (default 20; `0` = all).
+`--type` filters to one SPEC event type **before** `--tail` (so
+`--type failed --tail 5` is the last 5 `failed` events). `--json` prints a
+JSON array (pretty-printed, one array — not NDJSON), matching other
+`--json` commands that emit JSON values rather than line-oriented records.
+Both paths take a shared lock like `status`. Missing/uninitialized STATUS
+is exit 15 / `NotInitialized`. A totally unreadable file, or any single
+unparseable JSON line, is fail-closed (`CorruptStatusError`, exit 1).
+Blank lines are skipped. After `fail --if-needs-reclaim` or
+`clear-terminal`, use `events` to audit the reclaim/abandon trail.
+
 ## 6. CLI contract
 
 ```
@@ -238,6 +256,7 @@ stage-signal done [--summary TEXT] [--git-head H] [--proof-ref R] [--require-pro
 stage-signal blocked --reason TEXT [--write-status-mirror]
 stage-signal fail --reason TEXT [--if-dead-pid|--if-needs-reclaim] [--write-status-mirror]
 stage-signal status [--json]
+stage-signal events [--tail N] [--type TYPE] [--json]
 stage-signal wait [--state done|blocked|failed|terminal] [--timeout SEC] [--poll SEC] [--json]
 stage-signal clear-terminal [--keep-stage]
 stage-signal doctor [--stale-after SEC] [--json] [--format human|json]
@@ -278,6 +297,16 @@ stage-signal doctor [--stale-after SEC] [--json] [--format human|json]
   the exit code always reflects state (§7).
   Its exit code always reflects state (§7), so orchestrators can
   `stage-signal status` / `wait` in shell `if` directly.
+- `events` prints recent `events.jsonl` records for orchestrator audit
+  (do not scrape the file). Human default is chronological, newest last.
+  `--tail N` is the last N matching events (default 20; `0` = all).
+  `--type` is one of `init|start|heartbeat|note|artifact|done|blocked|failed|clear_terminal`,
+  applied before `--tail`. `--json` prints a JSON array (not NDJSON),
+  consistent with other `--json` commands emitting JSON values.
+  Exit 0 on success, 15 if not initialized, 1 if the log is unreadable or a
+  line is corrupt (fail-closed; blank lines skipped), 2 on bad args.
+  Library: `Stage.events(*, tail=None, type=None) -> list[dict]` with
+  `tail=None` or `0` meaning all (CLI default 20 is a CLI-only convenience).
 - `doctor` checks: dir exists, STATUS parses + schema ok, events.jsonl
   readable, lock writable. When `state == running` and `pid` is an int,
   best-effort checks whether the claiming process is alive (POSIX
@@ -385,10 +414,15 @@ with Stage.open(".stage-signal") as s:   # scoped use; use Stage(dir) + context 
     s.artifact("dist/app.whl", label="wheel")
     s.done(summary="merge 9f38343", git_head="9f38343")
     print(s.status())
+    print(s.events(tail=20, type="failed"))  # newest last; type filter then tail
 ```
 
 - `Stage.open(dir)` → context-managed `Stage`. Plain `Stage(dir)` also works;
   mutations are one-shot locked internally in both cases.
+- `s.events(*, tail=None, type=None) -> list[dict]` reads `events.jsonl`
+  (shared lock; chronological, newest last). `type` filters first; `tail`
+  `None` or `0` means all (CLI default 20 is CLI-only). Same corrupt-line
+  policy as §5 (fail-closed).
 - Errors: `StageError` (code 1) → `BadArgsError` (2), `IllegalTransition` (3),
   `NotInitialized` (15), `CorruptStatusError` (1), `WaitTimeout` (14). Each carries `.exit_code`.
 - `state_exit_code(state) -> int` maps state → 10/11/12/13 (and `done` → 0).

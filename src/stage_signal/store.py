@@ -198,7 +198,11 @@ class StageStore:
                 os.fsync(fh.fileno())
 
     def read_events(self) -> list[dict[str, Any]]:
-        """Read all events (skips blank lines; corrupt lines raise)."""
+        """Read all events (skips blank lines; fail-closed on corrupt lines).
+
+        A totally unreadable file (OSError) or any single unparseable
+        JSON line raises ``CorruptStatusError``. Blank lines are skipped.
+        """
         self.require_initialized()
         events: list[dict[str, Any]] = []
         try:
