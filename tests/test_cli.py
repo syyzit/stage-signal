@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 import json
 import os
+import signal
 import subprocess
 import sys
 from pathlib import Path
@@ -51,6 +52,41 @@ def test_cli_reclaim_stale_heartbeat(
     assert "reclaimed" in out
     assert "queued" in out
     assert stage.status()["stage_id"] is None
+
+
+def test_cli_reclaim_kill_dead_pid_no_signal(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    stage = Stage(tmp_path / ".stage-signal")
+    stage.init()
+    process = subprocess.Popen([sys.executable, "-c", "pass"])
+    process.wait(timeout=10)
+    stage.start(stage="m", pid=process.pid)
+
+    assert main(["--dir", str(stage.dir), "reclaim", "--reason", "gone", "--kill"]) == 0
+    out = capsys.readouterr().out
+    assert "reclaimed" in out
+    assert "queued" in out
+    assert stage.status()["stage_id"] is None
+    assert "warning" not in capsys.readouterr().err
+
+
+def test_cli_reclaim_kill_guard_refused_no_signal(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    stage = Stage(tmp_path / ".stage-signal")
+    stage.init()
+    stage.start(stage="m", pid=os.getpid())
+    before = {
+        name: (stage.dir / name).read_bytes()
+        for name in ("STATUS.json", "STATUS.md", "events.jsonl")
+    }
+
+    assert main(["--dir", str(stage.dir), "reclaim", "--reason", "healthy", "--kill"]) == 3
+
+    err = capsys.readouterr().err
+    assert "needs_reclaim is false" in err
+    assert {name: (stage.dir / name).read_bytes() for name in before} == before
 
 
 def test_cli_reclaim_keep_failed(
@@ -324,11 +360,23 @@ def test_watchdog_wait_reclaim(tmp_path: Path, dead_pid: bool, stale: bool) -> N
     root = Path(__file__).resolve().parents[1]
     stage = Stage(tmp_path / ".stage-signal")
     stage.init()
-    pid = os.getpid()
     if dead_pid:
         process = subprocess.Popen([sys.executable, "-c", "pass"])
         process.wait(timeout=10)
         pid = process.pid
+    else:
+        ignore = subprocess.Popen(
+            [sys.executable, "-c",
+             "import signal, time; "
+             "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+             "print('ready', flush=True); time.sleep(60)"],
+            stdout=subprocess.PIPE, text=True,
+        )
+        try:
+            assert ignore.stdout.readline().strip() == "ready"
+        finally:
+            ignore.stdout.close()
+        pid = ignore.pid
     status = stage.start(stage="watchdog-wait", pid=pid)
     if stale:
         status["heartbeat_at"] = "2000-01-01T00:00:00+00:00"
@@ -341,13 +389,20 @@ def test_watchdog_wait_reclaim(tmp_path: Path, dead_pid: bool, stale: bool) -> N
         "--dir", str(stage.dir), "--wait-reclaim", "--timeout", "5", "--poll", "0.05",
     ]
 
-    result = subprocess.run(command, env=env, capture_output=True, text=True, timeout=10)
+    result = subprocess.run(command, env=env, capture_output=True, text=True, timeout=30)
 
-    assert result.returncode == 12, result.stderr
-    assert stage.status()["state"] == "failed"
-    assert "needs_reclaim" in stage.status()["error"]["reason"]
-    events = [json.loads(line) for line in (stage.dir / "events.jsonl").read_text().splitlines()]
-    assert events[-1]["type"] == "failed"
+    try:
+        assert result.returncode == 12, result.stderr
+        assert stage.status()["state"] == "failed"
+        assert "needs_reclaim" in stage.status()["error"]["reason"]
+        events = [json.loads(line) for line in (stage.dir / "events.jsonl").read_text().splitlines()]
+        assert events[-1]["type"] == "failed"
+        if stale and not dead_pid:
+            assert ignore.wait(timeout=10) == -signal.SIGKILL
+    finally:
+        if not dead_pid and ignore.poll() is None:
+            ignore.kill()
+            ignore.wait(timeout=10)
 
 
 def test_parse_meta_kv_basic() -> None:
