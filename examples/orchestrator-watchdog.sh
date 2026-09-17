@@ -8,8 +8,8 @@
 #   stage-signal events [--tail N] [--type TYPE] [--json]
 # then decides what to do next (enqueue the next stage, alert, stop).
 # Reclaim loop (no doctor sleep):
-#   wait --needs-reclaim → fail --if-needs-reclaim → events → clear-terminal
-# After fail --if-needs-reclaim / clear-terminal, audit via `events`
+#   wait --needs-reclaim → reclaim (or fail --if-needs-reclaim) → events
+# After reclaim / clear-terminal, audit via `events`
 # (do not scrape events.jsonl with tail/jq).
 #
 # Usage:
@@ -21,7 +21,7 @@
 #   --timeout SEC    wait timeout in seconds (default: 3600)
 #   --poll SEC       poll interval in seconds (default: 5)
 #   --once           single status check, no blocking wait (cron style)
-#   --wait-reclaim   block on wait --needs-reclaim, then fail --if-needs-reclaim
+#   --wait-reclaim   block on wait --needs-reclaim, then reclaim --keep-failed
 #                    (cannot combine with --once; use --once --doctor-reclaim
 #                    for a snapshot DEAD_PID-only reclaim)
 #
@@ -181,19 +181,19 @@ fi
 
 if [ "$WAIT_RECLAIM" = "1" ]; then
   # First-class reclaim loop: no doctor sleep.
-  #   wait --needs-reclaim → fail --if-needs-reclaim → events
+  #   wait --needs-reclaim → reclaim --keep-failed → events
   # clear-terminal / restart is left to the caller (or run after this exits 12).
   echo "orchestrator-watchdog: waiting for needs_reclaim timeout=${TIMEOUT}s poll=${POLL}s" >&2
   if ST wait --needs-reclaim --timeout "$TIMEOUT" --poll "$POLL"; then
-    echo "orchestrator-watchdog: needs_reclaim; failing via --if-needs-reclaim" >&2
-    if ST fail --reason "reclaimed by orchestrator-watchdog: needs_reclaim (DEAD_PID or STALE_HEARTBEAT)" --if-needs-reclaim; then
+    echo "orchestrator-watchdog: needs_reclaim; reclaiming via reclaim --keep-failed" >&2
+    if ST reclaim --reason "reclaimed by orchestrator-watchdog: needs_reclaim (DEAD_PID or STALE_HEARTBEAT)" --keep-failed; then
       echo "orchestrator-watchdog: stage reclaimed as failed" >&2
       ST events --tail 20 --type failed >&2 || true
       describe || true
       exit 12
     else
       rc=$?
-      echo "orchestrator-watchdog: fail --if-needs-reclaim refused or failed (exit $rc); no mutation" >&2
+      echo "orchestrator-watchdog: reclaim refused or failed (exit $rc); no mutation" >&2
       exit "$rc"
     fi
   else

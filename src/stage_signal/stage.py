@@ -556,12 +556,108 @@ class Stage:
             do_mirror=write_status_mirror,
         )
 
+    def reclaim(
+        self,
+        reason: str,
+        *,
+        keep_failed: bool = False,
+        write_status_mirror: Optional[bool] = None,
+    ) -> dict[str, Any]:
+        """Fail a needs_reclaim running stage, then clear to idle queued.
+
+        When ``needs_reclaim`` is true (same detection as doctor/status/
+        ``fail --if-needs-reclaim``), writes ``failed`` + reason and — unless
+        ``keep_failed`` — immediately ``clear-terminal`` to idle queued, under
+        one exclusive lock (two events: ``failed`` then ``clear_terminal``).
+
+        When ``needs_reclaim`` is false: raise IllegalTransition (exit 3) with
+        no mutation.
+        """
+        if not reason or not reason.strip():
+            raise BadArgsError("reclaim requires non-empty --reason TEXT")
+
+        store = self._store
+        with store.locked(exclusive=True):
+            status = store.read_status()
+            _, needs_reclaim = _reclaim_diagnostics(status)
+            if not needs_reclaim:
+                raise IllegalTransition(
+                    "reclaim refused: needs_reclaim is false "
+                    f"(state={status.get('state')!r}; no DEAD_PID or "
+                    "STALE_HEARTBEAT)"
+                )
+
+            failed = copy.deepcopy(status)
+            failed["state"] = STATE_FAILED
+            failed["error"] = {
+                "reason": reason,
+                "kind": STATE_FAILED,
+                "finished_at": now_iso(),
+            }
+            failed["result"] = None
+            failed["updated_at"] = now_iso()
+            store.write_status(failed)
+            store.append_event(
+                {
+                    "ts": failed["updated_at"],
+                    "type": "failed",
+                    "stage_id": failed.get("stage_id"),
+                    "stage_name": failed.get("stage_name"),
+                    "state": failed.get("state"),
+                    "attempt": failed.get("attempt"),
+                    "message": reason,
+                    "detail": {"reclaim": True, "keep_failed": keep_failed},
+                }
+            )
+            store.write_status_md(failed)
+            if _status_mirror_enabled(write_status_mirror):
+                mirrored = sys.modules[__name__].write_status_mirror(store.dir, failed)
+                if mirrored is None:
+                    print(
+                        "stage-signal: warning: status mirror failed",
+                        file=sys.stderr,
+                    )
+
+            if keep_failed:
+                return _attach_heartbeat_age(copy.deepcopy(failed))
+
+            cleared = copy.deepcopy(failed)
+            cleared["state"] = STATE_QUEUED
+            cleared["result"] = None
+            cleared["error"] = None
+            cleared["proof"] = None
+            cleared["stage_id"] = None
+            cleared["stage_name"] = None
+            cleared["session_id"] = None
+            cleared["pid"] = None
+            cleared["started_at"] = None
+            cleared["heartbeat_at"] = None
+            cleared["heartbeat_note"] = None
+            cleared["artifacts"] = []
+            cleared["meta"] = {}
+            cleared["updated_at"] = now_iso()
+            store.write_status(cleared)
+            store.append_event(
+                {
+                    "ts": cleared["updated_at"],
+                    "type": "clear_terminal",
+                    "stage_id": cleared.get("stage_id"),
+                    "stage_name": cleared.get("stage_name"),
+                    "state": cleared.get("state"),
+                    "attempt": cleared.get("attempt"),
+                    "message": "cleared to idle queued",
+                    "detail": {"keep_stage": False, "reclaim": True},
+                }
+            )
+            store.write_status_md(cleared)
+            return _attach_heartbeat_age(copy.deepcopy(cleared))
+
     def clear_terminal(self, *, keep_stage: bool = False) -> dict[str, Any]:
         """Reset done/blocked/failed or queued back to queued (SPEC §4.7).
 
         Allowed from terminal states and from queued (abandon a parked or idle
-        queued stage). Running remains illegal — reclaim with fail
-        --if-needs-reclaim / --if-dead-pid first.
+        queued stage). Running remains illegal — reclaim with ``reclaim``,
+        ``fail --if-needs-reclaim``, or ``fail --if-dead-pid`` first.
 
         By default, clears stage identity (stage_id and stage_name set to None,
         plus claim/session/heartbeat fields), transitioning to a true idle queued
@@ -572,8 +668,8 @@ class Stage:
             _require_state(
                 current, TERMINAL_STATES + (STATE_QUEUED,), "clear-terminal",
                 message="only terminal states (done/blocked/failed) or queued "
-                        "can be cleared (running requires fail --if-needs-reclaim "
-                        "or fail --if-dead-pid first)",
+                        "can be cleared (running requires reclaim, "
+                        "fail --if-needs-reclaim, or fail --if-dead-pid first)",
             )
             current["state"] = STATE_QUEUED
             current["result"] = None

@@ -6,6 +6,9 @@ See `docs/RELEASE.md` for the release procedure.
 
 ## [Unreleased]
 
+- Added `stage-signal reclaim --reason TEXT [--keep-failed]` and `Stage.reclaim()`
+  for one-shot fail+clear when `needs_reclaim` is true, resetting to idle queued
+  under a single exclusive lock; exits 3 with no mutation when reclaim is not needed (#84).
 - Updated orchestrator examples to branch on `needs_reclaim` rather than
   string-matching `summary` or treating `ok` as a liveness signal (#66, #69).
 - Added `doctor --exit-reclaim` to exit 10 when `needs_reclaim` is true,

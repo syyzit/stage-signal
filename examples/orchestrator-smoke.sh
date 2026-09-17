@@ -77,4 +77,8 @@ ST start --stage reclaim --pid 999999999 >/dev/null || fail "start reclaim dead 
 ST wait --needs-reclaim --timeout 2 --poll 0.1 >/dev/null || fail "wait --needs-reclaim on DEAD_PID should exit 0"
 pass "wait --needs-reclaim on DEAD_PID -> exit 0"
 
+ST reclaim --reason "smoke dead pid reclaim" >/dev/null || fail "reclaim on DEAD_PID should exit 0"
+[ "$(STATE_OF)" = "queued" ] || fail "expected queued after reclaim"
+pass "reclaim on DEAD_PID -> queued"
+
 echo "ALL SMOKE CHECKS PASSED"
