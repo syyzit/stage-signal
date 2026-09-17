@@ -8,7 +8,7 @@
 #   stage-signal events [--tail N] [--type TYPE] [--json]
 # then decides what to do next (enqueue the next stage, alert, stop).
 # Reclaim loop (no doctor sleep):
-#   wait --needs-reclaim → reclaim (or fail --if-needs-reclaim) → events
+#   wait --needs-reclaim → reclaim --kill (or fail --if-needs-reclaim) → events
 # After reclaim / clear-terminal, audit via `events`
 # (do not scrape events.jsonl with tail/jq).
 #
@@ -24,14 +24,27 @@
 #   --doctor-reclaim, --needs-reclaim
 #                    snapshot reclaim on needs_reclaim (DEAD_PID or STALE_HEARTBEAT)
 #                    via reclaim --keep-failed (use with --once)
-#   --wait-reclaim   block on wait --needs-reclaim, then reclaim --keep-failed
-#                    (cannot combine with --once; use --once --doctor-reclaim
-#                    for a snapshot)
+#   --wait-reclaim   block on wait --needs-reclaim, then reclaim --kill
+#                    --keep-failed (terminate the alive recorded PID, then
+#                    fail without clear-terminal; cannot combine with --once;
+#                    use --once --doctor-reclaim for a snapshot; without
+#                    --kill on reclaim no signal is sent)
 #
 # Exit code follows the observed-state contract (see README / docs/SPEC.md):
 #   0 condition met, 10 running, 11 blocked, 12 failed,
 #   13 queued, 14 wait timeout, 15 not initialized, 1 wait --needs-reclaim
 #   ended in done without reclaim, 2 bad args.
+#
+# Reclaim termination (`--kill`) notes:
+#   - Kill fires only after the needs_reclaim guard passes; a rejected guard
+#     (exit 3) never signals.
+#   - Only a valid positive alive recorded PID is signalled; dead, null,
+#     invalid, or unknown-liveness PIDs are never signalled.
+#   - Best effort: SIGTERM, wait up to 1 second polling liveness every 50ms,
+#     then SIGKILL if still alive. On Windows SIGTERM terminates; SIGKILL
+#     falls back to SIGTERM when unavailable.
+#   - Permission/OS errors warn on stderr and reclaim continues (fail+clear
+#     still happens). No guarantee the worker stopped; verify before relaunch.
 #
 # Requires the `stage-signal` entry point on PATH (see README: create a venv,
 # then `pip install -e .`).
@@ -181,12 +194,19 @@ fi
 
 if [ "$WAIT_RECLAIM" = "1" ]; then
   # First-class reclaim loop: no doctor sleep.
-  #   wait --needs-reclaim → reclaim --keep-failed → events
-  # clear-terminal / restart is left to the caller (or run after this exits 12).
+  #   wait --needs-reclaim → reclaim --kill --keep-failed → events
+  # --kill best-effort terminates the alive recorded PID first (SIGTERM, wait
+  # up to 1s polling 50ms, SIGKILL if needed) after the guard passes; dead,
+  # null, invalid, or unknown-liveness PIDs are never signalled; permission/
+  # OS errors warn on stderr and fail+clear still proceeds. Only the recorded
+  # PID is targeted (not a process group or descendants); PID reuse cannot be
+  # excluded and termination is not guaranteed, so verify the worker is gone
+  # before relaunching. clear-terminal / restart is left to the caller (or run
+  # after this exits 12).
   echo "orchestrator-watchdog: waiting for needs_reclaim timeout=${TIMEOUT}s poll=${POLL}s" >&2
   if ST wait --needs-reclaim --timeout "$TIMEOUT" --poll "$POLL"; then
-    echo "orchestrator-watchdog: needs_reclaim; reclaiming via reclaim --keep-failed" >&2
-    if ST reclaim --reason "reclaimed by orchestrator-watchdog: needs_reclaim (DEAD_PID or STALE_HEARTBEAT)" --keep-failed; then
+    echo "orchestrator-watchdog: needs_reclaim; reclaiming via reclaim --kill --keep-failed" >&2
+    if ST reclaim --reason "reclaimed by orchestrator-watchdog: needs_reclaim (DEAD_PID or STALE_HEARTBEAT)" --kill --keep-failed; then
       echo "orchestrator-watchdog: stage reclaimed as failed" >&2
       ST events --tail 20 --type failed >&2 || true
       describe || true

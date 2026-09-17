@@ -202,14 +202,16 @@ Do **not** cron-sleep on `doctor --json` / `doctor --exit-reclaim` to notice a d
 # Terminal without reclaim fails closed: done=1, blocked=11, failed=12.
 # Timeout=14; not initialized=15.
 if stage-signal --dir "$WORKTREE/.stage-signal" wait --needs-reclaim --timeout 3600 --poll 5; then
-  # One-shot reclaim: fails running stage, then resets to idle queued under one lock.
+  # One-shot reclaim: terminate the still-alive recorded PID (SIGTERM, wait up
+  # to 1s polling 50ms, SIGKILL if needed), then fail the running stage and
+  # reset to idle queued under one lock.
   stage-signal --dir "$WORKTREE/.stage-signal" reclaim \
-    --reason "watchdog reclaim (DEAD_PID or STALE_HEARTBEAT)"
+    --reason "watchdog reclaim (DEAD_PID or STALE_HEARTBEAT)" --kill
   # First-class audit (newest last). Both failed and clear_terminal events are logged:
   stage-signal --dir "$WORKTREE/.stage-signal" events --tail 20
   # Ready to restart immediately:
   # stage-signal --dir "$WORKTREE/.stage-signal" start --stage "feature-auth" --pid "$NEW_PID"
-  # (Use --keep-failed to stop after fail without clearing if manual audit is needed)
+  # (Use --kill --keep-failed to stop after fail without clearing if manual audit is needed)
 fi
 ```
 
@@ -300,7 +302,7 @@ When an anomaly occurs, `doctor --json` populates the `warnings` array with mach
      }
    }
    ```
-   *Orchestrator Action*: The agent is likely hung in an infinite loop, blocked on an interactive prompt, or deadlocked. The watchdog can log a warning, capture process thread stacks, or send a termination signal.
+   *Orchestrator Action*: The agent is likely hung in an infinite loop, blocked on an interactive prompt, or deadlocked. The watchdog can log a warning, capture process thread stacks, or — since the recorded PID may still be alive — reclaim with `reclaim --kill` to best-effort terminate the recorded PID before fail+clear.
 
 3. **`UNPARSEABLE_HEARTBEAT`**:
    The `heartbeat_at` field contains an invalid timestamp string.
@@ -317,6 +319,8 @@ When an anomaly occurs, `doctor --json` populates the `warnings` array with mach
 #### Branching on `needs_reclaim` with `jq`
 
 Orchestrators must branch on the always-present `.needs_reclaim` boolean, not the human-readable `.summary` or `.ok`. It is `true` exactly when a running stage has a `DEAD_PID` or `STALE_HEARTBEAT` warning. Warnings alone keep `.ok` true and doctor's exit code at `0`; `.needs_reclaim` is independent of problems.
+
+When a `STALE_HEARTBEAT` applies to a **live** runner, the runner keeps writing the worktree until it is terminated — `fail --if-needs-reclaim` mutates state only and sends no signals. Prefer `reclaim --kill` in that case: after the guard passes it best-effort terminates the recorded PID (SIGTERM, 1s wait polling 50ms, SIGKILL if needed) before fail+clear, with the caveats above (recorded PID only; no guarantee on permission errors; PID reuse cannot be excluded).
 
 ```bash
 doc_json=$(stage-signal --dir "$WORKTREE/.stage-signal" doctor --json) || {
@@ -343,7 +347,7 @@ fi
 
 Warning checks are secondary detail for choosing a response, not the primary health gate. A stale heartbeat does not prove the PID is dead: do not call `fail --if-dead-pid` for a stale-only live runner. To reclaim **either** `DEAD_PID` or `STALE_HEARTBEAT` in one shot (same `needs_reclaim` semantics as `doctor` / `status` / `Stage.diagnose()`), call `reclaim --reason TEXT` (or `reclaim --keep-failed` to leave `state=failed` for audit). The [watchdog example](../../examples/orchestrator-watchdog.sh) aligns `--once --doctor-reclaim` (and `--once --needs-reclaim`) with full `needs_reclaim` (DEAD_PID or STALE_HEARTBEAT), calling `reclaim --reason ... --keep-failed` (exit 12) rather than ignoring stale heartbeats. In blocking loops, `--wait-reclaim` runs `wait --needs-reclaim` → `reclaim --keep-failed`. Guarded fail and reclaim recheck `needs_reclaim` under lock and refuse (exit 3) if the snapshot has changed.
 
-To reclaim **either** `DEAD_PID` or `STALE_HEARTBEAT` in one shot (same `needs_reclaim` semantics as `doctor` / `status` / `Stage.diagnose()`), prefer the blocking loop above (`wait --needs-reclaim` → `reclaim`). The reclaim command writes `failed` + reason and resets to idle queued under a single lock only when reclaim is needed; healthy running and non-running states exit 3 with no mutation. Pass `--keep-failed` to audit before manual `clear-terminal`.
+To reclaim **either** `DEAD_PID` or `STALE_HEARTBEAT` in one shot (same `needs_reclaim` semantics as `doctor` / `status` / `Stage.diagnose()`), prefer the blocking loop above (`wait --needs-reclaim` → `reclaim --kill`). `reclaim --kill` first terminates a still-alive recorded PID best effort (SIGTERM, wait up to 1 second polling 50ms, SIGKILL if needed) — only when the guard passed, only for a valid positive alive PID (never for dead, null, invalid, or unknown-liveness PIDs), targeting only that PID and not its process group or descendants; permission/OS errors warn on stderr and fail+clear still proceeds, so PID reuse and permission errors mean a successful reclaim does not guarantee the worker stopped (verify before relaunching). The reclaim command writes `failed` + reason and resets to idle queued under a single lock only when reclaim is needed; healthy running and non-running states exit 3 with no signal and no mutation. Pass `--kill --keep-failed` to audit before manual `clear-terminal`.
 
 `--if-dead-pid` remains the narrower DEAD_PID-only gate. `--if-dead-pid` and `--if-needs-reclaim` are mutually exclusive.
 
@@ -493,7 +497,7 @@ reclaim_lane() {
   if stage-signal --dir "$wt/.stage-signal" wait --needs-reclaim --timeout 1800 --poll 10; then
     echo "[$name] needs_reclaim; reclaiming runner" >&2
     if stage-signal --dir "$wt/.stage-signal" reclaim \
-      --reason "[$name] watchdog reclaim (DEAD_PID or STALE_HEARTBEAT)"; then
+      --reason "[$name] watchdog reclaim (DEAD_PID or STALE_HEARTBEAT)" --kill; then
       stage-signal --dir "$wt/.stage-signal" events --tail 20 >&2 || true
     fi
   fi
@@ -535,5 +539,5 @@ echo "Lane opencode finished with code $STATUS_OC"
 
 - [ ] **One Worktree Per Lane**: Separate directories, separate branches, separate `.stage-signal/` folders.
 - [ ] **Accurate PIDs**: Pass the live PID to `start --pid` so `doctor` can spot process deaths.
-- [ ] **Automated Health Checks**: Block with `wait --needs-reclaim` then `fail --if-needs-reclaim` (optional `events` audit, then `clear-terminal` / restart). Do not sleep-loop `doctor`. Snapshot `doctor --json` still exists for inspection; branch on `.needs_reclaim == true`, never `.summary` or `.ok`. `fail --if-dead-pid` remains the narrower DEAD_PID-only gate.
+- [ ] **Automated Health Checks**: Block with `wait --needs-reclaim` then `reclaim --kill` (one-shot terminate + fail + reset to idle queued; optional `events` audit, then `clear-terminal` / restart, or `--kill --keep-failed` to stop after `failed` for manual audit). Do not sleep-loop `doctor`. Snapshot `doctor --json` still exists for inspection; branch on `.needs_reclaim == true`, never `.summary` or `.ok`. `fail --if-dead-pid` remains the narrower DEAD_PID-only gate (no process signaling).
 - [ ] **Clean Resets**: Use `stage-signal clear-terminal` to reset a terminal *or* parked queued worktree back to `queued -` between tasks. From `running`, reclaim first. After `fail --if-needs-reclaim` / `clear-terminal`, audit with `stage-signal events --tail 20` (optional `--type failed|clear_terminal`, `--json` for a JSON array).

@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 import errno
 import os
 import shutil
+import signal
 import subprocess
 import sys
 from pathlib import Path
@@ -561,6 +562,7 @@ class Stage:
         reason: str,
         *,
         keep_failed: bool = False,
+        kill: bool = False,
         write_status_mirror: Optional[bool] = None,
     ) -> dict[str, Any]:
         """Fail a needs_reclaim running stage, then clear to idle queued.
@@ -569,6 +571,13 @@ class Stage:
         ``fail --if-needs-reclaim``), writes ``failed`` + reason and — unless
         ``keep_failed`` — immediately ``clear-terminal`` to idle queued, under
         one exclusive lock (two events: ``failed`` then ``clear_terminal``).
+
+        With ``kill=True``, after the guard passes, a valid positive recorded
+        pid that probes alive is signalled best-effort: SIGTERM, a brief
+        bounded wait (1s), then SIGKILL if it is still alive. Dead, missing,
+        or unknown-liveness pids skip the kill path and reclaim proceeds.
+        Signal errors warn on stderr and never abort the reclaim. Without
+        ``kill``, no process signal is sent.
 
         When ``needs_reclaim`` is false: raise IllegalTransition (exit 3) with
         no mutation.
@@ -586,6 +595,9 @@ class Stage:
                     f"(state={status.get('state')!r}; no DEAD_PID or "
                     "STALE_HEARTBEAT)"
                 )
+
+            if kill:
+                _terminate_pid(status.get("pid"))
 
             failed = copy.deepcopy(status)
             failed["state"] = STATE_FAILED
@@ -846,6 +858,44 @@ class Stage:
 
 
 # -- helpers ------------------------------------------------------------
+
+
+def _terminate_pid(pid: Any, *, timeout: float = 1.0, poll: float = 0.05) -> bool:
+    """Best-effort SIGTERM -> bounded wait -> SIGKILL for a recorded pid.
+
+    Reuses the doctor/status liveness probe. Invalid or dead pids (and
+    unknown liveness) are a no-op returning False. Never raises.
+    """
+    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+        return False
+    if _is_pid_alive(pid) is not True:
+        return False
+    try:
+        if sys.platform == "win32":
+            _signal_pid_best_effort(pid, signal.SIGTERM)
+        else:
+            _signal_pid_best_effort(pid, signal.SIGTERM)
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline:
+                if _is_pid_alive(pid) is False:
+                    return True
+                time.sleep(poll)
+    except Exception:
+        pass
+    if _is_pid_alive(pid) is True:
+        _signal_pid_best_effort(pid, signal.SIGKILL)
+    return True
+
+
+def _signal_pid_best_effort(pid: int, sig: int) -> None:
+    try:
+        os.kill(pid, sig)
+    except Exception as exc:
+        print(
+            f"stage-signal: warning: kill pid {pid} "
+            f"signal {sig} failed: {exc}",
+            file=sys.stderr,
+        )
 
 
 def _reclaim_diagnostics(

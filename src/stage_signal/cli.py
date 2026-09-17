@@ -125,7 +125,9 @@ def build_parser() -> argparse.ArgumentParser:
             "failed with --reason then clear-terminal to idle queued under one "
             "lock (events: failed, clear_terminal). When needs_reclaim is "
             "false: exit 3 with no mutation. --keep-failed stops after fail "
-            "without clearing (audit then clear-terminal)."
+            "without clearing (audit then clear-terminal). --kill also "
+            "SIGTERM/SIGKILLs the recorded pid (best-effort) after the "
+            "guard passes."
         ),
     )
     c.add_argument("--reason", required=True)
@@ -134,6 +136,17 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         default=False,
         help="stop after fail without clear-terminal (leave state=failed)",
+    )
+    c.add_argument(
+        "--kill",
+        action="store_true",
+        default=False,
+        help=(
+            "after the needs_reclaim guard passes, SIGTERM the recorded pid "
+            "if alive, wait ~1s, then SIGKILL if still alive; dead/missing/"
+            "invalid pid skips the kill path; best-effort, never aborts "
+            "the reclaim"
+        ),
     )
     c.add_argument("--write-status-mirror", action="store_true", default=None)
     c.set_defaults(func=cmd_reclaim)
@@ -480,6 +493,7 @@ def cmd_reclaim(args: argparse.Namespace) -> int:
     st = _stage(args).reclaim(
         args.reason,
         keep_failed=args.keep_failed,
+        kill=getattr(args, "kill", False),
         write_status_mirror=args.write_status_mirror,
     )
     if args.keep_failed:

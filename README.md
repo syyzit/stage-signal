@@ -89,10 +89,11 @@ stage-signal wait --state terminal --timeout 900
 # or wait --json for a structured outcome payload on stdout:
 stage-signal wait --json --state terminal --timeout 900
 # reclaim loop (no cron+doctor sleep): poll until DEAD_PID/STALE, then reclaim in one shot:
-stage-signal wait --needs-reclaim --timeout 900 --poll 5
-stage-signal reclaim --reason "worker timed out or crashed"
+stage-signal wait --needs-reclaim --timeout 900 --poll 5 &&
+  stage-signal reclaim --reason "worker timed out or crashed" --kill &&
+  stage-signal start --stage impact-clarity --session "$NEW_SESSION_ID" --pid "$NEW_PID"
 # or stop after fail without clearing (audit then clear):
-# stage-signal reclaim --reason "audit then clear" --keep-failed
+# stage-signal reclaim --reason "audit then clear" --kill --keep-failed
 # audit the reclaim (do not scrape events.jsonl with tail/jq):
 stage-signal events --tail 20 --type failed
 stage-signal events --tail 5 --type clear_terminal
@@ -134,9 +135,9 @@ To act on a `DEAD_PID` warning (which includes an explicit recovery hint naming 
 integer that is actually dead; a live, invalid, or undeterminable PID aborts
 with exit 3 and no mutation (outside `running`, normal fail rules apply). Doctor remains advisory-only.
 
-To reclaim whenever `needs_reclaim` would be true (DEAD_PID **or** STALE_HEARTBEAT, same detection as `doctor` / `status` / `Stage.diagnose()`), wait with `wait --needs-reclaim` then `reclaim --reason TEXT`. That one-shot command writes `failed` + reason and immediately clears to idle `queued` (clearing stage identity) under a single exclusive lock, emitting both `failed` and `clear_terminal` events; healthy running and non-running states exit 3 with no mutation. Use `--keep-failed` to stop after `failed` without clearing (for watchdog audit before manual `clear-terminal`). The two-step `fail --reason TEXT --if-needs-reclaim` → `clear-terminal` remains available if separate mutation steps are desired.
+To reclaim whenever `needs_reclaim` would be true (DEAD_PID **or** STALE_HEARTBEAT, same detection as `doctor` / `status` / `Stage.diagnose()`), wait with `wait --needs-reclaim` then `reclaim --reason TEXT --kill`. That one-shot command first terminates a still-alive recorded PID (only after the guard passes, best effort: `SIGTERM`, wait up to 1 second polling liveness every 50ms, then `SIGKILL` if still alive; dead, null, invalid, or unknown-liveness PIDs get no signal; permission/OS errors warn on stderr and fail+clear still proceeds) and then writes `failed` + reason, immediately clearing to idle `queued` (clearing stage identity) under a single exclusive lock, emitting both `failed` and `clear_terminal` events; healthy running and non-running states exit 3 with no signal and no mutation. Only the recorded PID is targeted (not a process group or descendants); PID reuse cannot be excluded, and permission errors mean successful reclaim does not guarantee the worker stopped — verify before relaunching. Without `--kill` no termination signals are sent. Use `--kill --keep-failed` to stop after `failed` without clearing (for watchdog audit before manual `clear-terminal`). The two-step `fail --reason TEXT --if-needs-reclaim` → `clear-terminal` remains available if separate mutation steps are desired (it does not signal processes).
 
-`clear-terminal` resets `done`/`blocked`/`failed` **and** stuck `queued` (named or idle) back to idle queued, appending a `clear_terminal` event. From `running` it stays illegal — reclaim with `reclaim`, `fail --if-needs-reclaim`, or `fail --if-dead-pid` first. After either mutation, `stage-signal events [--tail N] [--type TYPE] [--json]` is the first-class audit path (human default newest-last, last 20; `--tail 0` = all; `--json` is a JSON array). Do not scrape `events.jsonl` with `tail`/`jq`.
+`clear-terminal` resets `done`/`blocked`/`failed` **and** stuck `queued` (named or idle) back to idle queued, appending a `clear_terminal` event. From `running` it stays illegal — reclaim with `reclaim --kill`, `fail --if-needs-reclaim`, or `fail --if-dead-pid` first. After either mutation, `stage-signal events [--tail N] [--type TYPE] [--json]` is the first-class audit path (human default newest-last, last 20; `--tail 0` = all; `--json` is a JSON array). Do not scrape `events.jsonl` with `tail`/`jq`.
 
 `start --meta` is repeatable and accepts two forms per entry (merged in
 order, later wins):
@@ -186,7 +187,7 @@ Orchestrator loops need to differentiate between an active pending stage and an 
 - **Handling failures:** When an agent reports `fail`, orchestrators have two clean SPEC-compatible choices:
   - `stage-signal clear-terminal` to clear stage identity back to a true idle `queued -` state.
   - `stage-signal done --accept-failure --summary "accepted: ..."` to transition a failed stage to `done` with `"accepted_failure": true` recorded in `result`, without inventing a fake success.
-- **Stuck running:** Do not cron-poll `doctor`. Block with `stage-signal wait --needs-reclaim`, then `reclaim --reason "..."` (one-shot fail+clear to idle queued for relaunch; or `--keep-failed` / `fail --if-needs-reclaim`). Use `--if-dead-pid` only when the PID is confirmed dead. Audit with `stage-signal events --tail 20`. Snapshot `doctor --json` / `status --json` remains available; `doctor --exit-reclaim` is the one-shot exit-10 check (and `examples/orchestrator-watchdog.sh --once --doctor-reclaim` reclaims snapshot `needs_reclaim` via `reclaim --keep-failed`).
+- **Stuck running:** Do not cron-poll `doctor`. Block with `stage-signal wait --needs-reclaim`, then `reclaim --reason "..." --kill` (one-shot: terminate the alive recorded PID, then fail+clear to idle queued for relaunch; or `--kill --keep-failed` / `fail --if-needs-reclaim` without signaling). Use `--if-dead-pid` only when the PID is confirmed dead. Audit with `stage-signal events --tail 20`. Snapshot `doctor --json` / `status --json` remains available; `doctor --exit-reclaim` is the one-shot exit-10 check (and `examples/orchestrator-watchdog.sh --once --doctor-reclaim` reclaims snapshot `needs_reclaim` via `reclaim --keep-failed`).
 
 
 ### GitHub Action: wait without a venv
