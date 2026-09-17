@@ -194,7 +194,7 @@ The exit code matches the current state (`10` for running, `0` for done, etc.).
 
 ### Reclaim loop: `wait --needs-reclaim`
 
-Do **not** cron-sleep on `doctor --json` / `doctor --exit-reclaim` to notice a dead PID or stale heartbeat. Block on the first-class waiter, then fail, audit, and reset:
+Do **not** cron-sleep on `doctor --json` / `doctor --exit-reclaim` to notice a dead PID or stale heartbeat. Block on the first-class waiter, then reclaim in one shot, audit, and restart:
 
 ```bash
 # Exit 0 when needs_reclaim becomes true (running + DEAD_PID or STALE_HEARTBEAT).
@@ -202,13 +202,14 @@ Do **not** cron-sleep on `doctor --json` / `doctor --exit-reclaim` to notice a d
 # Terminal without reclaim fails closed: done=1, blocked=11, failed=12.
 # Timeout=14; not initialized=15.
 if stage-signal --dir "$WORKTREE/.stage-signal" wait --needs-reclaim --timeout 3600 --poll 5; then
-  stage-signal --dir "$WORKTREE/.stage-signal" fail \
-    --reason "watchdog reclaim (DEAD_PID or STALE_HEARTBEAT)" --if-needs-reclaim
-  # First-class audit (newest last). --json prints a JSON array, not NDJSON.
-  stage-signal --dir "$WORKTREE/.stage-signal" events --tail 20 --type failed
-  # Return the worktree to idle, or restart the agent on a fresh start.
-  stage-signal --dir "$WORKTREE/.stage-signal" clear-terminal
-  stage-signal --dir "$WORKTREE/.stage-signal" events --tail 5 --type clear_terminal
+  # One-shot reclaim: fails running stage, then resets to idle queued under one lock.
+  stage-signal --dir "$WORKTREE/.stage-signal" reclaim \
+    --reason "watchdog reclaim (DEAD_PID or STALE_HEARTBEAT)"
+  # First-class audit (newest last). Both failed and clear_terminal events are logged:
+  stage-signal --dir "$WORKTREE/.stage-signal" events --tail 20
+  # Ready to restart immediately:
+  # stage-signal --dir "$WORKTREE/.stage-signal" start --stage "feature-auth" --pid "$NEW_PID"
+  # (Use --keep-failed to stop after fail without clearing if manual audit is needed)
 fi
 ```
 
@@ -342,11 +343,11 @@ fi
 
 Warning checks are secondary detail for choosing a response, not the primary health gate. A stale heartbeat does not prove the PID is dead: do not call `fail --if-dead-pid` for a stale-only live runner. The [watchdog example](../../examples/orchestrator-watchdog.sh) logs ATTENTION and returns `0` from its reclaim check in that case; `--once` still returns the observed running-state code `10`. Guarded fail rechecks the current PID under lock and can refuse if the snapshot has changed.
 
-To reclaim **either** `DEAD_PID` or `STALE_HEARTBEAT` in one shot (same `needs_reclaim` semantics as `doctor` / `status` / `Stage.diagnose()`), prefer the blocking loop above (`wait --needs-reclaim` → `fail --if-needs-reclaim`). The fail gate itself writes `failed` + reason only when reclaim is needed; healthy running and non-running states exit 3 with no mutation.
+To reclaim **either** `DEAD_PID` or `STALE_HEARTBEAT` in one shot (same `needs_reclaim` semantics as `doctor` / `status` / `Stage.diagnose()`), prefer the blocking loop above (`wait --needs-reclaim` → `reclaim`). The reclaim command writes `failed` + reason and resets to idle queued under a single lock only when reclaim is needed; healthy running and non-running states exit 3 with no mutation. Pass `--keep-failed` to audit before manual `clear-terminal`.
 
 `--if-dead-pid` remains the narrower DEAD_PID-only gate. `--if-dead-pid` and `--if-needs-reclaim` are mutually exclusive.
 
-A parked `queued` stage (named or idle, no PID/heartbeat) cannot be `clear-terminal`'d on older trees. Current contract: `clear-terminal` accepts `queued` as well as `done`/`blocked`/`failed` and resets to idle queued with a `clear_terminal` event. From `running` it stays illegal — reclaim with `fail --if-needs-reclaim` first:
+A parked `queued` stage (named or idle, no PID/heartbeat) cannot be `clear-terminal`'d on older trees. Current contract: `clear-terminal` accepts `queued` as well as `done`/`blocked`/`failed` and resets to idle queued with a `clear_terminal` event. From `running` it stays illegal — reclaim with `reclaim` (or `fail --if-needs-reclaim`) first:
 
 ```bash
 # Abandon a stuck queued stage (never started / parked) back to idle.
@@ -490,10 +491,10 @@ reclaim_lane() {
   local wt="$2"
 
   if stage-signal --dir "$wt/.stage-signal" wait --needs-reclaim --timeout 1800 --poll 10; then
-    echo "[$name] needs_reclaim; failing via --if-needs-reclaim" >&2
-    if stage-signal --dir "$wt/.stage-signal" fail \
-      --reason "[$name] watchdog reclaim (DEAD_PID or STALE_HEARTBEAT)" --if-needs-reclaim; then
-      stage-signal --dir "$wt/.stage-signal" events --tail 20 --type failed >&2 || true
+    echo "[$name] needs_reclaim; reclaiming runner" >&2
+    if stage-signal --dir "$wt/.stage-signal" reclaim \
+      --reason "[$name] watchdog reclaim (DEAD_PID or STALE_HEARTBEAT)"; then
+      stage-signal --dir "$wt/.stage-signal" events --tail 20 >&2 || true
     fi
   fi
 }

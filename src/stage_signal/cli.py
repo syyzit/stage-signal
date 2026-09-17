@@ -1,4 +1,4 @@
-"""stage-signal CLI: init/start/heartbeat/note/artifact/done/blocked/fail/status/wait/events/clear-terminal/doctor."""
+"""stage-signal CLI: init/start/heartbeat/note/artifact/done/blocked/fail/reclaim/status/wait/events/clear-terminal/doctor."""
 
 from __future__ import annotations
 
@@ -115,6 +115,28 @@ def build_parser() -> argparse.ArgumentParser:
     )
     c.add_argument("--write-status-mirror", action="store_true", default=None)
     c.set_defaults(func=cmd_fail)
+
+    c = sub.add_parser(
+        "reclaim",
+        help="fail+clear when needs_reclaim (DEAD_PID or STALE_HEARTBEAT)",
+        description=(
+            "When needs_reclaim is true (running + DEAD_PID or STALE_HEARTBEAT, "
+            "same as doctor/status/fail --if-needs-reclaim), transition to "
+            "failed with --reason then clear-terminal to idle queued under one "
+            "lock (events: failed, clear_terminal). When needs_reclaim is "
+            "false: exit 3 with no mutation. --keep-failed stops after fail "
+            "without clearing (audit then clear-terminal)."
+        ),
+    )
+    c.add_argument("--reason", required=True)
+    c.add_argument(
+        "--keep-failed",
+        action="store_true",
+        default=False,
+        help="stop after fail without clear-terminal (leave state=failed)",
+    )
+    c.add_argument("--write-status-mirror", action="store_true", default=None)
+    c.set_defaults(func=cmd_reclaim)
 
     c = sub.add_parser("status", help="show current STATUS (exit code reflects state)")
     c.add_argument("--json", action="store_true", default=False)
@@ -451,6 +473,19 @@ def cmd_fail(args: argparse.Namespace) -> int:
         write_status_mirror=args.write_status_mirror,
     )
     print(f"failed {_one_line(st)}: {args.reason}")
+    return 0
+
+
+def cmd_reclaim(args: argparse.Namespace) -> int:
+    st = _stage(args).reclaim(
+        args.reason,
+        keep_failed=args.keep_failed,
+        write_status_mirror=args.write_status_mirror,
+    )
+    if args.keep_failed:
+        print(f"reclaimed (kept failed) {_one_line(st)}: {args.reason}")
+    else:
+        print(f"reclaimed {_one_line(st)}: {args.reason}")
     return 0
 
 

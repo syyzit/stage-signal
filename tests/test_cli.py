@@ -16,6 +16,130 @@ from stage_signal.errors import BadArgsError
 from stage_signal import Stage
 
 
+def test_cli_reclaim_dead_pid_to_idle(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    stage = Stage(tmp_path / ".stage-signal")
+    stage.init()
+    process = subprocess.Popen([sys.executable, "-c", "pass"])
+    process.wait(timeout=10)
+    stage.start(stage="m", pid=process.pid)
+
+    assert main(["--dir", str(stage.dir), "reclaim", "--reason", "worker exited"]) == 0
+    out = capsys.readouterr().out
+    assert "reclaimed" in out
+    assert "queued" in out
+    assert stage.status()["stage_id"] is None
+    assert [event["type"] for event in stage.events()] == [
+        "init", "start", "failed", "clear_terminal",
+    ]
+
+
+def test_cli_reclaim_stale_heartbeat(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    stage = Stage(tmp_path / ".stage-signal")
+    stage.init()
+    stage.start(stage="m", pid=os.getpid())
+    status_file = stage.dir / "STATUS.json"
+    raw = json.loads(status_file.read_text(encoding="utf-8"))
+    raw["heartbeat_at"] = "2000-01-01T00:00:00+00:00"
+    status_file.write_text(json.dumps(raw), encoding="utf-8")
+
+    assert main(["--dir", str(stage.dir), "reclaim", "--reason", "stale runner"]) == 0
+    out = capsys.readouterr().out
+    assert "reclaimed" in out
+    assert "queued" in out
+    assert stage.status()["stage_id"] is None
+
+
+def test_cli_reclaim_keep_failed(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    stage = Stage(tmp_path / ".stage-signal")
+    stage.init()
+    process = subprocess.Popen([sys.executable, "-c", "pass"])
+    process.wait(timeout=10)
+    stage.start(stage="m", pid=process.pid)
+
+    assert main(["--dir", str(stage.dir), "reclaim", "--reason", "keep audit", "--keep-failed"]) == 0
+    out = capsys.readouterr().out
+    assert "reclaimed (kept failed)" in out
+    assert stage.status()["state"] == "failed"
+    assert [event["type"] for event in stage.events()] == [
+        "init", "start", "failed",
+    ]
+
+
+def test_cli_reclaim_refused_healthy_running(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    stage = Stage(tmp_path / ".stage-signal")
+    stage.init()
+    stage.start(stage="m", pid=os.getpid())
+    before = {name: (stage.dir / name).read_bytes() for name in ("STATUS.json", "STATUS.md", "events.jsonl")}
+
+    assert main(["--dir", str(stage.dir), "reclaim", "--reason", "too early"]) == 3
+    err = capsys.readouterr().err
+    assert "needs_reclaim is false" in err
+    assert {name: (stage.dir / name).read_bytes() for name in before} == before
+
+
+def test_cli_reclaim_refused_terminal(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    stage = Stage(tmp_path / ".stage-signal")
+    stage.init()
+    stage.done()
+    before = {name: (stage.dir / name).read_bytes() for name in ("STATUS.json", "STATUS.md", "events.jsonl")}
+
+    assert main(["--dir", str(stage.dir), "reclaim", "--reason", "already done"]) == 3
+    err = capsys.readouterr().err
+    assert "needs_reclaim is false" in err
+    assert {name: (stage.dir / name).read_bytes() for name in before} == before
+
+
+def test_cli_reclaim_requires_reason(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    stage = Stage(tmp_path / ".stage-signal")
+    stage.init()
+    # Missing required argument exits with argparse error (SystemExit 2)
+    with pytest.raises(SystemExit) as exc:
+        main(["--dir", str(stage.dir), "reclaim"])
+    assert exc.value.code == 2
+
+    # Empty reason exits 2 via BadArgsError
+    assert main(["--dir", str(stage.dir), "reclaim", "--reason", "   "]) == 2
+    err = capsys.readouterr().err
+    assert "non-empty" in err
+
+
+def test_cli_reclaim_uninitialized(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert main(["--dir", str(tmp_path / ".stage-signal"), "reclaim", "--reason", "uninit"]) == 15
+    err = capsys.readouterr().err
+    assert "not initialized" in err
+
+
+def test_cli_reclaim_race_and_idempotency(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    stage = Stage(tmp_path / ".stage-signal")
+    stage.init()
+    process = subprocess.Popen([sys.executable, "-c", "pass"])
+    process.wait(timeout=10)
+    stage.start(stage="m", pid=process.pid)
+
+    assert main(["--dir", str(stage.dir), "reclaim", "--reason", "first"]) == 0
+    before = {name: (stage.dir / name).read_bytes() for name in ("STATUS.json", "STATUS.md", "events.jsonl")}
+
+    # Second reclaim fails closed with 3
+    assert main(["--dir", str(stage.dir), "reclaim", "--reason", "second"]) == 3
+    assert {name: (stage.dir / name).read_bytes() for name in before} == before
+
+
 def test_cli_fail_if_dead_pid(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     stage = Stage(tmp_path / ".stage-signal")
     stage.init()

@@ -165,17 +165,29 @@ Rules:
    message and no mutation of status, events, or mirrors. The guard is
    checked under the mutation lock. `--if-dead-pid` and `--if-needs-reclaim`
    are mutually exclusive (exit 2). `doctor` remains advisory-only.
-7. `clear-terminal [--keep-stage]` — allowed from `done`/`blocked`/`failed`
+7. `reclaim --reason TEXT [--keep-failed]` — one-shot reclaim for a `running` stage
+   when `needs_reclaim` is true (same detection as `doctor` / `status` / `fail --if-needs-reclaim`:
+   `state == running` and a `DEAD_PID` or `STALE_HEARTBEAT` warning applies).
+   Under a single exclusive lock, transitions the stage to `failed` with `--reason`
+   (emitting a `failed` event with `detail: {"reclaim": True, "keep_failed": ...}`),
+   and — unless `--keep-failed` is passed — immediately resets the stage via `clear-terminal`
+   to idle `queued` with stage identity cleared (emitting a `clear_terminal` event with
+   `detail: {"keep_stage": False, "reclaim": True}`). When `needs_reclaim` is false
+   (healthy running, non-running states), exit 3 with a clear message and no mutation of
+   status, events, or mirrors. `--keep-failed` stops after the `failed` transition without
+   clearing, allowing watchdog audit before manual `clear-terminal`.
+8. `clear-terminal [--keep-stage]` — allowed from `done`/`blocked`/`failed`
    **and** from `queued` (abandon a parked or idle queued stage). Resets to
    `queued`. By default, clears stage identity (`stage_id` and
    `stage_name` set to `null`, clearing claim/heartbeat/session/pid/proof/
    artifacts/meta and resetting to true idle queued). If `--keep-stage` is given,
    preserves previous `stage_id` and `stage_name` to re-queue the same stage.
    From `running` it is exit 3 (reclaim a stuck running stage with
-   `fail --if-needs-reclaim` or `fail --if-dead-pid` first). Each call
+   `reclaim`, `fail --if-needs-reclaim`, or `fail --if-dead-pid` first). Each call
    appends a `clear_terminal` event (audit).
-8. Every mutation appends exactly one event to `events.jsonl` and rewrites
-   `STATUS.md` best-effort.
+9. Every mutation appends exactly one event to `events.jsonl` and rewrites
+   `STATUS.md` best-effort (`reclaim` appends two events: `failed` then `clear_terminal`,
+   or only `failed` when `--keep-failed`).
 
 ### Idle vs. Queued (orchestrator contract)
 
@@ -187,9 +199,8 @@ non-null `stage_name` represents an actively queued stage awaiting execution.
 `clear-terminal` from `queued` (named or idle) is the supported abandon path:
 it resets to idle queued and appends a `clear_terminal` event, without requiring
 a terminal state first and without hand-editing STATUS files. From `running`,
-`clear-terminal` stays illegal; use `fail --if-needs-reclaim` (DEAD_PID or
-STALE_HEARTBEAT) or `fail --if-dead-pid` (DEAD_PID only) to move a stuck
-running stage to `failed`, then optionally `clear-terminal`.
+`clear-terminal` stays illegal; use `reclaim --reason TEXT` (or `fail --if-needs-reclaim`
+/ `fail --if-dead-pid`) to move a stuck running stage to `failed` (or idle queued) first.
 
 After a stage failure, orchestrators can choose between two clean end states:
 - **Return to idle:** `stage-signal clear-terminal` clears stage identity to null,
@@ -255,6 +266,7 @@ stage-signal done [--summary TEXT] [--git-head H] [--proof-ref R] [--require-pro
              [--accept-failure] [--write-status-mirror]
 stage-signal blocked --reason TEXT [--write-status-mirror]
 stage-signal fail --reason TEXT [--if-dead-pid|--if-needs-reclaim] [--write-status-mirror]
+stage-signal reclaim --reason TEXT [--keep-failed] [--write-status-mirror]
 stage-signal status [--json]
 stage-signal events [--tail N] [--type TYPE] [--json]
 stage-signal wait [--state done|blocked|failed|terminal] [--needs-reclaim]
@@ -290,8 +302,9 @@ stage-signal doctor [--stale-after SEC] [--json] [--format human|json]
   `Stage.wait(..., needs_reclaim=True)` (keyword-only) shares this poll
   loop; a terminal-without-reclaim snapshot is returned (not raised) so
   the caller maps the non-zero mismatch. The reclaim loop for
-  orchestrators is `wait --needs-reclaim` → `fail --if-needs-reclaim` →
-  optional `events` audit → `clear-terminal` / restart — not a hand-rolled
+  orchestrators is `wait --needs-reclaim` → `reclaim --reason ...` → `start`
+  (or `reclaim --keep-failed` → optional `events` audit → `clear-terminal` / restart,
+  or the explicit two-step `fail --if-needs-reclaim` → `clear-terminal`) — not a hand-rolled
   `doctor` sleep.
   `--json` prints one JSON object on stdout across all outcomes (`outcome`:
   `"met"` | `"mismatch"` | `"timeout"`, `wanted`, `observed_state` / `state`,
@@ -360,10 +373,17 @@ stage-signal doctor [--stale-after SEC] [--json] [--format human|json]
   Passing `--exit-reclaim` causes `doctor` to exit 10 when `needs_reclaim` is true (while still printing human/JSON output as requested). When `--exit-reclaim` is set and `needs_reclaim` is false, standard exit codes are preserved (0 on healthy/warnings, 1 on problems, 2 on bad args). Without the flag, behavior is unchanged (reclaim warnings stay exit 0).
   Orchestrators that need to **wait** until `needs_reclaim` is true should
   use `wait --needs-reclaim` (not a `doctor` sleep loop), then reclaim with
-  `fail --reason TEXT --if-needs-reclaim` (covers both `DEAD_PID` and
-  `STALE_HEARTBEAT`). `fail --if-dead-pid` remains the narrower DEAD_PID-only
-  gate. `doctor` itself never mutates.
+  `reclaim --reason TEXT` (or `fail --reason TEXT --if-needs-reclaim`).
+  `fail --if-dead-pid` remains the narrower DEAD_PID-only gate. `doctor` itself never mutates.
   Passing `stale_after=None` to `Stage.diagnose()` disables heartbeat checks.
+- `reclaim --reason TEXT [--keep-failed]` is the one-shot pairing for `wait --needs-reclaim`.
+  When `needs_reclaim` is true (`running` + `DEAD_PID` or `STALE_HEARTBEAT`, same detection
+  as `doctor` / `status` / `fail --if-needs-reclaim`), it transitions to `failed` with `--reason`
+  and immediately clears to idle `queued` (stage identity reset to null) under a single
+  exclusive lock. Two events are appended to `events.jsonl`: `failed` followed by
+  `clear_terminal`. When `needs_reclaim` is false, it exits 3 with no mutation. Passing
+  `--keep-failed` stops after the `failed` transition without clearing, leaving the state as
+  `failed` for watchdog inspection before manual `clear-terminal`. Mutators do not support `--json`.
 
 ## 7. Exit codes (part of the contract)
 
@@ -441,6 +461,9 @@ with Stage.open(".stage-signal") as s:   # scoped use; use Stage(dir) + context 
 
 - `Stage.open(dir)` → context-managed `Stage`. Plain `Stage(dir)` also works;
   mutations are one-shot locked internally in both cases.
+- `s.reclaim(reason, *, keep_failed=False) -> dict` fails a `needs_reclaim` running
+  stage and clears to idle queued under one exclusive lock; raises `IllegalTransition`
+  (exit 3) without mutation when `needs_reclaim` is false.
 - `s.events(*, tail=None, type=None) -> list[dict]` reads `events.jsonl`
   (shared lock; chronological, newest last). `type` filters first; `tail`
   `None` or `0` means all (CLI default 20 is CLI-only). Same corrupt-line

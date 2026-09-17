@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 import json
 import os
 import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import Any, Iterator
 
 import pytest
 
@@ -310,6 +312,234 @@ def test_fail_if_needs_reclaim_mutually_exclusive_with_if_dead_pid(stage: Stage)
         stage.fail("x", if_dead_pid=True, if_needs_reclaim=True)
 
     assert {name: (stage.dir / name).read_bytes() for name in before} == before
+
+
+def test_reclaim_dead_pid_to_idle(stage: Stage) -> None:
+    process = subprocess.Popen([sys.executable, "-c", "pass"])
+    process.wait(timeout=10)
+    stage.start(stage="m", pid=process.pid)
+
+    st = stage.reclaim("worker exited")
+
+    assert st["state"] == "queued"
+    assert st["stage_id"] is None
+    assert st["pid"] is None
+    events = stage.events()
+    assert [event["type"] for event in events] == [
+        "init", "start", "failed", "clear_terminal",
+    ]
+    assert events[-2]["message"] == "worker exited"
+
+
+def test_reclaim_stale_to_idle(stage: Stage) -> None:
+    stage.start(stage="m", pid=os.getpid())
+    status_file = stage.dir / "STATUS.json"
+    raw = json.loads(status_file.read_text(encoding="utf-8"))
+    raw["heartbeat_at"] = "2000-01-01T00:00:00+00:00"
+    status_file.write_text(json.dumps(raw), encoding="utf-8")
+
+    st = stage.reclaim("stale runner")
+
+    assert st["state"] == "queued"
+    assert st["stage_id"] is None
+    assert [event["type"] for event in stage.events()] == [
+        "init", "start", "failed", "clear_terminal",
+    ]
+
+
+def test_reclaim_keep_failed_leaves_failed(stage: Stage) -> None:
+    process = subprocess.Popen([sys.executable, "-c", "pass"])
+    process.wait(timeout=10)
+    stage.start(stage="m", pid=process.pid)
+
+    st = stage.reclaim("audit then clear", keep_failed=True)
+
+    assert st["state"] == "failed"
+    assert st["error"]["reason"] == "audit then clear"
+    assert [event["type"] for event in stage.events()] == [
+        "init", "start", "failed",
+    ]
+
+
+def test_reclaim_healthy_running_no_mutation(stage: Stage) -> None:
+    stage.start(stage="m", pid=os.getpid())
+    before = {name: (stage.dir / name).read_bytes() for name in ("STATUS.json", "STATUS.md", "events.jsonl")}
+
+    with pytest.raises(IllegalTransition, match="needs_reclaim is false") as exc:
+        stage.reclaim("not reclaimable")
+
+    assert exc.value.exit_code == 3
+    assert {name: (stage.dir / name).read_bytes() for name in before} == before
+
+
+@pytest.mark.parametrize("state", ["queued", "done", "blocked", "failed"])
+def test_reclaim_terminal_without_reclaim_no_mutation(stage: Stage, state: str) -> None:
+    if state == "done":
+        stage.done()
+    elif state == "blocked":
+        stage.blocked("waiting")
+    elif state == "failed":
+        stage.fail("previous failure")
+    before = {name: (stage.dir / name).read_bytes() for name in ("STATUS.json", "STATUS.md", "events.jsonl")}
+
+    with pytest.raises(IllegalTransition, match="needs_reclaim is false") as exc:
+        stage.reclaim("not reclaimable")
+
+    assert exc.value.exit_code == 3
+    assert {name: (stage.dir / name).read_bytes() for name in before} == before
+
+
+def test_reclaim_requires_reason(stage: Stage) -> None:
+    with pytest.raises(BadArgsError, match="non-empty"):
+        stage.reclaim("   ")
+
+
+def _stale_heartbeat(stage: Stage) -> None:
+    status_file = stage.dir / "STATUS.json"
+    raw = json.loads(status_file.read_text(encoding="utf-8"))
+    raw["heartbeat_at"] = "2000-01-01T00:00:00+00:00"
+    status_file.write_text(json.dumps(raw), encoding="utf-8")
+
+
+def _snapshot(stage: Stage) -> dict[str, bytes]:
+    return {
+        name: (stage.dir / name).read_bytes()
+        for name in ("STATUS.json", "STATUS.md", "events.jsonl")
+    }
+
+
+def test_reclaim_stale_live_pid_full_reset_fields(stage: Stage) -> None:
+    stage.start(stage="m", session_id="ses_1", pid=os.getpid(), meta={"owner": "orb"})
+    stage.heartbeat(note="working")
+    stage.artifact("a.bin", label="bin")
+    stage.note("checkpoint")
+    _stale_heartbeat(stage)
+
+    st = stage.reclaim("stale runner")
+
+    assert st["state"] == "queued"
+    assert st["stage_id"] is None
+    assert st["stage_name"] is None
+    assert st["session_id"] is None
+    assert st["pid"] is None
+    assert st["started_at"] is None
+    assert st["heartbeat_at"] is None
+    assert st["heartbeat_note"] is None
+    assert st["result"] is None
+    assert st["error"] is None
+    assert st["proof"] is None
+    assert st["artifacts"] == []
+    assert st["meta"] == {}
+    assert st["notes"] == [{"text": "checkpoint", "added_at": st["notes"][0]["added_at"]}]
+
+
+def test_reclaim_audit_identity_and_order(stage: Stage) -> None:
+    process = subprocess.Popen([sys.executable, "-c", "pass"])
+    process.wait(timeout=10)
+    stage.start(stage="m1", stage_id="id-m1", session_id="ses_1", pid=process.pid)
+
+    stage.reclaim("worker exited")
+
+    events = stage.events()
+    assert [event["type"] for event in events] == [
+        "init", "start", "failed", "clear_terminal",
+    ]
+    failed, cleared = events[-2], events[-1]
+    assert failed["stage_id"] == "id-m1"
+    assert failed["stage_name"] == "m1"
+    assert failed["state"] == "failed"
+    assert failed["message"] == "worker exited"
+    assert failed["detail"] == {"reclaim": True, "keep_failed": False}
+    assert cleared["stage_id"] is None
+    assert cleared["stage_name"] is None
+    assert cleared["state"] == "queued"
+    assert cleared["message"] == "cleared to idle queued"
+    assert cleared["detail"] == {"keep_stage": False, "reclaim": True}
+    assert failed["ts"] <= cleared["ts"]
+    status = stage.status()
+    assert status["attempt"] == failed["attempt"] == cleared["attempt"]
+
+
+def test_reclaim_unknown_liveness_no_mutation(stage: Stage, monkeypatch: pytest.MonkeyPatch) -> None:
+    stage.start(stage="m", pid=4194304)
+    before = _snapshot(stage)
+
+    def unknown_probe(pid):
+        return None
+
+    monkeypatch.setattr("stage_signal.stage._is_pid_alive", unknown_probe)
+    with pytest.raises(IllegalTransition, match="needs_reclaim is false") as exc:
+        stage.reclaim("not reclaimable")
+
+    assert exc.value.exit_code == 3
+    assert _snapshot(stage) == before
+
+
+def test_reclaim_holds_exclusive_lock_for_both_events(
+    stage: Stage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    process = subprocess.Popen([sys.executable, "-c", "pass"])
+    process.wait(timeout=10)
+    stage.start(stage="m", pid=process.pid)
+
+    seen: list[str] = []
+
+    original_locked = stage._store.locked
+
+    @contextmanager
+    def tracked_locked(*args: Any, **kwargs: Any) -> Iterator[None]:
+        seen.append("acquire")
+        try:
+            with original_locked(*args, **kwargs):
+                seen.append("enter")
+                yield
+                seen.append("release")
+        finally:
+            pass
+
+    monkeypatch.setattr(stage._store, "locked", tracked_locked)
+    stage.reclaim("worker exited")
+    assert seen == ["acquire", "enter", "release"]
+    assert [event["type"] for event in stage.events()] == [
+        "init", "start", "failed", "clear_terminal",
+    ]
+
+
+def test_reclaim_not_initialized(stage_dir: Path) -> None:
+    s = Stage(stage_dir)
+    with pytest.raises(NotInitialized):
+        s.reclaim("x")
+
+
+def test_reclaim_race_and_idempotency(stage: Stage) -> None:
+    process = subprocess.Popen([sys.executable, "-c", "pass"])
+    process.wait(timeout=10)
+    stage.start(stage="m", pid=process.pid)
+
+    # First reclaim succeeds
+    st = stage.reclaim("worker crashed")
+    assert st["state"] == "queued"
+    snapshot_after_first = _snapshot(stage)
+
+    # Second reclaim immediately attempted on now-queued stage:
+    # must refuse with IllegalTransition (exit 3) and no mutation
+    with pytest.raises(IllegalTransition, match="needs_reclaim is false") as exc:
+        stage.reclaim("second attempt")
+    assert exc.value.exit_code == 3
+    assert _snapshot(stage) == snapshot_after_first
+
+
+def test_reclaim_with_status_mirror(stage: Stage) -> None:
+    process = subprocess.Popen([sys.executable, "-c", "pass"])
+    process.wait(timeout=10)
+    stage.start(stage="m", pid=process.pid)
+
+    st = stage.reclaim("worker crashed", keep_failed=True, write_status_mirror=True)
+    assert st["state"] == "failed"
+    mirror_file = stage.dir.parent / ".orch" / "STATUS.md"
+    assert mirror_file.exists()
+    content = mirror_file.read_text(encoding="utf-8")
+    assert "state: failed" in content
 
 
 def test_clear_terminal(stage: Stage) -> None:
