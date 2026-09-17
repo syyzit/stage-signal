@@ -1302,6 +1302,7 @@ def _pid_token(pid: int) -> Optional[str]:
     try:
         proc = subprocess.run(
             ["ps", "-o", "lstart=", "-p", str(pid)],
+            env={**os.environ, "LC_ALL": "C", "TZ": "UTC"},
             capture_output=True,
             text=True,
             timeout=5,
