@@ -277,7 +277,13 @@ def cmd_status(args: argparse.Namespace) -> int:
         print(json.dumps(st, indent=2))
     else:
         print(_one_line(st))
-        print(f"updated: {st.get('updated_at')}  heartbeat: {st.get('heartbeat_at')}")
+        hb_at = st.get("heartbeat_at")
+        hb_age = st.get("heartbeat_age_seconds")
+        if hb_at and hb_age is not None:
+            hb_display = f"{hb_at} (age {max(0, int(round(hb_age)))}s)"
+        else:
+            hb_display = f"{hb_at}"
+        print(f"updated: {st.get('updated_at')}  heartbeat: {hb_display}")
         if st.get("result"):
             print(f"result: {json.dumps(st['result'])}")
         if st.get("error"):

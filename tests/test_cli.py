@@ -628,5 +628,100 @@ def test_status_heartbeat_age_seconds_sleep_based_increase(tmp_path: Path) -> No
     assert age2 > age1
 
 
+def test_cli_status_human_no_heartbeat_absent_age(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    d = tmp_path / ".stage-signal"
+    monkeypatch.setenv("STAGE_SIGNAL_DIR", str(d))
+    assert main(["init", "--project", "testproj"]) == 0
+    capsys.readouterr()
+
+    # In queued state without heartbeat, human status must not have age fragment
+    assert main(["status"]) == 13
+    out = capsys.readouterr().out
+    assert "queued" in out
+    assert "heartbeat: None" in out
+    assert "(age " not in out
 
 
+def test_cli_status_human_after_start_has_age(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    d = tmp_path / ".stage-signal"
+    monkeypatch.setenv("STAGE_SIGNAL_DIR", str(d))
+    assert main(["init", "--project", "testproj"]) == 0
+    assert main(["start", "--stage", "task1"]) == 0
+    capsys.readouterr()
+
+    # After start, human status must include heartbeat age
+    assert main(["status"]) == 10
+    out = capsys.readouterr().out
+    assert "running task1" in out
+    assert "heartbeat: " in out
+    assert "(age " in out
+
+
+def test_cli_status_human_frozen_time_progression(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    d = tmp_path / ".stage-signal"
+    monkeypatch.setenv("STAGE_SIGNAL_DIR", str(d))
+    stage = Stage(d)
+    stage.init(project="testproj")
+
+    current_time = datetime(2026, 9, 17, 12, 0, 0, tzinfo=timezone.utc)
+
+    def fake_now_dt() -> datetime:
+        return current_time
+
+    monkeypatch.setattr("stage_signal.stage._now_dt", fake_now_dt)
+    monkeypatch.setattr("stage_signal.store.now_iso", lambda: current_time.isoformat())
+
+    stage.start(stage="frozen-human-test")
+    capsys.readouterr()
+
+    # Initial status has 0s age
+    assert main(["status"]) == 10
+    out0 = capsys.readouterr().out
+    assert "(age 0s)" in out0
+
+    # Advance time by 42 seconds
+    current_time = datetime(2026, 9, 17, 12, 0, 42, tzinfo=timezone.utc)
+    assert main(["status"]) == 10
+    out1 = capsys.readouterr().out
+    assert "(age 42s)" in out1
+
+    # Advance time by 102 seconds (1 min 42 s from start)
+    current_time = datetime(2026, 9, 17, 12, 1, 42, tzinfo=timezone.utc)
+    assert main(["status"]) == 10
+    out2 = capsys.readouterr().out
+    assert "(age 102s)" in out2
+
+    # Heartbeat resets age back to 0s
+    assert main(["heartbeat", "--note", "tick"]) == 0
+    capsys.readouterr()
+    assert main(["status"]) == 10
+    out3 = capsys.readouterr().out
+    assert "(age 0s)" in out3
+
+
+def test_cli_status_human_unparseable_heartbeat_absent_age(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    d = tmp_path / ".stage-signal"
+    monkeypatch.setenv("STAGE_SIGNAL_DIR", str(d))
+    stage = Stage(d)
+    stage.init(project="testproj")
+    stage.start(stage="unparseable")
+
+    # Corrupt heartbeat_at timestamp in STATUS.json
+    status_file = d / "STATUS.json"
+    raw = json.loads(status_file.read_text(encoding="utf-8"))
+    raw["heartbeat_at"] = "not-a-valid-timestamp"
+    status_file.write_text(json.dumps(raw), encoding="utf-8")
+
+    capsys.readouterr()
+    assert main(["status"]) == 10
+    out = capsys.readouterr().out
+    assert "heartbeat: not-a-valid-timestamp" in out
+    assert "(age " not in out

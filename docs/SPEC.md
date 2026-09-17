@@ -241,9 +241,11 @@ stage-signal doctor [--stale-after SEC] [--json] [--format human|json]
   `"met"` | `"mismatch"` | `"timeout"`, `wanted`, `observed_state`, `exit_code`,
   `timeout`, `stage_id`, `dir`, and the `status` snapshot) with human output
   omitted, preserving the exit-code contract.
-- `status` prints human text by default; with `--json`, it prints the status
-  payload as a JSON object, including dynamic `heartbeat_age_seconds` (number of
-  elapsed seconds since `heartbeat_at`, or `null` when no heartbeat is recorded).
+- `status` prints human text by default (including heartbeat age, e.g.
+  `heartbeat: <ISO> (age 42s)`, when a heartbeat is recorded); with `--json`, it
+  prints the status payload as a JSON object, including dynamic
+  `heartbeat_age_seconds` (number of elapsed seconds since `heartbeat_at`, or
+  `null` when no heartbeat is recorded).
   Its exit code always reflects state (§7), so orchestrators can
   `stage-signal status` / `wait` in shell `if` directly.
 - `doctor` checks: dir exists, STATUS parses + schema ok, events.jsonl
