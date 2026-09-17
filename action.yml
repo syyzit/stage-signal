@@ -31,7 +31,7 @@ inputs:
     required: false
     default: '3.12'
   version:
-    description: 'stage-signal version constraint to install (e.g. "0.1.5" or "==0.1.5"; default installs latest)'
+    description: 'stage-signal version constraint to install (e.g. "0.1.6" or "==0.1.6"; default installs latest)'
     required: false
     default: ''
   cache:

@@ -6,6 +6,15 @@ See `docs/RELEASE.md` for the release procedure.
 
 ## [Unreleased]
 
+## [0.1.6] — 2026-09-17
+
+- Added `needs_reclaim` boolean to `stage-signal doctor --json` output and `Stage.diagnose()`,
+  allowing orchestrators to branch directly on whether a running stage requires reclamation
+  (due to `DEAD_PID` or `STALE_HEARTBEAT` warnings) without string matching or scraping (#61, #65).
+- Documented requirements and best practices for virtual environments (`.venv` with `.[dev]`)
+  and running `.venv/bin/pytest` in isolated worktrees to ensure test dependencies like `pytest-timeout`
+  are available (#60, #64).
+
 ## [0.1.5] — 2026-09-17
 
 - Updated `stage-signal doctor` to report `ATTENTION: running needs reclaim` instead of
@@ -109,7 +118,8 @@ GitHub release and tag: [`v0.1.0`](https://github.com/syyzit/stage-signal/releas
 - Stdlib only, Python `>=3.11`. Entry point `stage-signal`
   (`python -m stage_signal` alias).
 
-[Unreleased]: https://github.com/syyzit/stage-signal/compare/v0.1.5...HEAD
+[Unreleased]: https://github.com/syyzit/stage-signal/compare/v0.1.6...HEAD
+[0.1.6]: https://github.com/syyzit/stage-signal/compare/v0.1.5...v0.1.6
 [0.1.5]: https://github.com/syyzit/stage-signal/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/syyzit/stage-signal/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/syyzit/stage-signal/compare/v0.1.2...v0.1.3
