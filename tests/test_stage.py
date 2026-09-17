@@ -1205,3 +1205,197 @@ def test_done_accept_failure_illegal_states(stage: Stage) -> None:
     with pytest.raises(IllegalTransition, match="only allowed from state 'failed'"):
         stage.done(accept_failure=True)
 
+
+
+def test_start_records_pid_token(stage: Stage) -> None:
+    st = stage.start(stage="m1")
+    assert st["pid"] == os.getpid()
+    token = st["pid_token"]
+    assert isinstance(token, str) and token
+
+    st2 = stage.start(stage="m1")
+    assert st2["pid_token"] == token
+
+
+def test_start_pid_token_null_when_unreadable(
+    stage: Stage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "stage_signal.stage._pid_token", lambda pid: None, raising=False
+    )
+    st = stage.start(stage="m1")
+    assert st["pid_token"] is None
+
+
+def test_pid_token_cleared_on_idle_reset(stage: Stage) -> None:
+    stage.start(stage="m1")
+    stage.fail(reason="x")
+    st = stage.clear_terminal()
+    assert st["pid"] is None
+    assert st["pid_token"] is None
+
+
+def test_pid_token_kept_on_keep_stage_clear(stage: Stage) -> None:
+    st = stage.start(stage="m1")
+    stage.fail(reason="x")
+    st2 = stage.clear_terminal(keep_stage=True)
+    assert st2["pid"] == st["pid"]
+    assert st2["pid_token"] == st["pid_token"]
+
+
+def test_pid_token_kept_on_reclaim_keep_failed(stage: Stage) -> None:
+    st = stage.start(stage="m1")
+    status_file = stage.dir / "STATUS.json"
+    raw = json.loads(status_file.read_text(encoding="utf-8"))
+    raw["heartbeat_at"] = "2000-01-01T00:00:00+00:00"
+    status_file.write_text(json.dumps(raw), encoding="utf-8")
+    st2 = stage.reclaim("stale", keep_failed=True)
+    assert st2["state"] == "failed"
+    assert st2["pid"] == st["pid"]
+    assert st2["pid_token"] == st["pid_token"]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX signals")
+def test_reclaim_kill_identity_match_fires(
+    stage: Stage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    process = subprocess.Popen(
+        [sys.executable, "-c", "import time; print('ready', flush=True); time.sleep(60)"],
+        stdout=subprocess.PIPE, text=True,
+    )
+    try:
+        assert process.stdout.readline().strip() == "ready"
+        st = stage.start(stage="m", pid=process.pid)
+        assert st["pid_token"] is not None
+        status_file = stage.dir / "STATUS.json"
+        raw = json.loads(status_file.read_text(encoding="utf-8"))
+        raw["heartbeat_at"] = "2000-01-01T00:00:00+00:00"
+        raw["pid"] = process.pid
+        status_file.write_text(json.dumps(raw), encoding="utf-8")
+
+        # Keep the process alive until the wait window expires: identity
+        # matches, so the recorded pid still points at our child.
+        with monkeypatch.context() as mp:
+            mp.setattr(
+                "stage_signal.stage._is_pid_alive", lambda pid: True
+            )
+            calls: list[tuple[int, int]] = []
+            mp.setattr(
+                "stage_signal.stage._signal_pid_best_effort",
+                lambda pid, sig: calls.append((pid, sig)),
+            )
+            stage.reclaim("stale worker", kill=True)
+        assert calls == [(process.pid, signal.SIGTERM), (process.pid, signal.SIGKILL)]
+        assert stage.status()["stage_id"] is None
+    finally:
+        if process.poll() is None:
+            process.kill()
+        process.wait(timeout=5)
+        process.stdout.close()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX signals")
+def test_reclaim_kill_identity_mismatch_skips_kill(
+    stage: Stage, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    process = subprocess.Popen(
+        [sys.executable, "-c", "import time; print('ready', flush=True); time.sleep(60)"],
+        stdout=subprocess.PIPE, text=True,
+    )
+    try:
+        assert process.stdout.readline().strip() == "ready"
+        st = stage.start(stage="m", pid=process.pid)
+        assert st["pid_token"] is not None
+        status_file = stage.dir / "STATUS.json"
+        raw = json.loads(status_file.read_text(encoding="utf-8"))
+        raw["heartbeat_at"] = "2000-01-01T00:00:00+00:00"
+        raw["pid_token"] = "not-the-real-identity"
+        status_file.write_text(json.dumps(raw), encoding="utf-8")
+
+        with monkeypatch.context() as mp:
+            calls: list[tuple[int, int]] = []
+            mp.setattr(
+                "stage_signal.stage._signal_pid_best_effort",
+                lambda pid, sig: calls.append((pid, sig)),
+            )
+            result = stage.reclaim("stale worker", kill=True)
+        assert calls == []
+        assert result["state"] == "queued"
+        err = capsys.readouterr().err
+        assert "identity mismatch" in err
+        assert "skipping kill" in err
+        assert process.poll() is None
+    finally:
+        if process.poll() is None:
+            process.kill()
+        process.wait(timeout=5)
+        process.stdout.close()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX signals")
+def test_reclaim_kill_identity_unreadable_skips_kill(
+    stage: Stage, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    process = subprocess.Popen(
+        [sys.executable, "-c", "import time; print('ready', flush=True); time.sleep(60)"],
+        stdout=subprocess.PIPE, text=True,
+    )
+    try:
+        assert process.stdout.readline().strip() == "ready"
+        st = stage.start(stage="m", pid=process.pid)
+        assert st["pid_token"] is not None
+        status_file = stage.dir / "STATUS.json"
+        raw = json.loads(status_file.read_text(encoding="utf-8"))
+        raw["heartbeat_at"] = "2000-01-01T00:00:00+00:00"
+        status_file.write_text(json.dumps(raw), encoding="utf-8")
+
+        with monkeypatch.context() as mp:
+            mp.setattr(
+                "stage_signal.stage._pid_token",
+                lambda pid: None,
+                raising=False,
+            )
+            calls: list[tuple[int, int]] = []
+            mp.setattr(
+                "stage_signal.stage._signal_pid_best_effort",
+                lambda pid, sig: calls.append((pid, sig)),
+            )
+            result = stage.reclaim("stale worker", kill=True)
+        assert calls == []
+        assert result["state"] == "queued"
+        err = capsys.readouterr().err
+        assert "identity unreadable" in err
+        assert "skipping kill" in err
+        assert process.poll() is None
+    finally:
+        if process.poll() is None:
+            process.kill()
+        process.wait(timeout=5)
+        process.stdout.close()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX signals")
+def test_reclaim_kill_legacy_null_token_keeps_kill(
+    stage: Stage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    script = "import time; print('ready', flush=True); time.sleep(60)"
+    process = subprocess.Popen(
+        [sys.executable, "-c", script], stdout=subprocess.PIPE, text=True,
+    )
+    try:
+        assert process.stdout.readline().strip() == "ready"
+        stage.start(stage="m", pid=process.pid)
+        status_file = stage.dir / "STATUS.json"
+        raw = json.loads(status_file.read_text(encoding="utf-8"))
+        raw["heartbeat_at"] = "2000-01-01T00:00:00+00:00"
+        raw["pid_token"] = None
+        status_file.write_text(json.dumps(raw), encoding="utf-8")
+
+        stage.reclaim("stale worker", kill=True)
+        assert process.wait(timeout=5) == -signal.SIGTERM
+        assert stage.status()["stage_id"] is None
+    finally:
+        if process.poll() is None:
+            process.kill()
+        process.wait(timeout=5)
+        process.stdout.close()

@@ -271,6 +271,7 @@ class Stage:
                 "attempt": 1,
                 "session_id": None,
                 "pid": None,
+                "pid_token": None,
                 "model": None,
                 "variant": None,
                 "repo_path": _repo_path(store.dir),
@@ -328,6 +329,8 @@ class Stage:
         detected_head, detected_branch = _detect_git(self._store.dir)
         resolved_head = git_head if git_head is not None else detected_head
         resolved_branch = git_branch if git_branch is not None else detected_branch
+        resolved_pid = pid if pid is not None else os.getpid()
+        pid_token = _pid_token(resolved_pid)
 
         def _apply(current: dict[str, Any]) -> dict[str, Any]:
             ts = now_iso()
@@ -339,7 +342,8 @@ class Stage:
                     "state": STATE_RUNNING,
                     "attempt": current.get("attempt", 0) + 1 if same_series else 1,
                     "session_id": session_id,
-                    "pid": pid if pid is not None else os.getpid(),
+                    "pid": resolved_pid,
+                    "pid_token": pid_token,
                     "model": model,
                     "variant": variant,
                     "repo_path": _repo_path(self._store.dir),
@@ -597,7 +601,9 @@ class Stage:
                 )
 
             if kill:
-                _terminate_pid(status.get("pid"))
+                _terminate_pid(
+                    status.get("pid"), token=status.get("pid_token")
+                )
 
             failed = copy.deepcopy(status)
             failed["state"] = STATE_FAILED
@@ -642,6 +648,7 @@ class Stage:
             cleared["stage_name"] = None
             cleared["session_id"] = None
             cleared["pid"] = None
+            cleared["pid_token"] = None
             cleared["started_at"] = None
             cleared["heartbeat_at"] = None
             cleared["heartbeat_note"] = None
@@ -692,6 +699,7 @@ class Stage:
                 current["stage_name"] = None
                 current["session_id"] = None
                 current["pid"] = None
+                current["pid_token"] = None
                 current["started_at"] = None
                 current["heartbeat_at"] = None
                 current["heartbeat_note"] = None
@@ -860,18 +868,33 @@ class Stage:
 # -- helpers ------------------------------------------------------------
 
 
-def _terminate_pid(pid: Any, *, timeout: float = 1.0, poll: float = 0.05) -> bool:
+def _terminate_pid(
+    pid: Any,
+    *,
+    token: Optional[str] = None,
+    timeout: float = 1.0,
+    poll: float = 0.05,
+) -> bool:
     """Best-effort SIGTERM -> bounded wait -> SIGKILL for a recorded pid.
 
     Reuses the doctor/status liveness probe. Invalid or dead pids (and
     unknown liveness) are a no-op returning False. Never raises.
+
+    When a non-None *token* is given, the process-start identity is
+    re-verified before each termination signal; mismatch or unreadable
+    identity skips the kill (possible pid reuse). Legacy statuses without
+    a recorded token keep the previous best-effort behavior.
     """
     if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
         return False
     if _is_pid_alive(pid) is not True:
         return False
+    if not _pid_token_matches(pid, token):
+        return False
     try:
         if sys.platform == "win32":
+            if not _pid_token_matches(pid, token):
+                return False
             _signal_pid_best_effort(pid, signal.SIGTERM)
         else:
             _signal_pid_best_effort(pid, signal.SIGTERM)
@@ -883,6 +906,8 @@ def _terminate_pid(pid: Any, *, timeout: float = 1.0, poll: float = 0.05) -> boo
     except Exception:
         pass
     if _is_pid_alive(pid) is True:
+        if not _pid_token_matches(pid, token):
+            return False
         _signal_pid_best_effort(pid, signal.SIGKILL)
     return True
 
@@ -1072,6 +1097,130 @@ def _is_pid_alive(pid: int) -> Optional[bool]:
     if sys.platform == "win32":
         return _is_pid_alive_windows(pid)
     return _is_pid_alive_posix(pid)
+
+
+def _pid_token(pid: int) -> Optional[str]:
+    """Best-effort opaque process-start identity for a pid.
+
+    Prefers the process start time: Linux `/proc/<pid>/stat` field 22
+    (clock ticks since boot), macOS `ps -o lstart=` (wall-clock start).
+    Windows falls back to `wmic`-free kernel32 `GetProcessTimes` via
+    ctypes (best effort). Any failure yields None: capture problems
+    never prevent `start` from recording the pid.
+    """
+    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+        return None
+    if sys.platform == "win32":
+        return _pid_token_windows(pid)
+    if sys.platform == "linux":
+        try:
+            stat = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return None
+        # comm may contain spaces/parens: parse after the final ')'.
+        rparen = stat.rfind(")")
+        if rparen == -1:
+            return None
+        fields = stat[rparen + 2:].split()
+        if len(fields) < 20:
+            return None
+        return fields[19]  # field 22 overall: starttime in clock ticks
+    try:
+        proc = subprocess.run(
+            ["ps", "-o", "lstart=", "-p", str(pid)],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (subprocess.SubprocessError, OSError):
+        return None
+    if proc.returncode != 0:
+        return None
+    started = proc.stdout.strip()
+    return started or None
+
+
+def _pid_token_windows(pid: int) -> Optional[str]:
+    """Process-start identity on Windows via kernel32 GetProcessTimes (best effort)."""
+    try:
+        import ctypes
+        import ctypes.wintypes
+
+        kernel32 = getattr(getattr(ctypes, "windll", None), "kernel32", None)
+        if kernel32 is None:
+            return None
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        if not handle:
+            return None
+
+        class _Filetime(ctypes.Structure):
+            _fields_ = [("dw_low", ctypes.wintypes.DWORD),
+                        ("dw_high", ctypes.wintypes.DWORD)]
+
+        def _to_int(ft: "_Filetime") -> int:
+            return (ft.dw_high << 32) | ft.dw_low
+
+        try:
+            creation = _Filetime()
+            exit_time = _Filetime()
+            kernel_time = _Filetime()
+            user_time = _Filetime()
+            if not kernel32.GetProcessTimes(
+                handle,
+                ctypes.byref(creation),
+                ctypes.byref(exit_time),
+                ctypes.byref(kernel_time),
+                ctypes.byref(user_time),
+            ):
+                return None
+            created = _to_int(creation)
+            return str(created) if created else None
+        finally:
+            kernel32.CloseHandle(handle)
+    except Exception:
+        return None
+
+
+def _read_pid_token(pid: int) -> Optional[str]:
+    """Read the current process-start identity for a live pid (best effort).
+
+    Returns None when identity cannot be read (process gone, platform
+    unsupported, or probe failure) — callers treat None as "unreadable".
+    """
+    return _pid_token(pid)
+
+
+def _pid_token_matches(pid: int, token: Optional[str]) -> bool:
+    """True when the recorded identity still matches the live process.
+
+    Legacy statuses without a recorded token (None) always match, preserving
+    the pre-identity best-effort kill behavior. A recorded token fails closed
+    on mismatch or when the live identity is unreadable.
+    """
+    if token is None:
+        return True
+    current = _read_pid_token(pid)
+    if current is None:
+        _warn_pid_identity_unreadable(pid)
+        return False
+    if current != token:
+        print(
+            f"stage-signal: warning: pid {pid} identity mismatch "
+            f"(recorded {token!r}, current {current!r}); "
+            "skipping kill (possible pid reuse)",
+            file=sys.stderr,
+        )
+        return False
+    return True
+
+
+def _warn_pid_identity_unreadable(pid: int) -> None:
+    print(
+        f"stage-signal: warning: pid {pid} identity unreadable; "
+        "skipping kill (recorded pid_token could not be confirmed)",
+        file=sys.stderr,
+    )
 
 
 def _require_state(
