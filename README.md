@@ -62,7 +62,7 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]"   # installs the `stage-signal` entry point + tests
 stage-signal --help
-python -m pytest          # all green
+.venv/bin/pytest          # all green (use .venv with .[dev]; not bare system pytest)
 ```
 
 `python3.11+` with stdlib only — no third-party runtime dependencies.
@@ -311,5 +311,5 @@ MIT — see `LICENSE`.
 ## Contributing
 
 Issues and PRs welcome. Keep the scope small: lifecycle signals, not a platform.
-See [`CONTRIBUTING.md`](CONTRIBUTING.md) for local setup, tests, and release
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) for local setup, `.venv` test requirements, and release
 boundaries.

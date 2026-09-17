@@ -305,7 +305,7 @@ LIFECYCLE REQUIREMENTS:
 2. Send occasional heartbeats during long steps:
    .venv/bin/stage-signal --dir .stage-signal heartbeat
 3. Run verification tests:
-   pytest
+   .venv/bin/pytest
 4. On clean completion:
    git commit -m "feat: complete <STAGE_ID>"
    .venv/bin/stage-signal --dir .stage-signal done --summary "Completed <STAGE_ID>" --git-head $(git rev-parse HEAD)
@@ -314,6 +314,8 @@ LIFECYCLE REQUIREMENTS:
 6. If tests fail or code invariants break:
    .venv/bin/stage-signal --dir .stage-signal fail --reason "Explanation of failure"
 ```
+
+> **Virtual environment note:** In prompt templates, instruct agents to prefer the worktree or main repository `.venv` (e.g., `.venv/bin/pytest` or symlinked `.venv`) with `pip install -e ".[dev]"` rather than unpinned system `pytest` or bare `python3 -m pytest`, ensuring dev dependencies like `pytest-timeout` are present.
 
 ### 1. Google Antigravity CLI (`agy`) Snippet
 
