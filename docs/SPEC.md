@@ -278,6 +278,7 @@ stage-signal doctor [--stale-after SEC] [--json] [--format human|json]
     The warning message includes an explicit recovery hint naming `fail --reason TEXT --if-dead-pid`.
   - `UNPARSEABLE_HEARTBEAT`: invalid heartbeat timestamp format (detail: `{"heartbeat_at": str}`).
   Warnings never change stage state and do not trigger a non-zero exit code (exit 0 on healthy/warnings, 1 on problems, 2 on bad args); orchestrators should branch on the `needs_reclaim` boolean rather than string-matching `summary` or scraping human warning text.
+  Passing `--exit-reclaim` causes `doctor` to exit 10 when `needs_reclaim` is true (while still printing human/JSON output as requested). When `--exit-reclaim` is set and `needs_reclaim` is false, standard exit codes are preserved (0 on healthy/warnings, 1 on problems, 2 on bad args). Without the flag, behavior is unchanged (reclaim warnings stay exit 0).
   Passing `stale_after=None` to `Stage.diagnose()` disables heartbeat checks.
 
 ## 7. Exit codes (part of the contract)
@@ -288,7 +289,7 @@ stage-signal doctor [--stale-after SEC] [--json] [--format human|json]
 | 1 | Generic error (IO, corrupt file incl. unsupported schema version, doctor problems) |
 | 2 | Bad args |
 | 3 | Illegal transition / failed `--require-proof` gate |
-| 10 | State is `running` (`status`/`wait` mismatch reporting) |
+| 10 | State is `running` (`status`/`wait` mismatch reporting); or `doctor --exit-reclaim` when `needs_reclaim` is true |
 | 11 | State is `blocked` |
 | 12 | State is `failed` |
 | 13 | State is `queued` |
@@ -296,7 +297,7 @@ stage-signal doctor [--stale-after SEC] [--json] [--format human|json]
 | 15 | Not initialized (missing dir/STATUS) |
 
 `done`/`blocked`/`failed` terminal commands exit 0 on success (they *perform*
-the transition); the 10–13 codes are for *observing* (`status`/`wait`) only.
+the transition); the 10–13 codes are for *observing* (`status`/`wait`) only (and exit 10 for `doctor --exit-reclaim` when reclaim is needed).
 
 ## 8. Concurrency & atomicity
 

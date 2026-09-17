@@ -557,34 +557,45 @@ def test_doctor_format_flag_support(sdir: Path, capsys: pytest.CaptureFixture[st
 
 
 def test_doctor_exit_codes_semantics(tmp_path: Path) -> None:
-    """Verify doctor exit codes: 0 for healthy/warnings, 1 for problems, 2 for bad args."""
-    # 1. Healthy dir -> exit 0
+    """Verify doctor exit codes: 0 for healthy/warnings, 1 for problems, 2 for bad args, 10 for --exit-reclaim."""
+    # 1. Healthy dir -> exit 0 (with or without --exit-reclaim)
     d = tmp_path / "healthy"
     stage = Stage(d)
     stage.init(project="healthy-proj")
     assert main(["--dir", str(d), "doctor"]) == 0
     assert main(["--dir", str(d), "doctor", "--json"]) == 0
+    assert main(["--dir", str(d), "doctor", "--exit-reclaim"]) == 0
+    assert main(["--dir", str(d), "doctor", "--exit-reclaim", "--json"]) == 0
 
-    # 2. Healthy dir with warning (dead PID) -> still exit 0
+    # 2. Healthy dir with warning (dead PID) -> exit 0 without flag, exit 10 with --exit-reclaim
     proc = subprocess.Popen([sys.executable, "-c", "pass"])
     proc.wait()
     stage.start(stage="task", pid=proc.pid)
     assert main(["--dir", str(d), "doctor"]) == 0
     assert main(["--dir", str(d), "doctor", "--json"]) == 0
+    assert main(["--dir", str(d), "doctor", "--exit-reclaim"]) == 10
+    assert main(["--dir", str(d), "doctor", "--exit-reclaim", "--json"]) == 10
 
-    # 3. Problem: corrupt STATUS.json -> exit 1
+    # 3. Problem: corrupt STATUS.json -> exit 1 (with or without --exit-reclaim)
     (d / "STATUS.json").write_text("{corrupt json")
     assert main(["--dir", str(d), "doctor"]) == 1
     assert main(["--dir", str(d), "doctor", "--json"]) == 1
+    assert main(["--dir", str(d), "doctor", "--exit-reclaim"]) == 1
+    assert main(["--dir", str(d), "doctor", "--exit-reclaim", "--json"]) == 1
 
-    # 4. Problem: missing directory -> exit 1
+    # 4. Problem: missing directory -> exit 1 (with or without --exit-reclaim)
     missing = tmp_path / "nonexistent"
     assert main(["--dir", str(missing), "doctor"]) == 1
     assert main(["--dir", str(missing), "doctor", "--json"]) == 1
+    assert main(["--dir", str(missing), "doctor", "--exit-reclaim"]) == 1
+    assert main(["--dir", str(missing), "doctor", "--exit-reclaim", "--json"]) == 1
 
-    # 5. Bad CLI args -> exit 2
+    # 5. Bad CLI args -> exit 2 (with or without --exit-reclaim)
     with pytest.raises(SystemExit) as exc:
         main(["--dir", str(d), "doctor", "--stale-after", "not_a_number"])
+    assert exc.value.code == 2
+    with pytest.raises(SystemExit) as exc:
+        main(["--dir", str(d), "doctor", "--exit-reclaim", "--stale-after", "not_a_number"])
     assert exc.value.code == 2
 
 
@@ -738,3 +749,112 @@ def test_needs_reclaim_independent_of_problems(
         assert result["ok"] is False
         assert result["problems"]
         assert result["summary"] is None
+
+
+@pytest.mark.parametrize(
+    "case",
+    ["healthy", "DEAD_PID", "STALE", "problems"],
+)
+@pytest.mark.parametrize("with_flag", [False, True])
+@pytest.mark.parametrize("as_json", [False, True])
+def test_doctor_exit_reclaim_matrix(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    case: str,
+    with_flag: bool,
+    as_json: bool,
+) -> None:
+    d = tmp_path / f"test-{case}-{with_flag}-{as_json}"
+    stage = Stage(d)
+
+    if case == "healthy":
+        stage.init(project="testproj")
+        stage.start(stage="healthy-task", pid=os.getpid())
+        expected_exit = 0
+        expected_needs_reclaim = False
+    elif case == "DEAD_PID":
+        stage.init(project="testproj")
+        proc = subprocess.Popen([sys.executable, "-c", "pass"])
+        proc.wait()
+        stage.start(stage="dead-pid-task", pid=proc.pid)
+        expected_exit = 10 if with_flag else 0
+        expected_needs_reclaim = True
+    elif case == "STALE":
+        stage.init(project="testproj")
+        stage.start(stage="stale-task", pid=os.getpid())
+        stale_time = (datetime.now(timezone.utc) - timedelta(seconds=600)).isoformat()
+        status_file = d / "STATUS.json"
+        raw = json.loads(status_file.read_text())
+        raw["heartbeat_at"] = stale_time
+        status_file.write_text(json.dumps(raw))
+        expected_exit = 10 if with_flag else 0
+        expected_needs_reclaim = True
+    elif case == "problems":
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "STATUS.json").write_text("{corrupt json")
+        expected_exit = 1
+        expected_needs_reclaim = False
+
+    cmd = ["--dir", str(d), "doctor"]
+    if with_flag:
+        cmd.append("--exit-reclaim")
+    if as_json:
+        cmd.append("--json")
+
+    capsys.readouterr()
+    exit_code = main(cmd)
+    out = capsys.readouterr().out
+
+    assert exit_code == expected_exit
+
+    if as_json:
+        data = json.loads(out)
+        assert data["needs_reclaim"] is expected_needs_reclaim
+        if expected_exit == 10:
+            assert data["needs_reclaim"] is True
+            assert data["state"] == "running"
+    else:
+        if expected_exit == 10:
+            assert "ATTENTION: running needs reclaim" in out
+        elif case == "healthy":
+            assert "OK: running" in out
+        elif case == "problems":
+            assert "PROBLEM:" in out
+
+
+@pytest.mark.parametrize("with_flag", [False, True])
+@pytest.mark.parametrize("pid_alive", [True, False])
+def test_doctor_exit_reclaim_problems_coexisting(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    with_flag: bool,
+    pid_alive: bool,
+) -> None:
+    d = tmp_path / f"test-prob-reclaim-{with_flag}-{pid_alive}"
+    stage = Stage(d)
+    stage.init(project="testproj")
+    stage.start(stage="reclaim-problems", pid=os.getpid())
+    monkeypatch.setattr("stage_signal.stage._is_pid_alive", lambda pid: pid_alive)
+    (d / "events.jsonl").write_text("{corrupt json\n")
+    capsys.readouterr()
+
+    cmd = ["--dir", str(d), "doctor"]
+    if with_flag:
+        cmd.append("--exit-reclaim")
+
+    # If pid is dead, needs_reclaim is True.
+    # With --exit-reclaim: exits 10.
+    # Without --exit-reclaim: exits 1 (problems present).
+    # If pid is alive, needs_reclaim is False -> exits 1 either way.
+    if not pid_alive and with_flag:
+        expected_exit = 10
+    else:
+        expected_exit = 1
+
+    exit_code = main(cmd)
+    out = capsys.readouterr().out
+    assert exit_code == expected_exit
+    assert "PROBLEM:" in out
+    if not pid_alive:
+        assert "DEAD PID:" in out

@@ -92,6 +92,8 @@ stage-signal wait --json --state terminal --timeout 900
 stage-signal clear-terminal
 # check directory health and inspect structured warnings (STALE_HEARTBEAT, DEAD_PID):
 stage-signal doctor --json
+# or exit 10 when reclaim is needed (dead PID or stale heartbeat) without requiring jq:
+stage-signal doctor --exit-reclaim
 ```
 
 The `--pid $$` example uses the POSIX shell process ID. On Windows, pass the
@@ -118,6 +120,7 @@ Exact schema and exit codes: see `docs/SPEC.md` (normative) and
 `wait --json` prints a structured JSON object (`outcome`, `wanted`, `observed_state`, `exit_code`, `timeout`, `stage_id`, `dir`, `status`) to stdout while preserving these exit codes.
 `status` prints human text by default (including heartbeat age, e.g. `heartbeat: <ISO> (age 42s)`, only while `running` with a valid heartbeat). `status --json` includes dynamic `heartbeat_age_seconds` (number while running with a valid heartbeat; otherwise `null`).
 `doctor --json` (or `--format json`) and `Stage.diagnose()` provide machine-readable health diagnostics (`ok`, `needs_reclaim`, `state`, `problems`, `warnings`: `[{code, message, detail}]`, `status`, `summary`). The always-present boolean `needs_reclaim` is `true` exactly when the state is `running` and a `DEAD_PID` or `STALE_HEARTBEAT` warning applies; otherwise it is `false`, including healthy running, non-running states, and missing/unreadable status without reclaim warnings. Orchestrators should branch on `needs_reclaim` instead of string-matching `summary` or treating `ok` as a liveness signal. The summary still reports `ATTENTION: running needs reclaim` for reclaim warnings when there are no problems. `ok` means no problems: reclaim warnings alone preserve `ok: true` and exit 0 (exit 1 on problems), and `needs_reclaim` remains independent of any problems.
+To enable thin shell or watchdog scripts to branch on exit codes without requiring `jq`, `doctor --exit-reclaim` exits 10 when `needs_reclaim` is true (while still printing human or JSON output as requested). When `needs_reclaim` is false, it preserves existing exit codes (0 healthy/warnings, 1 problems, 2 bad args). Without `--exit-reclaim`, doctor retains its default advisory exit 0 on warnings.
 
 To act on a `DEAD_PID` warning (which includes an explicit recovery hint naming `fail --reason TEXT --if-dead-pid`), `fail --reason TEXT --if-dead-pid` hard-fails a
 `running` stage only after confirming the claiming PID is a valid positive
