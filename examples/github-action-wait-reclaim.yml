@@ -1,88 +1,37 @@
-# Copy-paste GitHub Actions workflow: wait on an existing `.stage-signal/` dir
-# and branch on done / blocked / failed / timeout / reclaim-needed without scraping logs.
+# Copy-paste GitHub Actions workflow: watchdog gate for stage-signal reclaim.
+# Polls an existing `.stage-signal/` dir until `needs_reclaim` is true
+# (DEAD_PID or STALE_HEARTBEAT) via composite action `needs-reclaim: true`.
 #
-# Composite action inputs (all optional):
-#   dir, state, timeout, poll, needs-reclaim, python-version, version, cache,
+# Branches on:
+#   - Reclaim needed (outcome == 'met', needs-reclaim == 'true', exit-code 0)
+#   - Watchdog timed out (timed-out == 'true', outcome == 'timeout', exit-code 14)
+#   - Terminal without reclaim (outcome == 'mismatch', fail-closed:
+#       done -> 1, blocked -> 11, failed -> 12)
+#
+# Composite action inputs:
+#   dir, needs-reclaim, timeout, poll, python-version, version, cache,
 #   cache-dependency-path, pip-cache
 #
 # Composite action outputs:
+#   needs-reclaim / needs_reclaim ("true" | "false")
 #   state / observed-state / observed_state
 #   outcome                  (met | mismatch | timeout | error)
 #   exit-code / exit_code    (0 met, 1 done-without-reclaim, 11 blocked, 12 failed, 14 timeout, …)
 #   timed-out / timed_out    ("true" | "false")
 #   stage-id / stage_id
 #   reason                   (blocked/failed text, or timeout message)
-#   needs-reclaim / needs_reclaim ("true" | "false")
 #   json                     (raw wait --json payload)
 #
-# Pin the action ref (@v0.1.6) independently of the optional `version` pip pin.
-# Composite steps use `shell: bash` (GitHub-hosted Ubuntu / macOS / Windows).
 # Non-zero wait codes fail the step unless `continue-on-error: true` — that
 # is what keeps 11/12/14/1 from collapsing into a generic failure so later
-# `if:` branches can read `state` / `timed-out` / `needs-reclaim` / `reason`.
+# `if:` branches can read `needs-reclaim` / `state` / `timed-out` / `reason`.
 
-name: Wait for stage signal
+name: Watchdog wait for reclaim
 
 on:
   workflow_dispatch:
 
 jobs:
-  # Job 1: Wait for stage completion (milestone / terminal state)
-  wait:
-    runs-on: ubuntu-latest
-    timeout-minutes: 65
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Wait for an existing stage
-        id: wait
-        continue-on-error: true
-        uses: syyzit/stage-signal@v0.1.6
-        with:
-          dir: .stage-signal
-          state: terminal
-          timeout: 3600
-          # poll: "5.0"
-          version: "0.1.6"
-
-      - name: Stage done
-        if: steps.wait.outputs.state == 'done'
-        run: |
-          echo "done stage_id=${{ steps.wait.outputs.stage-id }}"
-          echo "exit_code=${{ steps.wait.outputs.exit-code }}"
-
-      - name: Stage blocked
-        if: steps.wait.outputs.state == 'blocked'
-        run: |
-          echo "blocked stage_id=${{ steps.wait.outputs.stage-id }}"
-          echo "reason=${{ steps.wait.outputs.reason }}"
-
-      - name: Stage failed
-        if: steps.wait.outputs.state == 'failed'
-        run: |
-          echo "failed stage_id=${{ steps.wait.outputs.stage-id }}"
-          echo "reason=${{ steps.wait.outputs.reason }}"
-
-      - name: Wait timed out
-        if: steps.wait.outputs.timed-out == 'true'
-        run: |
-          echo "timeout observed_state=${{ steps.wait.outputs.state }}"
-          echo "reason=${{ steps.wait.outputs.reason }}"
-
-      # Optional: fail the job unless the stage reached done.
-      # Waiting for `terminal` treats blocked/failed as outcome=met (exit 0);
-      # branch on `state` (and `timed-out`) rather than `outcome` or the raw
-      # wait exit code alone.
-      - name: Fail unless done
-        if: steps.wait.outputs.state != 'done'
-        run: |
-          echo "not done: state=${{ steps.wait.outputs.state }} reason=${{ steps.wait.outputs.reason }}"
-          exit 1
-
-  # Job 2: CI Reclaim Watchdog gate (`needs-reclaim: true`)
-  # Polls until needs_reclaim is true (running + DEAD_PID or STALE_HEARTBEAT).
-  # Terminal without reclaim fails closed: done -> 1, blocked -> 11, failed -> 12.
-  # Timeout -> 14.
   watchdog-reclaim:
     runs-on: ubuntu-latest
     timeout-minutes: 65
@@ -106,7 +55,7 @@ jobs:
         run: |
           echo "reclaim-needed stage_id=${{ steps.wait.outputs.stage-id }}"
           echo "state=${{ steps.wait.outputs.state }}"
-          # Optional: fail the stage if needs reclaim, or trigger alerting / recovery
+          # Optional: fail the stage if needs reclaim, or trigger alerting / recovery:
           # stage-signal --dir .stage-signal fail --reason "CI watchdog reclaim" --if-needs-reclaim
 
       # Branch 2: Watchdog timed out (timed-out == 'true', outcome == 'timeout', exit-code 14)

@@ -216,6 +216,38 @@ fi
 
 `--if-dead-pid` remains the narrower DEAD_PID-only gate. `--if-dead-pid` and `--if-needs-reclaim` are mutually exclusive.
 
+### CI reclaim gate: composite GitHub Action
+
+In CI/CD watchdog workflows where a preinstalled venv is not present, the composite GitHub Action supports `needs-reclaim: true` to gate on the reclaim condition with step outputs:
+
+```yaml
+- name: Watchdog wait for reclaim
+  id: wait
+  uses: syyzit/stage-signal@v0.1.6
+  continue-on-error: true
+  with:
+    needs-reclaim: true
+    timeout: 3600
+    poll: 5
+
+- name: Reclaim needed
+  if: steps.wait.outputs.needs-reclaim == 'true'
+  run: |
+    echo "reclaim-needed: stage ${{ steps.wait.outputs.stage-id }}"
+    # Fail stage if reclaim needed, triggering recovery or notification:
+    # stage-signal --dir .stage-signal fail --reason "CI watchdog reclaim" --if-needs-reclaim
+
+- name: Watchdog timed out
+  if: steps.wait.outputs.timed-out == 'true'
+  run: echo "Watchdog timed out without reclaim: ${{ steps.wait.outputs.reason }}"
+
+- name: Terminal without reclaim
+  if: steps.wait.outputs.outcome == 'mismatch'
+  run: echo "Stage completed or reached terminal state without reclaim: ${{ steps.wait.outputs.state }}"
+```
+
+See [`examples/github-action-wait-reclaim.yml`](../../examples/github-action-wait-reclaim.yml) and [`examples/github-action-wait.yml`](../../examples/github-action-wait.yml).
+
 ### Health snapshot: `doctor --json`
 
 `doctor --json` is a **snapshot** (warnings, `needs_reclaim`, problems) — not the reclaim poll loop. Use it to inspect why `wait --needs-reclaim` returned, or for a one-shot `--exit-reclaim` check:

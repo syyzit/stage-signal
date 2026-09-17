@@ -2,17 +2,19 @@ name: 'stage-signal wait'
 description: >-
   Wait on a stage-signal stage without a preinstalled venv.
   Installs stage-signal from PyPI then runs
-  `stage-signal --dir <dir> wait --state <state> --timeout <timeout>`.
+  `stage-signal --dir <dir> wait --state <state> --timeout <timeout>`
+  or `stage-signal --dir <dir> wait --needs-reclaim --timeout <timeout>`.
   Exposes step outputs (state, outcome, exit-code, timed-out, stage-id,
-  reason, json) so downstream steps can branch on done / blocked / failed /
-  timeout without scraping logs or collapsing 11/12/14 into a generic failure.
+  reason, needs-reclaim, json) so downstream steps can branch on done /
+  blocked / failed / timeout / reclaim-needed without scraping logs or
+  collapsing 11/12/14/1 into a generic failure.
   Use `continue-on-error: true` on this step, then `if:` on `state` /
-  `timed-out` / `reason` (see examples/github-action-wait.yml).
+  `timed-out` / `needs-reclaim` / `reason` (see examples/github-action-wait.yml).
   Inputs: dir, state, timeout, poll, python-version, version, cache,
-  cache-dependency-path, pip-cache.
-  Exit codes: 0 done/OK (wait condition met), 1 generic/corrupt,
-  2 bad args, 3 illegal transition, 10 running, 11 blocked,
-  12 failed, 13 queued, 14 wait timeout, 15 not initialized.
+  cache-dependency-path, pip-cache, needs-reclaim.
+  Exit codes: 0 done/OK (wait condition met, or needs_reclaim true),
+  1 generic/corrupt/done-without-reclaim, 2 bad args, 3 illegal transition,
+  10 running, 11 blocked, 12 failed, 13 queued, 14 wait timeout, 15 not initialized.
   Node runtime: uses actions/setup-python@v7 (Node 24 runner runtime).
 inputs:
   dir:
@@ -31,6 +33,10 @@ inputs:
     description: 'Poll interval in seconds (passed as --poll; default uses CLI default 5.0)'
     required: false
     default: ''
+  needs-reclaim:
+    description: 'Poll until needs_reclaim is true (DEAD_PID or STALE_HEARTBEAT) instead of waiting for a state ("true" or "false")'
+    required: false
+    default: 'false'
   python-version:
     description: 'Python version for actions/setup-python'
     required: false
@@ -85,6 +91,12 @@ outputs:
   reason:
     description: 'Short blocked/failed reason or timeout message (empty otherwise)'
     value: ${{ steps.wait.outputs.reason }}
+  needs-reclaim:
+    description: 'Whether needs_reclaim was observed as true ("true" or "false")'
+    value: ${{ steps.wait.outputs.needs-reclaim }}
+  needs_reclaim:
+    description: 'Whether needs_reclaim was observed as true (alias for needs-reclaim)'
+    value: ${{ steps.wait.outputs.needs_reclaim }}
   json:
     description: 'Raw JSON string emitted by wait --json if available'
     value: ${{ steps.wait.outputs.json }}
@@ -124,8 +136,17 @@ runs:
         STATE="${{ inputs.state }}"
         TIMEOUT="${{ inputs.timeout }}"
         POLL="${{ inputs.poll }}"
+        NEEDS_RECLAIM="${{ inputs.needs-reclaim }}"
 
-        ARGS=("--state" "$STATE" "--timeout" "$TIMEOUT")
+        ARGS=("--timeout" "$TIMEOUT")
+        if [ "$NEEDS_RECLAIM" = "true" ]; then
+          ARGS+=("--needs-reclaim")
+          if [ -n "$STATE" ] && [ "$STATE" != "terminal" ]; then
+            ARGS+=("--state" "$STATE")
+          fi
+        else
+          ARGS+=("--state" "$STATE")
+        fi
         if [ -n "$POLL" ]; then
           ARGS+=("--poll" "$POLL")
         fi
@@ -150,10 +171,11 @@ runs:
           cat "$TMP_OUT"
         fi
 
-        python -c "import sys, textwrap; exec(textwrap.dedent(sys.stdin.read()))" << 'EOF' "$TMP_OUT" "$EXIT_CODE" "$DIR"
+        python -c "import sys, textwrap; exec(textwrap.dedent(sys.stdin.read()))" << 'EOF' "$TMP_OUT" "$EXIT_CODE" "$DIR" "$NEEDS_RECLAIM"
         import json, os, sys, uuid
 
         json_path, exit_code_str, dir_path = sys.argv[1], sys.argv[2], sys.argv[3]
+        needs_reclaim_input = sys.argv[4] if len(sys.argv) > 4 else "false"
         exit_code = int(exit_code_str)
         gh_output = os.environ.get("GITHUB_OUTPUT")
 
@@ -162,6 +184,7 @@ runs:
         timed_out = "false"
         stage_id = ""
         reason = ""
+        needs_reclaim = "false"
         raw_json = ""
 
         if os.path.exists(json_path):
@@ -176,6 +199,8 @@ runs:
                     timed_out = "true" if data.get("timeout") else "false"
                     stage_id = str(data.get("stage_id") or "")
                     reason = str(data.get("reason") or "")
+                    if data.get("needs_reclaim"):
+                        needs_reclaim = "true"
                     status = data.get("status") or {}
                     if isinstance(status, dict):
                         if not stage_id:
@@ -184,6 +209,8 @@ runs:
                             err = status.get("error") or {}
                             if isinstance(err, dict):
                                 reason = str(err.get("reason") or "")
+                        if needs_reclaim == "false" and status.get("needs_reclaim"):
+                            needs_reclaim = "true"
             except Exception:
                 pass
 
@@ -199,8 +226,13 @@ runs:
                         err = st.get("error") or {}
                         if isinstance(err, dict):
                             reason = str(err.get("reason") or "")
+                    if needs_reclaim == "false" and st.get("needs_reclaim"):
+                        needs_reclaim = "true"
                 except Exception:
                     pass
+
+        if needs_reclaim_input == "true" and exit_code == 0:
+            needs_reclaim = "true"
 
         if not outcome:
             if exit_code == 0:
@@ -208,7 +240,7 @@ runs:
             elif exit_code == 14:
                 outcome = "timeout"
                 timed_out = "true"
-            elif exit_code in (11, 12):
+            elif exit_code in (11, 12, 13) or (exit_code == 1 and state in ("done", "blocked", "failed", "queued")):
                 outcome = "mismatch"
             else:
                 outcome = "error"
@@ -233,6 +265,8 @@ runs:
                 f.write(f"stage-id={stage_id}\n")
                 f.write(f"stage_id={stage_id}\n")
                 f.write(f"reason={reason}\n")
+                f.write(f"needs-reclaim={needs_reclaim}\n")
+                f.write(f"needs_reclaim={needs_reclaim}\n")
                 if raw_json.strip():
                     delim = f"ghdel_{uuid.uuid4().hex}"
                     f.write(f"json<<{delim}\n{raw_json.strip()}\n{delim}\n")

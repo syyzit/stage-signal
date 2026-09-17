@@ -28,6 +28,12 @@ See `docs/RELEASE.md` for the release procedure.
 - Added `stage-signal events [--tail N] [--type TYPE] [--json]` and
   `Stage.events(tail=, type=)` to read `events.jsonl` for orchestrator audit,
   with event-type filtering and tail selection (#80).
+- Added `needs-reclaim` input and step outputs (`needs-reclaim`, `needs_reclaim`)
+  to the composite GitHub Action, enabling CI watchdogs to gate on reclaim condition
+  (`wait --needs-reclaim --json`) without custom shell loops (#85).
+- Updated example workflows `examples/github-action-wait.yml` and added sibling
+  `examples/github-action-wait-reclaim.yml` with copy-paste `if:` branches for
+  reclaim-needed vs timeout vs terminal-without-reclaim (#85).
 
 ## [0.1.6] — 2026-09-17
 
