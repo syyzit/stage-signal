@@ -96,6 +96,16 @@ def build_parser() -> argparse.ArgumentParser:
         default=False,
         help="when running, require a confirmed dead claiming pid; otherwise use normal fail rules",
     )
+    c.add_argument(
+        "--if-needs-reclaim",
+        action="store_true",
+        default=False,
+        help=(
+            "succeed only when needs_reclaim is true (DEAD_PID or "
+            "STALE_HEARTBEAT, same as diagnose/doctor/status); otherwise "
+            "exit 3 with no mutation"
+        ),
+    )
     c.add_argument("--write-status-mirror", action="store_true", default=None)
     c.set_defaults(func=cmd_fail)
 
@@ -119,7 +129,8 @@ def build_parser() -> argparse.ArgumentParser:
     c.set_defaults(func=cmd_wait)
 
     c = sub.add_parser(
-        "clear-terminal", help="reset a terminal state back to queued (idle)"
+        "clear-terminal",
+        help="reset a terminal or queued state back to idle queued",
     )
     c.add_argument(
         "--keep-stage",
@@ -323,6 +334,7 @@ def cmd_fail(args: argparse.Namespace) -> int:
     st = _stage(args).fail(
         args.reason,
         if_dead_pid=args.if_dead_pid,
+        if_needs_reclaim=getattr(args, "if_needs_reclaim", False),
         write_status_mirror=args.write_status_mirror,
     )
     print(f"failed {_one_line(st)}: {args.reason}")

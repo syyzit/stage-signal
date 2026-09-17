@@ -493,26 +493,40 @@ class Stage:
         reason: str,
         *,
         if_dead_pid: bool = False,
+        if_needs_reclaim: bool = False,
         write_status_mirror: Optional[bool] = None,
     ) -> dict[str, Any]:
         """Mark hard failure. Same transition rule as done."""
         if not reason or not reason.strip():
             raise BadArgsError("fail requires non-empty --reason TEXT")
+        if if_dead_pid and if_needs_reclaim:
+            raise BadArgsError(
+                "fail --if-dead-pid and --if-needs-reclaim are mutually exclusive"
+            )
 
         def _apply(current: dict[str, Any]) -> dict[str, Any]:
-            _require_terminal_source(current, STATE_FAILED, "fail")
-            if if_dead_pid and current.get("state") == STATE_RUNNING:
-                pid = current.get("pid")
-                if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+            if if_needs_reclaim:
+                _, needs_reclaim = _reclaim_diagnostics(current)
+                if not needs_reclaim:
                     raise IllegalTransition(
-                        "fail --if-dead-pid requires a valid positive integer claiming pid"
+                        "fail --if-needs-reclaim refused: needs_reclaim is false "
+                        f"(state={current.get('state')!r}; no DEAD_PID or "
+                        "STALE_HEARTBEAT)"
                     )
-                alive = _is_pid_alive(pid)
-                if alive is not False:
-                    condition = "is alive" if alive is True else "has unknown liveness"
-                    raise IllegalTransition(
-                        f"fail --if-dead-pid refused: claiming pid {pid} {condition}"
-                    )
+            else:
+                _require_terminal_source(current, STATE_FAILED, "fail")
+                if if_dead_pid and current.get("state") == STATE_RUNNING:
+                    pid = current.get("pid")
+                    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+                        raise IllegalTransition(
+                            "fail --if-dead-pid requires a valid positive integer claiming pid"
+                        )
+                    alive = _is_pid_alive(pid)
+                    if alive is not False:
+                        condition = "is alive" if alive is True else "has unknown liveness"
+                        raise IllegalTransition(
+                            f"fail --if-dead-pid refused: claiming pid {pid} {condition}"
+                        )
             current["state"] = STATE_FAILED
             current["error"] = {
                 "reason": reason,
@@ -528,7 +542,11 @@ class Stage:
         )
 
     def clear_terminal(self, *, keep_stage: bool = False) -> dict[str, Any]:
-        """Reset done/blocked/failed back to queued (SPEC §4.7).
+        """Reset done/blocked/failed or queued back to queued (SPEC §4.7).
+
+        Allowed from terminal states and from queued (abandon a parked or idle
+        queued stage). Running remains illegal — reclaim with fail
+        --if-needs-reclaim / --if-dead-pid first.
 
         By default, clears stage identity (stage_id and stage_name set to None,
         plus claim/session/heartbeat fields), transitioning to a true idle queued
@@ -537,9 +555,10 @@ class Stage:
 
         def _apply(current: dict[str, Any]) -> dict[str, Any]:
             _require_state(
-                current, TERMINAL_STATES, "clear-terminal",
-                message="only terminal states (done/blocked/failed) "
-                        "can be cleared",
+                current, TERMINAL_STATES + (STATE_QUEUED,), "clear-terminal",
+                message="only terminal states (done/blocked/failed) or queued "
+                        "can be cleared (running requires fail --if-needs-reclaim "
+                        "or fail --if-dead-pid first)",
             )
             current["state"] = STATE_QUEUED
             current["result"] = None

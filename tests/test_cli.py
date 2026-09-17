@@ -50,6 +50,104 @@ def test_cli_fail_if_dead_pid_refuses_without_mutation(
     assert {name: (stage.dir / name).read_bytes() for name in before} == before
 
 
+def test_cli_fail_if_needs_reclaim_dead_pid(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    stage = Stage(tmp_path / ".stage-signal")
+    stage.init()
+    process = subprocess.Popen([sys.executable, "-c", "pass"])
+    process.wait(timeout=10)
+    stage.start(stage="m", pid=process.pid)
+
+    assert main(["--dir", str(stage.dir), "fail", "--reason", "worker exited", "--if-needs-reclaim"]) == 0
+    assert "failed" in capsys.readouterr().out
+    assert stage.status()["state"] == "failed"
+    assert stage.status()["error"]["reason"] == "worker exited"
+
+
+def test_cli_fail_if_needs_reclaim_stale(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    stage = Stage(tmp_path / ".stage-signal")
+    stage.init()
+    stage.start(stage="m", pid=os.getpid())
+    status_file = stage.dir / "STATUS.json"
+    raw = json.loads(status_file.read_text(encoding="utf-8"))
+    raw["heartbeat_at"] = "2000-01-01T00:00:00+00:00"
+    status_file.write_text(json.dumps(raw), encoding="utf-8")
+
+    assert main(["--dir", str(stage.dir), "fail", "--reason", "stale runner", "--if-needs-reclaim"]) == 0
+    assert "failed" in capsys.readouterr().out
+    assert stage.status()["state"] == "failed"
+    assert stage.status()["error"]["reason"] == "stale runner"
+
+
+def test_cli_fail_if_needs_reclaim_healthy_running_no_mutation(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    stage = Stage(tmp_path / ".stage-signal")
+    stage.init()
+    stage.start(stage="m", pid=os.getpid())
+    before = {name: (stage.dir / name).read_bytes() for name in ("STATUS.json", "STATUS.md", "events.jsonl")}
+
+    assert main(["--dir", str(stage.dir), "fail", "--reason", "not reclaimable", "--if-needs-reclaim"]) == 3
+    err = capsys.readouterr().err
+    assert "fail --if-needs-reclaim" in err
+    assert "needs_reclaim is false" in err
+    assert {name: (stage.dir / name).read_bytes() for name in before} == before
+
+
+@pytest.mark.parametrize("state,setup", [
+    ("queued", None),
+    ("done", "done"),
+    ("blocked", "blocked"),
+    ("failed", "failed"),
+])
+def test_cli_fail_if_needs_reclaim_non_running_no_mutation(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], state: str, setup: str | None
+) -> None:
+    stage = Stage(tmp_path / ".stage-signal")
+    stage.init()
+    if setup == "done":
+        stage.done()
+    elif setup == "blocked":
+        stage.blocked("waiting")
+    elif setup == "failed":
+        stage.fail("previous")
+    before = {name: (stage.dir / name).read_bytes() for name in ("STATUS.json", "STATUS.md", "events.jsonl")}
+
+    assert main(["--dir", str(stage.dir), "fail", "--reason", "not reclaimable", "--if-needs-reclaim"]) == 3
+    err = capsys.readouterr().err
+    assert "fail --if-needs-reclaim" in err
+    assert f"state='{state}'" in err
+    assert {name: (stage.dir / name).read_bytes() for name in before} == before
+
+
+def test_cli_fail_if_needs_reclaim_mutually_exclusive(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    stage = Stage(tmp_path / ".stage-signal")
+    stage.init()
+    stage.start(stage="m", pid=os.getpid())
+    before = {name: (stage.dir / name).read_bytes() for name in ("STATUS.json", "STATUS.md", "events.jsonl")}
+
+    assert main([
+        "--dir", str(stage.dir), "fail", "--reason", "x",
+        "--if-dead-pid", "--if-needs-reclaim",
+    ]) == 2
+    assert "mutually exclusive" in capsys.readouterr().err
+    assert {name: (stage.dir / name).read_bytes() for name in before} == before
+
+
+def test_fail_help_documents_if_needs_reclaim() -> None:
+    parser = build_parser()
+    fail_parser = None
+    for action in parser._actions:
+        if hasattr(action, "_name_parser_map") and "fail" in action._name_parser_map:
+            fail_parser = action._name_parser_map["fail"]
+            break
+    assert fail_parser is not None
+    help_text = fail_parser.format_help()
+    assert "--if-dead-pid" in help_text
+    assert "--if-needs-reclaim" in help_text
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="watchdog requires a POSIX shell")
 @pytest.mark.parametrize("dead_pid,stale", [(False, False), (False, True), (True, False), (True, True)])
 def test_watchdog_needs_reclaim(tmp_path: Path, dead_pid: bool, stale: bool) -> None:
@@ -505,6 +603,55 @@ def test_cli_clear_terminal_keep_stage(tmp_path: Path, monkeypatch: pytest.Monke
     assert st["state"] == "queued"
     assert st["stage_name"] == "feat-2"
     assert st["stage_id"] == "feat-2"
+
+
+def test_cli_clear_terminal_from_queued(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    d = tmp_path / ".stage-signal"
+    monkeypatch.setenv("STAGE_SIGNAL_DIR", str(d))
+    assert main(["init", "--project", "testproj"]) == 0
+    capsys.readouterr()
+
+    assert main(["clear-terminal"]) == 0
+    assert "cleared queued - (attempt 1)" in capsys.readouterr().out
+    assert main(["status", "--json"]) == 13
+    idle = json.loads(capsys.readouterr().out)
+    assert idle["state"] == "queued"
+    assert idle["stage_name"] is None
+
+    assert main(["start", "--stage", "parked"]) == 0
+    assert main(["done", "--summary", "park"]) == 0
+    assert main(["clear-terminal", "--keep-stage"]) == 0
+    capsys.readouterr()
+    assert main(["status", "--json"]) == 13
+    named = json.loads(capsys.readouterr().out)
+    assert named["stage_name"] == "parked"
+
+    assert main(["clear-terminal"]) == 0
+    assert "cleared queued - (attempt 1)" in capsys.readouterr().out
+    assert main(["status", "--json"]) == 13
+    abandoned = json.loads(capsys.readouterr().out)
+    assert abandoned["state"] == "queued"
+    assert abandoned["stage_name"] is None
+    assert abandoned["stage_id"] is None
+    events = Stage(str(d)).events()
+    assert events[-1]["type"] == "clear_terminal"
+    assert events[-1]["message"] == "cleared to idle queued"
+
+
+def test_cli_clear_terminal_running_still_illegal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    d = tmp_path / ".stage-signal"
+    monkeypatch.setenv("STAGE_SIGNAL_DIR", str(d))
+    assert main(["init"]) == 0
+    assert main(["start", "--stage", "live"]) == 0
+    before = {name: (d / name).read_bytes() for name in ("STATUS.json", "STATUS.md", "events.jsonl")}
+    capsys.readouterr()
+
+    assert main(["clear-terminal"]) == 3
+    err = capsys.readouterr().err
+    assert "running" in err
+    assert {name: (d / name).read_bytes() for name in before} == before
 
 
 def test_cli_done_accept_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:

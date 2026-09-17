@@ -286,6 +286,28 @@ fi
 
 Warning checks are secondary detail for choosing a response, not the primary health gate. A stale heartbeat does not prove the PID is dead: do not call `fail --if-dead-pid` for a stale-only live runner. The [watchdog example](../../examples/orchestrator-watchdog.sh) logs ATTENTION and returns `0` from its reclaim check in that case; `--once` still returns the observed running-state code `10`. Guarded fail rechecks the current PID under lock and can refuse if the snapshot has changed.
 
+To reclaim **either** `DEAD_PID` or `STALE_HEARTBEAT` in one shot (same `needs_reclaim` semantics as `doctor` / `status` / `Stage.diagnose()`), use `fail --if-needs-reclaim` instead of `--if-dead-pid`:
+
+```bash
+# One-shot fail gate: writes failed + reason ONLY when needs_reclaim is true.
+# Healthy running and non-running states: exit 3, no mutation.
+if stage-signal --dir "$WORKTREE/.stage-signal" fail \
+  --reason "watchdog reclaim (DEAD_PID or STALE_HEARTBEAT)" --if-needs-reclaim; then
+  echo "Stage reclaimed as failed."
+else
+  echo "Reclaim not needed or refused (exit $?); no mutation." >&2
+fi
+```
+
+`--if-dead-pid` remains the narrower DEAD_PID-only gate. `--if-dead-pid` and `--if-needs-reclaim` are mutually exclusive.
+
+A parked `queued` stage (named or idle, no PID/heartbeat) cannot be `clear-terminal`'d on older trees. Current contract: `clear-terminal` accepts `queued` as well as `done`/`blocked`/`failed` and resets to idle queued with a `clear_terminal` event. From `running` it stays illegal — reclaim with `fail --if-needs-reclaim` first:
+
+```bash
+# Abandon a stuck queued stage (never started / parked) back to idle.
+stage-signal --dir "$WORKTREE/.stage-signal" clear-terminal
+```
+
 #### Branching on Exit Code: `doctor --exit-reclaim` (without `jq`)
 
 For thin shell or watchdog snippets that avoid `jq`, pass `--exit-reclaim` to `doctor`. When `--exit-reclaim` is set, `doctor` exits **10** when `needs_reclaim` is true (while still printing human or JSON diagnostic output as requested). When `needs_reclaim` is false, it preserves existing exit codes (0 healthy/warnings, 1 problems, 2 bad args):
@@ -469,5 +491,5 @@ echo "Lane opencode finished with code $STATUS_OC"
 
 - [ ] **One Worktree Per Lane**: Separate directories, separate branches, separate `.stage-signal/` folders.
 - [ ] **Accurate PIDs**: Pass the live PID to `start --pid` so `doctor` can spot process deaths.
-- [ ] **Automated Health Checks**: Run `doctor --json` in your poll loop and branch on `.needs_reclaim == true`, never `.summary` or `.ok`. Inspect `.warnings[]` secondarily: reclaim `DEAD_PID` with `fail --if-dead-pid`; alert on stale-only heartbeats without failing a live runner.
-- [ ] **Clean Resets**: Use `stage-signal clear-terminal` to reset an idle worktree back to `queued -` between tasks.
+- [ ] **Automated Health Checks**: Run `doctor --json` in your poll loop and branch on `.needs_reclaim == true`, never `.summary` or `.ok`. Inspect `.warnings[]` secondarily: reclaim `DEAD_PID` with `fail --if-dead-pid`, or reclaim both `DEAD_PID` and `STALE_HEARTBEAT` with `fail --if-needs-reclaim`.
+- [ ] **Clean Resets**: Use `stage-signal clear-terminal` to reset a terminal *or* parked queued worktree back to `queued -` between tasks. From `running`, reclaim first.
