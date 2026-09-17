@@ -612,6 +612,53 @@ def test_wait_needs_reclaim_not_initialized(stage_dir: Path) -> None:
     assert exc.value.exit_code == 15
 
 
+@pytest.mark.parametrize("kind", ["dead_pid", "stale", "healthy", "done", "blocked", "failed"])
+def test_wait_needs_reclaim_matches_status_and_doctor(stage: Stage, kind: str) -> None:
+    """wait --needs-reclaim uses the same boolean as status/doctor."""
+    if kind == "dead_pid":
+        process = subprocess.Popen([sys.executable, "-c", "pass"])
+        process.wait(timeout=10)
+        stage.start(stage="m", pid=process.pid)
+    elif kind == "stale":
+        stage.start(stage="m", pid=os.getpid())
+        status_file = stage.dir / "STATUS.json"
+        raw = json.loads(status_file.read_text(encoding="utf-8"))
+        raw["heartbeat_at"] = "2000-01-01T00:00:00+00:00"
+        status_file.write_text(json.dumps(raw), encoding="utf-8")
+    elif kind == "healthy":
+        stage.start(stage="m", pid=os.getpid())
+    elif kind == "done":
+        stage.done()
+    elif kind == "blocked":
+        stage.blocked("waiting")
+    else:
+        stage.fail("previous")
+
+    status = stage.status()
+    diag = stage.diagnose()
+    assert status["needs_reclaim"] is diag["needs_reclaim"]
+    assert status["state"] == diag["state"]
+
+    if diag["needs_reclaim"]:
+        out = stage.wait(timeout=5, poll=0.05, needs_reclaim=True)
+        assert out["needs_reclaim"] is True
+        assert out["state"] == "running"
+        return
+
+    if status["state"] in ("done", "blocked", "failed"):
+        started = time.monotonic()
+        out = stage.wait(timeout=30, poll=0.5, needs_reclaim=True)
+        assert time.monotonic() - started < 5
+        assert out["needs_reclaim"] is False
+        assert out["state"] == status["state"]
+        return
+
+    with pytest.raises(WaitTimeout) as exc:
+        stage.wait(timeout=0.2, poll=0.05, needs_reclaim=True)
+    assert exc.value.last_status["needs_reclaim"] is False
+    assert exc.value.last_status["state"] == "running"
+
+
 def test_diagnose(stage: Stage, stage_dir: Path) -> None:
     diag = stage.diagnose()
     assert diag["ok"] and not diag["problems"]
