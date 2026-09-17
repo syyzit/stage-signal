@@ -7,7 +7,7 @@ The core thesis of `stage-signal` is simple:
 
 The orchestrator never scrapes terminal UIs, never parses markdown chat logs for "I am done", and never inspects internal agent databases. It relies solely on `stage-signal` CLI commands, on-disk status files, and normalized exit codes.
 
-Because the stage contract is completely decoupled from the agent implementation, the exact same orchestrator pattern works interchangeably with **Google Antigravity CLI (`agy`)** and **OpenCode (`opencode`)**. For multi-lane parallel execution in isolated worktrees with watchdog health monitoring (`doctor --json`), see [`docs/examples/orchestrator.md`](../docs/examples/orchestrator.md).
+Because the stage contract is completely decoupled from the agent implementation, the exact same orchestrator pattern works interchangeably with **Google Antigravity CLI (`agy`)** and **OpenCode (`opencode`)**. For multi-lane parallel execution in isolated worktrees with watchdog health monitoring (`doctor --json`), see [`docs/examples/orchestrator.md`](../docs/examples/orchestrator.md#branching-on-needs_reclaim-with-jq). Branch on `.needs_reclaim`, not `.summary` or `.ok`; inspect warning codes only to choose the response. The [watchdog](orchestrator-watchdog.sh) uses `--once --doctor-reclaim` to reclaim `DEAD_PID` via guarded fail, but logs ATTENTION without failing a live runner with only a stale heartbeat (the reclaim check returns `0`; `--once` still reports running as `10`).
 
 ---
 

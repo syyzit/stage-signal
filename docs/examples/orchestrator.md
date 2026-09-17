@@ -204,6 +204,7 @@ Healthy output:
 ```json
 {
   "ok": true,
+  "needs_reclaim": false,
   "state": "running",
   "problems": [],
   "warnings": [],
@@ -256,35 +257,34 @@ When an anomaly occurs, `doctor --json` populates the `warnings` array with mach
    }
    ```
 
-#### Branching on Summary and Warnings with `jq`
+#### Branching on `needs_reclaim` with `jq`
 
-Orchestrators can branch directly on `.summary` without scraping warning lines or parsing arrays:
+Orchestrators must branch on the always-present `.needs_reclaim` boolean, not the human-readable `.summary` or `.ok`. It is `true` exactly when a running stage has a `DEAD_PID` or `STALE_HEARTBEAT` warning. Warnings alone keep `.ok` true and doctor's exit code at `0`; `.needs_reclaim` is independent of problems.
 
 ```bash
-doc_json=$(stage-signal --dir "$WORKTREE/.stage-signal" doctor --json)
+doc_json=$(stage-signal --dir "$WORKTREE/.stage-signal" doctor --json) || {
+  echo "Doctor reported problems; inspect diagnostics before reclaiming." >&2
+  exit 1
+}
 
-# Check if doctor flags that running needs reclaim (STALE or DEAD_PID)
-if [ "$(echo "$doc_json" | jq -r .summary)" = "ATTENTION: running needs reclaim" ]; then
-  echo "Stage running state is unhealthy and requires reclaim!"
-fi
+if printf '%s\n' "$doc_json" | jq -e '.needs_reclaim == true' >/dev/null; then
+  echo "ATTENTION: running needs reclaim"
 
-# Check for dead runner process specifically
-if echo "$doc_json" | jq -e '.warnings[] | select(.code == "DEAD_PID")' >/dev/null; then
-  echo "Process died without completing stage! Handling crash..."
-  if stage-signal --dir "$WORKTREE/.stage-signal" fail \
-    --reason "Agent process died unexpectedly (DEAD_PID)" --if-dead-pid; then
-    echo "Stage reclaimed as failed."
-  else
-    reclaim_code=$?
-    echo "Reclaim refused or failed (exit $reclaim_code); inspect the current state." >&2
+  if printf '%s\n' "$doc_json" | jq -e '.warnings[] | select(.code == "DEAD_PID")' >/dev/null; then
+    if stage-signal --dir "$WORKTREE/.stage-signal" fail \
+      --reason "Agent process died unexpectedly (DEAD_PID)" --if-dead-pid; then
+      echo "Stage reclaimed as failed."
+    else
+      reclaim_code=$?
+      echo "Reclaim refused or failed (exit $reclaim_code); inspect the current state." >&2
+    fi
+  elif printf '%s\n' "$doc_json" | jq -e '.warnings[] | select(.code == "STALE_HEARTBEAT")' >/dev/null; then
+    echo "ATTENTION: stale heartbeat without DEAD_PID; inspect runner, no guarded fail attempted." >&2
   fi
 fi
-
-# Check for hung / stale heartbeat
-if echo "$doc_json" | jq -e '.warnings[] | select(.code == "STALE_HEARTBEAT")' >/dev/null; then
-  echo "Agent heartbeat is stale! Checking process status..."
-fi
 ```
+
+Warning checks are secondary detail for choosing a response, not the primary health gate. A stale heartbeat does not prove the PID is dead: do not call `fail --if-dead-pid` for a stale-only live runner. The [watchdog example](../../examples/orchestrator-watchdog.sh) logs ATTENTION and returns `0` from its reclaim check in that case; `--once` still returns the observed running-state code `10`. Guarded fail rechecks the current PID under lock and can refuse if the snapshot has changed.
 
 ---
 
@@ -401,12 +401,16 @@ check_lane() {
   local doc_json
   doc_json=$(stage-signal --dir "$wt/.stage-signal" doctor --json 2>/dev/null || echo '{"ok":false}')
 
-  if echo "$doc_json" | grep -q '"DEAD_PID"'; then
-    echo "[$name] WARNING: Dead PID detected by doctor! Process crashed."
-  fi
+  if printf '%s\n' "$doc_json" | jq -e '.needs_reclaim == true' >/dev/null; then
+    echo "[$name] ATTENTION: running needs reclaim; inspect doctor warning details." >&2
 
-  if echo "$doc_json" | grep -q '"STALE_HEARTBEAT"'; then
-    echo "[$name] WARNING: Stale heartbeat detected by doctor! Agent may be hung."
+    if printf '%s\n' "$doc_json" | jq -e '.warnings[] | select(.code == "DEAD_PID")' >/dev/null; then
+      echo "[$name] WARNING: Dead PID detected by doctor! Process crashed." >&2
+    fi
+
+    if printf '%s\n' "$doc_json" | jq -e '.warnings[] | select(.code == "STALE_HEARTBEAT")' >/dev/null; then
+      echo "[$name] WARNING: Stale heartbeat detected by doctor! Agent may be hung." >&2
+    fi
   fi
 
   # Check status code
@@ -442,5 +446,5 @@ echo "Lane opencode finished with code $STATUS_OC"
 
 - [ ] **One Worktree Per Lane**: Separate directories, separate branches, separate `.stage-signal/` folders.
 - [ ] **Accurate PIDs**: Pass the live PID to `start --pid` so `doctor` can spot process deaths.
-- [ ] **Automated Health Checks**: Run `doctor --json` in your poll loop and inspect `.warnings[]` for `DEAD_PID` and `STALE_HEARTBEAT`.
+- [ ] **Automated Health Checks**: Run `doctor --json` in your poll loop and branch on `.needs_reclaim == true`, never `.summary` or `.ok`. Inspect `.warnings[]` secondarily: reclaim `DEAD_PID` with `fail --if-dead-pid`; alert on stale-only heartbeats without failing a live runner.
 - [ ] **Clean Resets**: Use `stage-signal clear-terminal` to reset an idle worktree back to `queued -` between tasks.
