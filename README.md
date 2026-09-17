@@ -88,8 +88,10 @@ stage-signal status --json
 stage-signal wait --state terminal --timeout 900
 # or wait --json for a structured outcome payload on stdout:
 stage-signal wait --json --state terminal --timeout 900
-# reset terminal state back to true idle queued:
+# reset terminal *or* parked queued back to true idle queued:
 stage-signal clear-terminal
+# one-shot fail when doctor/status would set needs_reclaim (DEAD_PID or STALE):
+stage-signal fail --reason "reclaim" --if-needs-reclaim
 # check directory health and inspect structured warnings (STALE_HEARTBEAT, DEAD_PID):
 stage-signal doctor --json
 # or exit 10 when reclaim is needed (dead PID or stale heartbeat) without requiring jq:
@@ -126,6 +128,10 @@ To act on a `DEAD_PID` warning (which includes an explicit recovery hint naming 
 `running` stage only after confirming the claiming PID is a valid positive
 integer that is actually dead; a live, invalid, or undeterminable PID aborts
 with exit 3 and no mutation (outside `running`, normal fail rules apply). Doctor remains advisory-only.
+
+To reclaim whenever `needs_reclaim` would be true (DEAD_PID **or** STALE_HEARTBEAT, same detection as `doctor` / `status` / `Stage.diagnose()`), use `fail --reason TEXT --if-needs-reclaim`. That one-shot gate writes `failed` + reason only when reclaim is needed; healthy running and non-running states exit 3 with no mutation. `--if-dead-pid` and `--if-needs-reclaim` are mutually exclusive.
+
+`clear-terminal` resets `done`/`blocked`/`failed` **and** stuck `queued` (named or idle) back to idle queued, appending a `clear_terminal` event. From `running` it stays illegal — reclaim with `fail --if-needs-reclaim` or `fail --if-dead-pid` first.
 
 `start --meta` is repeatable and accepts two forms per entry (merged in
 order, later wins):
@@ -170,10 +176,11 @@ See [`docs/examples/orchestrator.md`](docs/examples/orchestrator.md) for the dua
 
 Orchestrator loops need to differentiate between an active pending stage and an idle runner:
 - **Idle state:** `state: queued` with no stage claimed (`stage_name: null`, displayed as `queued -`) indicates the worktree is idle and awaiting instructions (created by `init` or reset via `clear-terminal`).
-- **Queued stage:** `state: queued` with a stage name (`stage_name: "feature-x"`) indicates a specific stage is queued to be picked up.
+- **Queued stage:** `state: queued` with a stage name (`stage_name: "feature-x"`) indicates a specific stage is queued to be picked up. Abandon it with `stage-signal clear-terminal` (now allowed from queued) to return to idle without hand-editing STATUS.
 - **Handling failures:** When an agent reports `fail`, orchestrators have two clean SPEC-compatible choices:
   - `stage-signal clear-terminal` to clear stage identity back to a true idle `queued -` state.
   - `stage-signal done --accept-failure --summary "accepted: ..."` to transition a failed stage to `done` with `"accepted_failure": true` recorded in `result`, without inventing a fake success.
+- **Stuck running:** When `status --json` / `doctor --json` reports `needs_reclaim: true`, `stage-signal fail --reason "..." --if-needs-reclaim` writes `failed` for both `DEAD_PID` and `STALE_HEARTBEAT`. Use `--if-dead-pid` only when the PID is confirmed dead.
 
 
 ### GitHub Action: wait without a venv

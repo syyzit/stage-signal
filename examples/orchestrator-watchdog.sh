@@ -97,6 +97,12 @@ print('%s %s (attempt %s)' % (st.get('state'), st.get('stage_name') or '-', st.g
 # `fail --reason TEXT --if-dead-pid` (guarded reclaim, SPEC §Terminal). The
 # guard refuses (exit 3, no mutation) if the pid is live or liveness unknown,
 # and never mutates outside `running`; `doctor` itself stays advisory-only.
+# STALE_HEARTBEAT-only (live runner) logs ATTENTION and does not fail: a stale
+# heartbeat does not prove the PID is dead. To reclaim *either* DEAD_PID or
+# STALE_HEARTBEAT in one shot, call `fail --reason TEXT --if-needs-reclaim`
+# yourself (same needs_reclaim semantics as diagnose/doctor/status; exit 3
+# and no mutation when reclaim is not needed). `--doctor-reclaim` stays
+# DEAD_PID-only so a hung-but-alive runner is not auto-failed.
 # The snapshot shown after reclaim may lag by one poll cycle. Exit codes:
 #   0 no DEAD_PID warning (or reclaim succeeded)
 #   1 doctor failed to produce JSON (no reclaim attempted)

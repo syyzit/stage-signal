@@ -34,6 +34,7 @@ python -c 'import stage_signal; print(stage_signal.__file__)'
 ```
 
 On a tree containing #43, `stage-signal fail -h` must list `--if-dead-pid`.
+On a tree containing #75, the same help must also list `--if-needs-reclaim`.
 The printed module path must belong to the intended worktree. Check with the
 same interpreter and environment used by the launcher/watchdog, not just an
 unrelated shell. An unrecognized flag during `DEAD_PID` recovery can mean stale

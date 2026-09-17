@@ -7,7 +7,7 @@ The core thesis of `stage-signal` is simple:
 
 The orchestrator never scrapes terminal UIs, never parses markdown chat logs for "I am done", and never inspects internal agent databases. It relies solely on `stage-signal` CLI commands, on-disk status files, and normalized exit codes.
 
-Because the stage contract is completely decoupled from the agent implementation, the exact same orchestrator pattern works interchangeably with **Google Antigravity CLI (`agy`)** and **OpenCode (`opencode`)**. For multi-lane parallel execution in isolated worktrees with watchdog health monitoring (`doctor --json`), see [`docs/examples/orchestrator.md`](../docs/examples/orchestrator.md#branching-on-needs_reclaim-with-jq). Branch on `.needs_reclaim`, not `.summary` or `.ok`; inspect warning codes only to choose the response. The [watchdog](orchestrator-watchdog.sh) uses `--once --doctor-reclaim` to reclaim `DEAD_PID` via guarded fail, but logs ATTENTION without failing a live runner with only a stale heartbeat (the reclaim check returns `0`; `--once` still reports running as `10`).
+Because the stage contract is completely decoupled from the agent implementation, the exact same orchestrator pattern works interchangeably with **Google Antigravity CLI (`agy`)** and **OpenCode (`opencode`)**. For multi-lane parallel execution in isolated worktrees with watchdog health monitoring (`doctor --json`), see [`docs/examples/orchestrator.md`](../docs/examples/orchestrator.md#branching-on-needs_reclaim-with-jq). Branch on `.needs_reclaim`, not `.summary` or `.ok`; inspect warning codes only to choose the response. The [watchdog](orchestrator-watchdog.sh) uses `--once --doctor-reclaim` to reclaim `DEAD_PID` via guarded fail, but logs ATTENTION without failing a live runner with only a stale heartbeat (the reclaim check returns `0`; `--once` still reports running as `10`). To fail on either `DEAD_PID` or `STALE_HEARTBEAT` in one shot, use `fail --if-needs-reclaim`. To abandon a parked `queued` stage (never started), use `clear-terminal` (now allowed from queued).
 
 ---
 
@@ -307,7 +307,7 @@ When an agent fails (`stage-signal fail --reason "..."`), the orchestrator recei
 
 1. **Reset to idle worktree:**
    Run `stage-signal clear-terminal`.
-   This resets the stage directory to a clean `state: queued` with `stage_name: null`, reported as `queued - (attempt 1)`. Because `stage_name` is null, watchers and queue processors know the worktree is idle rather than awaiting an unfinished task.
+   This resets the stage directory to a clean `state: queued` with `stage_name: null`, reported as `queued - (attempt 1)`. Because `stage_name` is null, watchers and queue processors know the worktree is idle rather than awaiting an unfinished task. The same command also abandons a stuck `queued` stage that was parked and never started (no PID/heartbeat); `clear-terminal` from `running` remains illegal.
 
 2. **Accept failure:**
    Run `stage-signal done --accept-failure --summary "accepted: reason"`.
