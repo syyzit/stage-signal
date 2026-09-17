@@ -12,6 +12,75 @@ source .venv/bin/activate
 pip install -e ".[dev]"
 ```
 
+## Dogfooding from isolated worktrees
+
+A shared `.venv` has only one editable-install target. Running `pip install -e .`
+from another worktree can redirect every lane's `stage-signal` command to that
+worktree's source. Changing directories or passing `--dir` selects neither the
+Python source nor the editable target; `--dir` only selects lifecycle state.
+
+Prefer a per-worktree venv (using the local setup above), or explicitly select
+`PYTHONPATH=<worktree>/src` for every agent and watchdog invocation. From the
+intended worktree, with `python` and `stage-signal` from the chosen venv:
+
+```bash
+WORKTREE="$(pwd -P)"
+export PYTHONPATH="$WORKTREE/src"
+python -m stage_signal --dir "$WORKTREE/.stage-signal" doctor --json
+stage-signal fail -h
+python -c 'import stage_signal; print(stage_signal.__file__)'
+```
+
+On a tree containing #43, `stage-signal fail -h` must list `--if-dead-pid`.
+The printed module path must belong to the intended worktree. Check with the
+same interpreter and environment used by the launcher/watchdog, not just an
+unrelated shell. An unrecognized flag during `DEAD_PID` recovery can mean stale
+imports rather than a failed PID proof.
+
+After merging CLI-flag changes, if sharing one `.venv`, reinstall the editable
+package **from the main checkout** using that venv's Python:
+
+```bash
+python -m pip install -e ".[dev]"
+```
+
+Run that command with main as the working directory, not an isolated lane.
+Recheck `stage-signal fail -h` with `PYTHONPATH` unset to verify the shared
+editable target. Avoid lane-local reinstalls into the shared venv: they redirect
+all unpinned callers again. Keep lane-specific `PYTHONPATH` overrides even after
+repairing the shared install.
+
+### Local orchestrator launchers
+
+When `.agloop/launch-agy.py` and `.agloop/launch-opencode.py` are absent from a
+worktree, they are private, gitignored helpers; do not copy machine-local paths
+or secrets into tracked examples. Apply this `ss()` pattern to both helpers in
+the main checkout. Here `root` is a `pathlib.Path` holding the absolute path of
+the intended source worktree, not necessarily the launcher's own directory. Run the launcher with
+an interpreter that has stage-signal's dependencies installed:
+
+```python
+import os
+import subprocess
+import sys
+
+
+def ss(root, *args):
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(root / "src")
+    return subprocess.run(
+        [sys.executable, "-m", "stage_signal", "--dir", str(root / ".stage-signal"), *args],
+        cwd=root,
+        env=env,
+        check=False,
+    )
+```
+
+Inspect the returned exit code using the stage-signal contract (`status`, for
+example, returns 10 while running). Pass the same worktree-specific environment
+to agent and watchdog subprocesses; pinning only `ss()` does not change imports
+in separately launched processes.
+
 ## Agent receipts
 
 Write OpenCode completion receipts to `.agloop/OC-DONE.md` in the active
