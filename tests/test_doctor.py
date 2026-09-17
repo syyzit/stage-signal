@@ -67,7 +67,11 @@ def test_diagnose_running_dead_pid(tmp_path: Path) -> None:
     dead_warnings = [w for w in diag["warnings"] if w["code"] == "DEAD_PID"]
     assert len(dead_warnings) == 1
     assert f"DEAD PID: claiming pid {dead_pid} is not alive (state still running)" in dead_warnings[0]["message"]
-    assert dead_warnings[0]["detail"] == {"pid": dead_pid}
+    assert "fail --reason TEXT --if-dead-pid" in dead_warnings[0]["message"]
+    assert dead_warnings[0]["detail"] == {
+        "pid": dead_pid,
+        "recovery_hint": "fail --reason TEXT --if-dead-pid",
+    }
 
     # SPEC §4: library never auto-mutates state on staleness/dead PID
     status = stage.status()
@@ -147,7 +151,10 @@ def test_cli_doctor_human_and_json_dead_pid(sdir: Path, capsys: pytest.CaptureFi
     # Human mode
     assert main(["doctor"]) == 0
     out = capsys.readouterr().out
-    expected_warning = f"DEAD PID: claiming pid {dead_pid} is not alive (state still running)"
+    expected_warning = (
+        f"DEAD PID: claiming pid {dead_pid} is not alive (state still running); "
+        "reclaim with 'fail --reason TEXT --if-dead-pid'"
+    )
     assert f"WARNING: {expected_warning}" in out
     assert "OK: running" in out
 
@@ -161,7 +168,11 @@ def test_cli_doctor_human_and_json_dead_pid(sdir: Path, capsys: pytest.CaptureFi
     w = data["warnings"][0]
     assert w["code"] == "DEAD_PID"
     assert w["message"] == expected_warning
-    assert w["detail"] == {"pid": dead_pid}
+    assert "fail --reason TEXT --if-dead-pid" in w["message"]
+    assert w["detail"] == {
+        "pid": dead_pid,
+        "recovery_hint": "fail --reason TEXT --if-dead-pid",
+    }
     assert data["status"]["state"] == "running"
     assert data["status"]["pid"] == dead_pid
 
@@ -206,7 +217,10 @@ def test_doctor_default_heartbeat_threshold(
         assert data["warnings"][0]["detail"]["threshold"] == 300.0
         assert data["warnings"][0]["detail"]["heartbeat_at"] == raw["heartbeat_at"]
         assert data["warnings"][0]["detail"]["age"] >= 590
-    assert data["status"] == raw
+    assert data["status"]["heartbeat_age_seconds"] is not None
+    if stale:
+        assert data["status"]["heartbeat_age_seconds"] >= 590
+    assert {k: v for k, v in data["status"].items() if k != "heartbeat_age_seconds"} == raw
     assert main(["doctor", "--stale-after", "3600", "--json"]) == 0
     assert json.loads(capsys.readouterr().out)["warnings"] == []
     assert status_file.read_bytes() == before
@@ -487,7 +501,11 @@ def test_doctor_multiple_warnings_simultaneously(sdir: Path, capsys: pytest.Capt
 
     pid_w = next(w for w in data["warnings"] if w["code"] == "DEAD_PID")
     assert f"claiming pid {dead_pid}" in pid_w["message"]
-    assert pid_w["detail"] == {"pid": dead_pid}
+    assert "fail --reason TEXT --if-dead-pid" in pid_w["message"]
+    assert pid_w["detail"] == {
+        "pid": dead_pid,
+        "recovery_hint": "fail --reason TEXT --if-dead-pid",
+    }
 
 
 def test_doctor_format_flag_support(sdir: Path, capsys: pytest.CaptureFixture[str]) -> None:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+from datetime import datetime, timezone
 import errno
 import os
 import shutil
@@ -227,7 +228,7 @@ class Stage:
                         "stage-signal: warning: status mirror failed",
                         file=sys.stderr,
                     )
-            return copy.deepcopy(new_status)
+            return _attach_heartbeat_age(copy.deepcopy(new_status))
 
     # -- lifecycle ------------------------------------------------------
 
@@ -237,7 +238,7 @@ class Stage:
         with store.locked(exclusive=True):
             if store.is_initialized:
                 # Validate: fail loudly on corruption rather than masking it.
-                return copy.deepcopy(store.read_status())
+                return _attach_heartbeat_age(copy.deepcopy(store.read_status()))
             project_name = (
                 project
                 or os.environ.get(ENV_PROJECT)
@@ -283,7 +284,7 @@ class Stage:
                 }
             )
             store.write_status_md(status)
-            return copy.deepcopy(status)
+            return _attach_heartbeat_age(copy.deepcopy(status))
 
     def start(
         self,
@@ -568,7 +569,7 @@ class Stage:
     def status(self) -> dict[str, Any]:
         """Read current STATUS (shared lock)."""
         with self._store.locked(exclusive=False):
-            return copy.deepcopy(self._store.read_status())
+            return _attach_heartbeat_age(copy.deepcopy(self._store.read_status()))
 
     def events(self) -> list[dict[str, Any]]:
         """Read all events."""
@@ -612,7 +613,7 @@ class Stage:
                 )
             time.sleep(min(poll, remaining))
             with self._store.locked(exclusive=False):
-                last = copy.deepcopy(self._store.read_status())
+                last = _attach_heartbeat_age(copy.deepcopy(self._store.read_status()))
 
     def diagnose(self, *, stale_after: Optional[float] = 300.0) -> dict[str, Any]:
         """Check dir health. Returns {"ok", "state", "problems", "warnings", "status"}."""
@@ -652,9 +653,10 @@ class Stage:
         if stale_after is not None and status is not None:
             if status.get("state") == STATE_RUNNING and status.get("heartbeat_at"):
                 try:
-                    from datetime import datetime as _dt
-                    hb = _dt.fromisoformat(str(status["heartbeat_at"]))
-                    age = (_dt.now().astimezone() - hb).total_seconds()
+                    hb = datetime.fromisoformat(str(status["heartbeat_at"]))
+                    if hb.tzinfo is None:
+                        hb = hb.replace(tzinfo=timezone.utc)
+                    age = max(0.0, (_now_dt() - hb).total_seconds())
                     if age > stale_after:
                         warnings.append({
                             "code": WARNING_CODE_STALE_HEARTBEAT,
@@ -692,13 +694,16 @@ class Stage:
                 try:
                     alive = _is_pid_alive(pid)
                     if alive is False:
+                        recovery_hint = "fail --reason TEXT --if-dead-pid"
                         warnings.append({
                             "code": WARNING_CODE_DEAD_PID,
                             "message": (
-                                f"DEAD PID: claiming pid {pid} is not alive (state still running)"
+                                f"DEAD PID: claiming pid {pid} is not alive (state still running); "
+                                f"reclaim with '{recovery_hint}'"
                             ),
                             "detail": {
                                 "pid": pid,
+                                "recovery_hint": recovery_hint,
                             },
                         })
                 except Exception:
@@ -708,11 +713,45 @@ class Stage:
             "state": status.get("state") if isinstance(status, dict) else None,
             "problems": problems,
             "warnings": warnings,
-            "status": status,
+            "status": _attach_heartbeat_age(copy.deepcopy(status)) if status is not None else None,
         }
 
 
 # -- helpers ------------------------------------------------------------
+
+
+def _now_dt() -> datetime:
+    return datetime.now().astimezone()
+
+
+def _compute_heartbeat_age_seconds(
+    heartbeat_at: Any,
+    *,
+    now: Optional[datetime] = None,
+) -> Optional[float]:
+    if not heartbeat_at:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(heartbeat_at))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        current = now if now is not None else _now_dt()
+        return max(0.0, (current - dt).total_seconds())
+    except Exception:
+        return None
+
+
+def _attach_heartbeat_age(
+    status: Optional[dict[str, Any]],
+    *,
+    now: Optional[datetime] = None,
+) -> Optional[dict[str, Any]]:
+    if status is None:
+        return None
+    status["heartbeat_age_seconds"] = _compute_heartbeat_age_seconds(
+        status.get("heartbeat_at"), now=now
+    )
+    return status
 
 
 def _is_pid_alive_posix(pid: int) -> Optional[bool]:
