@@ -24,6 +24,19 @@ EXIT_QUEUED = 13
 EXIT_WAIT_TIMEOUT = 14
 EXIT_NOT_INITIALIZED = 15
 
+EXIT_CODES = (
+    EXIT_OK,
+    EXIT_ERROR,
+    EXIT_BAD_ARGS,
+    EXIT_ILLEGAL_TRANSITION,
+    EXIT_RUNNING,
+    EXIT_BLOCKED,
+    EXIT_FAILED,
+    EXIT_QUEUED,
+    EXIT_WAIT_TIMEOUT,
+    EXIT_NOT_INITIALIZED,
+)
+
 STATE_EXIT_CODES = {
     STATE_RUNNING: EXIT_RUNNING,
     STATE_BLOCKED: EXIT_BLOCKED,
@@ -70,6 +83,62 @@ WARNING_CODE_DEAD_PID = "DEAD_PID"
 WARNING_CODE_UNPARSEABLE_HEARTBEAT = "UNPARSEABLE_HEARTBEAT"
 
 DOCTOR_SUMMARY_RECLAIM_NEEDED = "ATTENTION: running needs reclaim"
+
+# Frozen schema_version 1 key sets (SPEC §13)
+STATUS_REQUIRED_KEYS = (
+    "schema_version",
+    "project",
+    "stage_id",
+    "stage_name",
+    "state",
+    "attempt",
+    "session_id",
+    "pid",
+    "model",
+    "variant",
+    "repo_path",
+    "git_branch",
+    "git_head",
+    "started_at",
+    "updated_at",
+    "heartbeat_at",
+    "heartbeat_note",
+    "result",
+    "error",
+    "artifacts",
+    "proof",
+    "notes",
+    "meta",
+)
+
+STATUS_JSON_KEYS = STATUS_REQUIRED_KEYS + (
+    "needs_reclaim",
+    "heartbeat_age_seconds",
+)
+
+DOCTOR_JSON_KEYS = (
+    "ok",
+    "needs_reclaim",
+    "state",
+    "problems",
+    "warnings",
+    "status",
+    "summary",
+)
+
+WAIT_JSON_KEYS = (
+    "outcome",
+    "wanted",
+    "observed_state",
+    "state",
+    "exit_code",
+    "timeout",
+    "stage_id",
+    "dir",
+    "reason",
+    "needs_reclaim",
+    "status",
+)
 
 
 def state_exit_code(state: str) -> int:

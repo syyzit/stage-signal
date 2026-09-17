@@ -548,3 +548,114 @@ with Stage.open(".stage-signal") as s:   # scoped use; use Stage(dir) + context 
 - CLI integration: subprocess per command incl. `wait` (background `done`),
   timeout path, proof gate paths (missing/empty/existing file).
 - Chaos note: `kill -9` ⇒ stale `running`; `doctor --stale-after` or dead-PID check must flag it.
+
+## 13. Appendix: schema_version 1 compatibility (normative)
+
+This appendix formally locks the read contract for all tools and orchestrators interacting with `stage-signal` under `schema_version: 1`.
+
+### 13.1 Additive-only policy
+- Under `schema_version: 1`, all schema and API evolution is strictly **additive-only** until `schema_version: 2`.
+- Keys in existing JSON payloads and contract tables MUST NOT be removed, renamed, or change their semantic meaning.
+- Orchestrators and consumers written against `schema_version: 1` can safely branch on these frozen keys and exit codes without risk of silent breaking changes.
+- Readers MUST tolerate unknown additional keys (forward compatibility).
+
+### 13.2 STATUS.json required keys (freeze)
+The following 23 keys are strictly required on disk in `STATUS.json` (`STATUS_REQUIRED_KEYS`). Writers must emit all of them; readers reject payloads missing any of these keys with `CorruptStatusError` / exit 1:
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `schema_version` | int | Must equal `1`. Readers reject any other value. |
+| `project` | str | Project identifier. |
+| `stage_id` | str\|null | Stable identifier for an attempt-series. |
+| `stage_name` | str\|null | Human stage name. |
+| `state` | enum | One of `queued`, `running`, `done`, `blocked`, `failed`. |
+| `attempt` | int ≥ 1 | Attempt counter (1-based). |
+| `session_id` | str\|null | Claiming agent session identifier. |
+| `pid` | int\|null | Claiming process PID. |
+| `model` | str\|null | Informational agent model name. |
+| `variant` | str\|null | Informational model variant or reasoning effort. |
+| `repo_path` | str\|null | Absolute repository path. |
+| `git_branch` | str\|null | Git branch name. |
+| `git_head` | str\|null | Git commit SHA. |
+| `started_at` | ISO8601\|null | Timestamp of current attempt start. |
+| `updated_at` | ISO8601 | Timestamp of latest mutation. |
+| `heartbeat_at` | ISO8601\|null | Timestamp of latest heartbeat. |
+| `heartbeat_note` | str\|null | Note text from latest heartbeat. |
+| `result` | object\|null | Succeeded stage result summary. |
+| `error` | object\|null | Blocked/failed stage error information. |
+| `artifacts` | list | List of artifact entries (`path`, `label`, `added_at`). |
+| `proof` | object\|null | Optional verification proof reference. |
+| `notes` | list | Chronological notes appended to stage (`text`, `added_at`). |
+| `meta` | object | Free-form key-value metadata object. |
+
+*(Note: `pid_token` is an additive optional `str|null` field captured best-effort on process start; legacy 0.1.x files without `pid_token` remain valid on disk).*
+
+### 13.3 JSON contract keys (freeze)
+The machine-readable JSON objects emitted by CLI commands and library queries guarantee the following key sets:
+
+#### 13.3.1 `status --json` / `Stage.status()` (`STATUS_JSON_KEYS`)
+Always includes all 23 required `STATUS.json` keys plus the following dynamic observability fields:
+- `needs_reclaim` (bool): `true` when `state == "running"` and `DEAD_PID` or `STALE_HEARTBEAT` applies; `false` otherwise.
+- `heartbeat_age_seconds` (float | null): elapsed seconds since `heartbeat_at` when `state == "running"` and parseable; `null` otherwise.
+
+Frozen guaranteed key set (`STATUS_JSON_KEYS`):
+`schema_version`, `project`, `stage_id`, `stage_name`, `state`, `attempt`, `session_id`, `pid`, `model`, `variant`, `repo_path`, `git_branch`, `git_head`, `started_at`, `updated_at`, `heartbeat_at`, `heartbeat_note`, `result`, `error`, `artifacts`, `proof`, `notes`, `meta`, `needs_reclaim`, `heartbeat_age_seconds`.
+
+#### 13.3.2 `doctor --json` / `Stage.diagnose()` (`DOCTOR_JSON_KEYS`)
+Guaranteed key set across all conditions (healthy, warnings, problems, uninitialized):
+- `ok` (bool): `true` when no problems exist.
+- `needs_reclaim` (bool): `true` when `state == "running"` and `DEAD_PID` or `STALE_HEARTBEAT` applies; `false` otherwise.
+- `state` (str | null): stage state if readable; `null` otherwise.
+- `problems` (list[str]): list of error strings preventing healthy operation.
+- `warnings` (list[object]): list of warning objects (`code`, `message`, `detail`).
+- `status` (object | null): status snapshot including `heartbeat_age_seconds` if initialized; `null` otherwise.
+- `summary` (str | null): human summary string (`OK: <state>`, `ATTENTION: running needs reclaim`, or `null`).
+
+Frozen guaranteed key set (`DOCTOR_JSON_KEYS`):
+`ok`, `needs_reclaim`, `state`, `problems`, `warnings`, `status`, `summary`.
+
+#### 13.3.3 `wait --json` (`WAIT_JSON_KEYS`)
+Guaranteed key set across all outcomes (`outcome`: `"met"`, `"mismatch"`, `"timeout"`):
+- `outcome` (str): `"met"` | `"mismatch"` | `"timeout"`.
+- `wanted` (str): wanted state target or `"needs_reclaim"`.
+- `observed_state` (str | null): state observed when wait finished.
+- `state` (str | null): alias of `observed_state`.
+- `exit_code` (int): process exit code.
+- `timeout` (bool): `true` if wait timed out; `false` otherwise.
+- `stage_id` (str | null): stage identifier at exit.
+- `dir` (str): path to stage directory.
+- `reason` (str | null): failure reason (`status.error.reason`), timeout message, or `null`.
+- `needs_reclaim` (bool): whether reclaim was required at exit.
+- `status` (object | null): status snapshot at exit.
+
+Frozen guaranteed key set (`WAIT_JSON_KEYS`):
+`outcome`, `wanted`, `observed_state`, `state`, `exit_code`, `timeout`, `stage_id`, `dir`, `reason`, `needs_reclaim`, `status`.
+
+### 13.4 Exit-code table freeze (`EXIT_CODES`)
+The CLI exit codes are locked as part of the observer and runner contract:
+
+| Exit code | Constant | Meaning |
+|-----------|----------|---------|
+| 0 | `EXIT_OK` | Success / wait condition met |
+| 1 | `EXIT_ERROR` | Generic error (corrupt status, IO error, doctor problems; also `wait --needs-reclaim` mismatch on `done`) |
+| 2 | `EXIT_BAD_ARGS` | Bad or conflicting CLI arguments |
+| 3 | `EXIT_ILLEGAL_TRANSITION` | Illegal stage transition / failed `--require-proof` gate |
+| 10 | `EXIT_RUNNING` | Observing state `running` (`status` / `wait` mismatch); or `doctor --exit-reclaim` when `needs_reclaim` is true |
+| 11 | `EXIT_BLOCKED` | Observing state `blocked` |
+| 12 | `EXIT_FAILED` | Observing state `failed` |
+| 13 | `EXIT_QUEUED` | Observing state `queued` |
+| 14 | `EXIT_WAIT_TIMEOUT` | Wait timeout elapsed |
+| 15 | `EXIT_NOT_INITIALIZED` | Stage directory or STATUS.json missing |
+
+### 13.5 Event types freeze (`EVENT_TYPES`)
+The canonical event types recorded in `events.jsonl` are frozen:
+- `init`
+- `start`
+- `heartbeat`
+- `note`
+- `artifact`
+- `done`
+- `blocked`
+- `failed`
+- `clear_terminal`
+

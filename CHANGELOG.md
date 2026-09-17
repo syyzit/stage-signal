@@ -6,6 +6,26 @@ See `docs/RELEASE.md` for the release procedure.
 
 ## [Unreleased]
 
+- Locked `schema_version 1` read contract in SPEC Appendix §13 and added
+  comprehensive regression tests ensuring `status --json`, `doctor --json`, and
+  `wait --json` (including timeout path) preserve frozen key sets, exit codes,
+  and `EVENT_TYPES` (#102).
+- Updated `stage-signal supervise` to adopt the child process PID and capture its
+  `pid_token` in STATUS under exclusive lock after `Popen`, ensuring `doctor`
+  liveness probes and `reclaim --kill` target the active child worker (#98, #100).
+- Pinned `ps` command execution environment to `LC_ALL=C` and `TZ=UTC` on macOS
+  when capturing and verifying `pid_token` to guarantee consistent timestamp
+  parsing across system locales (#97, #99).
+- Added process start identity verification via opaque `pid_token` in STATUS
+  (captured at `start` across Linux, macOS, and Windows), re-verified before
+  `reclaim --kill` signals to protect against PID reuse (#94, #96).
+- Added `stage-signal supervise [--every SEC] -- CMD` and `Stage.supervise()`
+  to run and supervise a child command with automatic periodic heartbeats until exit,
+  mapping exit 0 to done and non-zero to failed, with signal forwarding (#92, #95).
+- Added `--kill` flag to `stage-signal reclaim` and `kill=True` to `Stage.reclaim()`
+  to terminate the recorded alive PID via SIGTERM (with bounded 1s wait) and SIGKILL
+  escalation after the `needs_reclaim` guard passes (#90, #93).
+
 - Aligned watchdog example `examples/orchestrator-watchdog.sh --once --doctor-reclaim`
   (and `--once --needs-reclaim`) with full `needs_reclaim` (DEAD_PID or STALE_HEARTBEAT),
   calling `reclaim --reason ... --keep-failed` instead of DEAD_PID-only fail (#89).
