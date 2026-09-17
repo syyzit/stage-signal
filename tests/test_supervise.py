@@ -60,7 +60,8 @@ def test_supervise_success_exit_zero(stage: Stage) -> None:
     assert st["error"] is None
 
     events = stage.events()
-    assert [e["type"] for e in events] == ["init", "start", "done"]
+    assert [e["type"] for e in events] == ["init", "start", "heartbeat", "done"]
+    assert events[2]["message"].startswith("adopted child pid ")
 
 
 def test_supervise_failure_exit_nonzero(stage: Stage) -> None:
@@ -75,7 +76,8 @@ def test_supervise_failure_exit_nonzero(stage: Stage) -> None:
     assert st["result"] is None
 
     events = stage.events()
-    assert [e["type"] for e in events] == ["init", "start", "failed"]
+    assert [e["type"] for e in events] == ["init", "start", "heartbeat", "failed"]
+    assert events[2]["message"].startswith("adopted child pid ")
 
 
 def test_supervise_custom_summary_and_reason(stage: Stage) -> None:
@@ -118,8 +120,10 @@ def test_supervise_auto_heartbeat_advances(stage: Stage) -> None:
     assert "heartbeat" in event_types
     # Heartbeat timestamp in events should be >= t0
     hb_events = [e for e in events if e["type"] == "heartbeat"]
-    assert len(hb_events) >= 1
+    assert len(hb_events) >= 2
     assert hb_events[0]["ts"] >= t0
+    assert hb_events[1]["detail"] == {}
+    assert hb_events[1]["ts"] > hb_events[0]["ts"]
 
 
 def test_supervise_refuses_when_not_running(stage: Stage) -> None:
@@ -393,24 +397,46 @@ def test_supervise_adopts_child_pid_and_token(stage: Stage, tmp_path: Path) -> N
     t = threading.Thread(
         target=stage.supervise,
         args=([sys.executable, "-c", script],),
-        kwargs={"every": 1.0},
     )
     t.start()
 
-    deadline = time.monotonic() + 10.0
-    while not ready.exists() and time.monotonic() < deadline:
-        time.sleep(0.02)
-    assert ready.exists(), "child did not start in time"
-    child_pid = int(ready.read_text().strip())
+    try:
+        deadline = time.monotonic() + 10.0
+        while not ready.exists() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert ready.exists(), "child did not start in time"
+        child_pid = int(ready.read_text().strip())
 
-    st_running = stage.status()
-    assert st_running["pid"] == child_pid
-    assert st_running["stage_id"] == "test-adopt"
-    assert st_running["session_id"] == "sess-adopt"
-    assert st_running["attempt"] == 1
+        st_running = stage.status()
+        while st_running["pid"] != child_pid and time.monotonic() < deadline:
+            time.sleep(0.02)
+            st_running = stage.status()
+        assert st_running["state"] == STATE_RUNNING
+        assert st_running["pid"] == child_pid
+        assert st_running["stage_id"] == "test-adopt"
+        assert st_running["session_id"] == "sess-adopt"
+        assert st_running["attempt"] == 1
+        assert t.is_alive()
 
-    stop.touch()
-    t.join(timeout=10.0)
+        events = stage.events(type="heartbeat")
+        assert len(events) == 1
+        assert events[0] == {
+            "ts": st_running["heartbeat_at"],
+            "type": "heartbeat",
+            "stage_id": st_running["stage_id"],
+            "stage_name": st_running["stage_name"],
+            "state": STATE_RUNNING,
+            "attempt": st_running["attempt"],
+            "message": f"adopted child pid {child_pid}",
+            "detail": {
+                "previous_pid": st0["pid"],
+                "pid": child_pid,
+                "pid_token": st_running["pid_token"],
+            },
+        }
+    finally:
+        stop.touch()
+        t.join(timeout=10.0)
     assert not t.is_alive()
 
     st_done = stage.status()
@@ -480,6 +506,13 @@ def test_supervise_token_capture_failure_fallback(
     assert st["pid"] is not None
     assert st["pid"] != 999999
     assert st["pid_token"] is None
+    events = stage.events(type="heartbeat")
+    assert len(events) == 1
+    assert events[0]["detail"] == {
+        "previous_pid": 999999,
+        "pid": st["pid"],
+        "pid_token": None,
+    }
 
 
 def test_cli_supervise_adopts_child_pid(stage: Stage, tmp_path: Path) -> None:
