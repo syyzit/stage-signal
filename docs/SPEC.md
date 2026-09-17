@@ -47,6 +47,7 @@ Default root: `.stage-signal/` in the repo (override: `--dir PATH` or
   "attempt": 1,
   "session_id": "ses_abc123",
   "pid": 35736,
+  "pid_token": null,
   "model": "provider/model-id",
   "variant": "high",
   "repo_path": "/Users/you/projects/foo",
@@ -77,6 +78,7 @@ Field rules:
 | `attempt` | int ≥1 | yes | Incremented on each `start` for the **same** `stage_id`; reset to 1 on new `stage_id`. Starts at 1. |
 | `session_id` | str\|null | yes | Agent session claim. |
 | `pid` | int\|null | yes | Claiming process pid. |
+| `pid_token` | str\|null | no (optional) | Opaque process-start identity captured best effort by `Stage.start`; missing/null means unavailable (including legacy statuses). Replaced on every start, cleared with `pid` on idle reset, preserved with `clear-terminal --keep-stage` or `reclaim --keep-failed`. |
 | `model`, `variant` | str\|null | yes | Informational (e.g. model id). |
 | `repo_path` | str\|null | yes | Absolute path of repo at `start`/`init` time. |
 | `git_branch`, `git_head` | str\|null | yes | Best-effort VCS info; refreshed from current repo on `start`; `--git-head`/`--git-branch` override. |
@@ -131,6 +133,12 @@ Rules:
    `notes`, clears stale `meta` (replacing entirely with new `--meta` if
    supplied), refreshes `git_head` and `git_branch` from current repo (unless
    overridden), and bumps `heartbeat_at` and `updated_at`.
+   `Stage.start` captures an opaque process-start identity in `pid_token` for
+   the claiming PID: Linux `/proc/<pid>/stat` field 22 (start time), macOS
+   `ps` `lstart` with stable locale and timezone, or Windows `GetProcessTimes`
+   (best effort). Unavailable capture never prevents start. Every start
+   replaces the previous token with the newly captured value or `null`,
+   including retries of the same stage.
    Emits `start` event. This is how a previous terminal (`blocked`/`failed`/
    `done`) is cleared for a new attempt — no separate unlock needed.
 3. `heartbeat [--note]` — allowed only from `running`. Bumps `heartbeat_at`,
@@ -183,24 +191,36 @@ Rules:
    1 second polling liveness every 50ms, then send `SIGKILL` only if still alive.
    Dead, null, invalid, or unknown-liveness PIDs receive no termination signal;
    reclaim still proceeds if the guard passed (for example, on a stale heartbeat).
+   When a non-null `pid_token` is recorded, re-read the process-start identity
+   and compare it with that token before **each** termination signal: both
+   the initial `SIGTERM` and any escalation. A mismatch or unreadable current
+   identity warns on stderr and skips the signal; fail+clear (or `failed`
+   without clearing with `--keep-failed`) still proceeds. Missing or null
+   tokens, including legacy statuses, preserve existing best-effort kill
+   behavior without identity verification.
    Permission/OS errors warn on stderr and do not prevent fail+clear. On Windows,
    `SIGTERM` terminates the process; when `SIGKILL` is unavailable, escalation
-   falls back to `SIGTERM`. Guard, liveness checks, signals, wait, and fail+clear
-   all remain under the same exclusive lock. A rejected guard exits 3 without
+   falls back to `SIGTERM` with the same identity check. Guard, liveness and
+   identity checks, signals, wait, and fail+clear all remain under the same
+   exclusive lock. A rejected guard exits 3 without
    signals or mutation, even with `--kill`. `--kill --keep-failed` performs the
    same termination attempt but stops after `failed`.
    Without `--kill`, no termination signals are sent and existing event shapes
    remain unchanged (no added kill-related fields). Liveness probes may still run.
    This targets only the recorded PID, not a process group or descendants.
-   PID reuse cannot be excluded; successful reclaim does not guarantee the worker
-   has stopped, particularly after permission errors. Orchestrators needing that
-   guarantee must verify termination before relaunching.
+   Identity verification reduces PID reuse risk but cannot eliminate the race
+   between checking identity and sending a signal, or low-resolution identity
+   collisions. Successful reclaim does not guarantee the worker has stopped,
+   particularly after skipped signals or permission errors. Orchestrators needing
+   that guarantee must verify termination before relaunching.
 8. `clear-terminal [--keep-stage]` — allowed from `done`/`blocked`/`failed`
    **and** from `queued` (abandon a parked or idle queued stage). Resets to
    `queued`. By default, clears stage identity (`stage_id` and
-   `stage_name` set to `null`, clearing claim/heartbeat/session/pid/proof/
+   `stage_name` set to `null`, clearing claim/heartbeat/session/pid/pid_token/proof/
    artifacts/meta and resetting to true idle queued). If `--keep-stage` is given,
-   preserves previous `stage_id` and `stage_name` to re-queue the same stage.
+   preserves previous `stage_id` and `stage_name` to re-queue the same stage,
+   retaining `pid` and `pid_token`. `reclaim --keep-failed` also preserves both;
+   an idle reset clears them together.
    From `running` it is exit 3 (reclaim a stuck running stage with
    `reclaim`, `fail --if-needs-reclaim`, or `fail --if-dead-pid` first). Each call
    appends a `clear_terminal` event (audit).
