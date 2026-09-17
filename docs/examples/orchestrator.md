@@ -237,7 +237,13 @@ doc_json=$(stage-signal --dir "$WORKTREE/.stage-signal" doctor --json)
 # Check for dead runner process
 if echo "$doc_json" | jq -e '.warnings[] | select(.code == "DEAD_PID")' >/dev/null; then
   echo "Process died without completing stage! Handling crash..."
-  stage-signal --dir "$WORKTREE/.stage-signal" fail --reason "Agent process died unexpectedly (DEAD_PID)"
+  if stage-signal --dir "$WORKTREE/.stage-signal" fail \
+    --reason "Agent process died unexpectedly (DEAD_PID)" --if-dead-pid; then
+    echo "Stage reclaimed as failed."
+  else
+    reclaim_code=$?
+    echo "Reclaim refused or failed (exit $reclaim_code); inspect the current state." >&2
+  fi
 fi
 
 # Check for hung / stale heartbeat
