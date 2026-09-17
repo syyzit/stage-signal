@@ -26,6 +26,7 @@ from .constants import (
     STATE_QUEUED,
     STATE_RUNNING,
     TERMINAL_STATES,
+    DOCTOR_SUMMARY_RECLAIM_NEEDED,
     WARNING_CODE_DEAD_PID,
     WARNING_CODE_STALE_HEARTBEAT,
     WARNING_CODE_UNPARSEABLE_HEARTBEAT,
@@ -616,7 +617,7 @@ class Stage:
                 last = _attach_heartbeat_age(copy.deepcopy(self._store.read_status()))
 
     def diagnose(self, *, stale_after: Optional[float] = 300.0) -> dict[str, Any]:
-        """Check dir health. Returns {"ok", "state", "problems", "warnings", "status"}."""
+        """Check dir health. Returns {"ok", "state", "problems", "warnings", "status", "summary"}."""
         problems: list[str] = []
         warnings: list[dict[str, Any]] = []
         status: Optional[dict[str, Any]] = None
@@ -629,6 +630,7 @@ class Stage:
                 "problems": problems,
                 "warnings": warnings,
                 "status": None,
+                "summary": None,
             }
         if not store.is_initialized:
             problems.append(f"missing STATUS: {store.status_path}")
@@ -708,12 +710,29 @@ class Stage:
                         })
                 except Exception:
                     pass
+        summary: Optional[str] = None
+        if not problems:
+            reclaim_needed = (
+                status is not None
+                and status.get("state") == STATE_RUNNING
+                and any(
+                    isinstance(w, dict) and w.get("code") in {WARNING_CODE_STALE_HEARTBEAT, WARNING_CODE_DEAD_PID}
+                    for w in warnings
+                )
+            )
+            if reclaim_needed:
+                summary = DOCTOR_SUMMARY_RECLAIM_NEEDED
+            else:
+                state_str = status.get("state") if isinstance(status, dict) else "uninitialized dir exists"
+                summary = f"OK: {state_str}"
+
         return {
             "ok": not problems,
             "state": status.get("state") if isinstance(status, dict) else None,
             "problems": problems,
             "warnings": warnings,
             "status": _attach_heartbeat_age(copy.deepcopy(status)) if status is not None else None,
+            "summary": summary,
         }
 
 

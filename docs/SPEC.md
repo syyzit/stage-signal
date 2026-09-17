@@ -251,20 +251,25 @@ stage-signal doctor [--stale-after SEC] [--json] [--format human|json]
 - `doctor` checks: dir exists, STATUS parses + schema ok, events.jsonl
   readable, lock writable. When `state == running` and `pid` is an int,
   best-effort checks whether the claiming process is alive (POSIX
-  `os.kill(pid, 0)`, Windows API; warning on dead PID). Prints `OK`
-  lines / problems; exit 0 when healthy (problems list empty, even with
-  warnings), 1 otherwise (problems present). `doctor` and `Stage.diagnose()` default to a
-  300-second (5-minute) heartbeat threshold, overridable with `--stale-after SEC`.
+  `os.kill(pid, 0)`, Windows API; warning on dead PID). Prints summary
+  line (`OK: <state>` or `ATTENTION: running needs reclaim`) / problems;
+  exit 0 when healthy or warnings present (advisory check), 1 otherwise (problems
+  present). When `state == running` and either `STALE_HEARTBEAT` or `DEAD_PID`
+  warning applies, the summary line does not report `OK: running`, but instead
+  outputs `ATTENTION: running needs reclaim` (both in human text and the JSON
+  `summary` field), alerting operators and orchestrators that reclaim is required.
+  `doctor` and `Stage.diagnose()` default to a 300-second (5-minute) heartbeat threshold,
+  overridable with `--stale-after SEC`.
   When `running` and `now - heartbeat_at > SEC`, human output prints
-  `WARNING: STALE: ...`; default human text is otherwise unchanged.
+  `WARNING: STALE: ...`.
   `--json` (or `--format json`) prints a structured JSON object:
-  `{"ok": bool, "state": str|null, "problems": list[str], "warnings": [{"code": str, "message": str, "detail": object}], "status": object|null}`.
+  `{"ok": bool, "state": str|null, "problems": list[str], "warnings": [{"code": str, "message": str, "detail": object}], "status": object|null, "summary": str|null}`.
   Structured warning codes include:
   - `STALE_HEARTBEAT`: heartbeat older than threshold (detail: `{"age": float|null, "threshold": float, "heartbeat_at": str|null}`) or missing entirely.
   - `DEAD_PID`: claiming process is not alive (detail: `{"pid": int, "recovery_hint": str}`).
     The warning message includes an explicit recovery hint naming `fail --reason TEXT --if-dead-pid`.
   - `UNPARSEABLE_HEARTBEAT`: invalid heartbeat timestamp format (detail: `{"heartbeat_at": str}`).
-  Warnings never change stage state and do not trigger a non-zero exit code (exit 0 on healthy/warnings, 1 on problems, 2 on bad args).
+  Warnings never change stage state and do not trigger a non-zero exit code (exit 0 on healthy/warnings, 1 on problems, 2 on bad args); orchestrators can branch directly on the `.summary` JSON field (`"ATTENTION: running needs reclaim"` vs `"OK: running"`) without scraping human warning text.
   Passing `stale_after=None` to `Stage.diagnose()` disables heartbeat checks.
 
 ## 7. Exit codes (part of the contract)

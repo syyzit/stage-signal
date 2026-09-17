@@ -66,6 +66,8 @@ WARNING_CODE_STALE_HEARTBEAT = "STALE_HEARTBEAT"
 WARNING_CODE_DEAD_PID = "DEAD_PID"
 WARNING_CODE_UNPARSEABLE_HEARTBEAT = "UNPARSEABLE_HEARTBEAT"
 
+DOCTOR_SUMMARY_RECLAIM_NEEDED = "ATTENTION: running needs reclaim"
+
 
 def state_exit_code(state: str) -> int:
     """Map a stage state to its observer exit code (SPEC §7)."""
