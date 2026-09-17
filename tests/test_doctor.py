@@ -690,6 +690,11 @@ def test_needs_reclaim_state_matrix(
         assert result["ok"] is True
         assert result["state"] == state
         assert {w["code"] for w in result["warnings"]} == expected_codes
+    assert main(["status", "--json"]) == {
+        "running": 10, "done": 0, "failed": 12, "queued": 13, "blocked": 11,
+    }[state]
+    status = json.loads(capsys.readouterr().out)
+    assert status["needs_reclaim"] is expected_reclaim
     assert status_file.read_bytes() == before
     assert stage.diagnose(stale_after=None)["needs_reclaim"] is (
         state == "running" and pid_alive is False

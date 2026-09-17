@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 import os
 import subprocess
@@ -630,6 +630,65 @@ def test_status_heartbeat_age_seconds_frozen_time_progression(
     assert main(["doctor", "--json"]) == 0
     doc_data = json.loads(capsys.readouterr().out)
     assert doc_data["status"]["heartbeat_age_seconds"] == pytest.approx(10.0)
+
+
+@pytest.mark.parametrize(
+    "heartbeat,pid_alive,expected",
+    [
+        ("fresh", True, False),
+        ("stale", True, True),
+        ("fresh", False, True),
+        ("invalid", True, False),
+    ],
+)
+def test_cli_status_json_needs_reclaim(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+    heartbeat: str, pid_alive: bool, expected: bool,
+) -> None:
+    d = tmp_path / ".stage-signal"
+    monkeypatch.setenv("STAGE_SIGNAL_DIR", str(d))
+    stage = Stage(d)
+    stage.init(project="testproj")
+    stage.start(stage="reclaim", pid=os.getpid())
+    monkeypatch.setattr("stage_signal.stage._is_pid_alive", lambda pid: pid_alive)
+    status_file = d / "STATUS.json"
+    raw = json.loads(status_file.read_text(encoding="utf-8"))
+    if heartbeat == "stale":
+        raw["heartbeat_at"] = (datetime.now(timezone.utc) - timedelta(seconds=600)).isoformat()
+    elif heartbeat != "fresh":
+        raw["heartbeat_at"] = heartbeat
+    status_file.write_text(json.dumps(raw), encoding="utf-8")
+    capsys.readouterr()
+
+    assert main(["status", "--json"]) == 10
+    data = json.loads(capsys.readouterr().out)
+    assert data["state"] == "running"
+    assert data["needs_reclaim"] is expected
+
+
+@pytest.mark.parametrize("state,expected_code", [
+    ("done", 0), ("failed", 12), ("blocked", 11), ("queued", 13),
+])
+def test_cli_status_json_needs_reclaim_non_running(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+    state: str, expected_code: int,
+) -> None:
+    d = tmp_path / ".stage-signal"
+    monkeypatch.setenv("STAGE_SIGNAL_DIR", str(d))
+    stage = Stage(d)
+    stage.init(project="testproj")
+    stage.start(stage="reclaim", pid=os.getpid())
+    monkeypatch.setattr("stage_signal.stage._is_pid_alive", lambda pid: False)
+    status_file = d / "STATUS.json"
+    raw = json.loads(status_file.read_text(encoding="utf-8"))
+    raw["state"] = state
+    status_file.write_text(json.dumps(raw), encoding="utf-8")
+    capsys.readouterr()
+
+    assert main(["status", "--json"]) == expected_code
+    data = json.loads(capsys.readouterr().out)
+    assert data["state"] == state
+    assert data["needs_reclaim"] is False
 
 
 def test_status_heartbeat_age_seconds_unparseable_heartbeat(tmp_path: Path) -> None:

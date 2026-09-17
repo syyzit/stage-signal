@@ -570,7 +570,9 @@ class Stage:
     def status(self) -> dict[str, Any]:
         """Read current STATUS (shared lock)."""
         with self._store.locked(exclusive=False):
-            return _attach_heartbeat_age(copy.deepcopy(self._store.read_status()))
+            status = copy.deepcopy(self._store.read_status())
+            _, status["needs_reclaim"] = _reclaim_diagnostics(status)
+            return _attach_heartbeat_age(status)
 
     def events(self) -> list[dict[str, Any]]:
         """Read all events."""
@@ -653,72 +655,7 @@ class Stage:
                 pass
         except OSError as exc:
             problems.append(f"lock file not writable: {exc}")
-        if stale_after is not None and status is not None:
-            if status.get("state") == STATE_RUNNING and status.get("heartbeat_at"):
-                try:
-                    hb = datetime.fromisoformat(str(status["heartbeat_at"]))
-                    if hb.tzinfo is None:
-                        hb = hb.replace(tzinfo=timezone.utc)
-                    age = max(0.0, (_now_dt() - hb).total_seconds())
-                    if age > stale_after:
-                        warnings.append({
-                            "code": WARNING_CODE_STALE_HEARTBEAT,
-                            "message": (
-                                f"STALE: running with heartbeat {age:.0f}s ago "
-                                f"(threshold {stale_after:g}s)"
-                            ),
-                            "detail": {
-                                "age": age,
-                                "threshold": stale_after,
-                                "heartbeat_at": status.get("heartbeat_at"),
-                            },
-                        })
-                except ValueError:
-                    warnings.append({
-                        "code": WARNING_CODE_UNPARSEABLE_HEARTBEAT,
-                        "message": "unparseable heartbeat_at",
-                        "detail": {
-                            "heartbeat_at": status.get("heartbeat_at"),
-                        },
-                    })
-            elif status.get("state") == STATE_RUNNING:
-                warnings.append({
-                    "code": WARNING_CODE_STALE_HEARTBEAT,
-                    "message": "STALE: running with no heartbeat recorded",
-                    "detail": {
-                        "age": None,
-                        "threshold": stale_after,
-                        "heartbeat_at": None,
-                    },
-                })
-        if status is not None and status.get("state") == STATE_RUNNING:
-            pid = status.get("pid")
-            if isinstance(pid, int) and not isinstance(pid, bool):
-                try:
-                    alive = _is_pid_alive(pid)
-                    if alive is False:
-                        recovery_hint = "fail --reason TEXT --if-dead-pid"
-                        warnings.append({
-                            "code": WARNING_CODE_DEAD_PID,
-                            "message": (
-                                f"DEAD PID: claiming pid {pid} is not alive (state still running); "
-                                f"reclaim with '{recovery_hint}'"
-                            ),
-                            "detail": {
-                                "pid": pid,
-                                "recovery_hint": recovery_hint,
-                            },
-                        })
-                except Exception:
-                    pass
-        needs_reclaim = (
-            status is not None
-            and status.get("state") == STATE_RUNNING
-            and any(
-                w.get("code") in {WARNING_CODE_STALE_HEARTBEAT, WARNING_CODE_DEAD_PID}
-                for w in warnings
-            )
-        )
+        warnings, needs_reclaim = _reclaim_diagnostics(status, stale_after=stale_after)
         summary: Optional[str] = None
         if not problems:
             if needs_reclaim:
@@ -739,6 +676,78 @@ class Stage:
 
 
 # -- helpers ------------------------------------------------------------
+
+
+def _reclaim_diagnostics(
+    status: Optional[dict[str, Any]],
+    *,
+    stale_after: Optional[float] = 300.0,
+) -> tuple[list[dict[str, Any]], bool]:
+    warnings: list[dict[str, Any]] = []
+    if status is None or status.get("state") != STATE_RUNNING:
+        return warnings, False
+    if stale_after is not None:
+        if status.get("heartbeat_at"):
+            try:
+                hb = datetime.fromisoformat(str(status["heartbeat_at"]))
+                if hb.tzinfo is None:
+                    hb = hb.replace(tzinfo=timezone.utc)
+                age = max(0.0, (_now_dt() - hb).total_seconds())
+                if age > stale_after:
+                    warnings.append({
+                        "code": WARNING_CODE_STALE_HEARTBEAT,
+                        "message": (
+                            f"STALE: running with heartbeat {age:.0f}s ago "
+                            f"(threshold {stale_after:g}s)"
+                        ),
+                        "detail": {
+                            "age": age,
+                            "threshold": stale_after,
+                            "heartbeat_at": status.get("heartbeat_at"),
+                        },
+                    })
+            except ValueError:
+                warnings.append({
+                    "code": WARNING_CODE_UNPARSEABLE_HEARTBEAT,
+                    "message": "unparseable heartbeat_at",
+                    "detail": {
+                        "heartbeat_at": status.get("heartbeat_at"),
+                    },
+                })
+        else:
+            warnings.append({
+                "code": WARNING_CODE_STALE_HEARTBEAT,
+                "message": "STALE: running with no heartbeat recorded",
+                "detail": {
+                    "age": None,
+                    "threshold": stale_after,
+                    "heartbeat_at": None,
+                },
+            })
+    pid = status.get("pid")
+    if isinstance(pid, int) and not isinstance(pid, bool):
+        try:
+            alive = _is_pid_alive(pid)
+            if alive is False:
+                recovery_hint = "fail --reason TEXT --if-dead-pid"
+                warnings.append({
+                    "code": WARNING_CODE_DEAD_PID,
+                    "message": (
+                        f"DEAD PID: claiming pid {pid} is not alive (state still running); "
+                        f"reclaim with '{recovery_hint}'"
+                    ),
+                    "detail": {
+                        "pid": pid,
+                        "recovery_hint": recovery_hint,
+                    },
+                })
+        except Exception:
+            pass
+    needs_reclaim = any(
+        w.get("code") in {WARNING_CODE_STALE_HEARTBEAT, WARNING_CODE_DEAD_PID}
+        for w in warnings
+    )
+    return warnings, needs_reclaim
 
 
 def _now_dt() -> datetime:

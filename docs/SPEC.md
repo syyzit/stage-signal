@@ -247,6 +247,13 @@ stage-signal doctor [--stale-after SEC] [--json] [--format human|json]
   prints the status payload as a JSON object, including dynamic
   `heartbeat_age_seconds` (number of elapsed seconds since `heartbeat_at`, or
   `null` when no heartbeat is recorded).
+  The JSON payload also always includes `needs_reclaim: bool` with the same
+  semantics as the `doctor` field of the same name: `true` exactly when the
+  state is `running` and a `DEAD_PID` or `STALE_HEARTBEAT` warning applies
+  (computed by the same detection logic as `doctor` / `Stage.diagnose()` with
+  the default 300-second threshold); `false` otherwise, including healthy
+  running and non-running states. `status` warnings remain advisory only and
+  the exit code always reflects state (§7).
   Its exit code always reflects state (§7), so orchestrators can
   `stage-signal status` / `wait` in shell `if` directly.
 - `doctor` checks: dir exists, STATUS parses + schema ok, events.jsonl
