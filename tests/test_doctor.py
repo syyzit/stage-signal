@@ -236,7 +236,10 @@ def test_doctor_default_heartbeat_threshold(
         assert data["warnings"][0]["detail"]["threshold"] == 300.0
         assert data["warnings"][0]["detail"]["heartbeat_at"] == raw["heartbeat_at"]
         assert data["warnings"][0]["detail"]["age"] >= 590
-    assert data["status"]["heartbeat_age_seconds"] is not None
+    if state == "running":
+        assert data["status"]["heartbeat_age_seconds"] is not None
+    else:
+        assert data["status"]["heartbeat_age_seconds"] is None
     if stale:
         assert data["status"]["heartbeat_age_seconds"] >= 590
     assert {k: v for k, v in data["status"].items() if k != "heartbeat_age_seconds"} == raw

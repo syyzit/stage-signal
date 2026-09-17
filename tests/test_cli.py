@@ -725,3 +725,41 @@ def test_cli_status_human_unparseable_heartbeat_absent_age(
     out = capsys.readouterr().out
     assert "heartbeat: not-a-valid-timestamp" in out
     assert "(age " not in out
+
+
+@pytest.mark.parametrize(
+    ("state", "exit_code"),
+    [("running", 10), ("done", 0), ("failed", 12), ("blocked", 11), ("queued", 13)],
+)
+def test_cli_status_heartbeat_age_only_while_running(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    state: str,
+    exit_code: int,
+) -> None:
+    d = tmp_path / ".stage-signal"
+    monkeypatch.setenv("STAGE_SIGNAL_DIR", str(d))
+    stage = Stage(d)
+    stage.init(project="testproj")
+    stage.start(stage="age-state")
+    status_file = d / "STATUS.json"
+    raw = json.loads(status_file.read_text(encoding="utf-8"))
+    raw["state"] = state
+    status_file.write_text(json.dumps(raw), encoding="utf-8")
+
+    assert main(["status"]) == exit_code
+    human = capsys.readouterr().out
+    assert f"heartbeat: {raw['heartbeat_at']}" in human
+    assert ("(age " in human) == (state == "running")
+
+    assert main(["status", "--json"]) == exit_code
+    data = json.loads(capsys.readouterr().out)
+    assert data["state"] == state
+    assert data["heartbeat_at"] == raw["heartbeat_at"]
+    if state == "running":
+        assert isinstance(data["heartbeat_age_seconds"], (int, float))
+        assert data["heartbeat_age_seconds"] >= 0
+    else:
+        assert data["heartbeat_age_seconds"] is None
+        assert stage.status()["heartbeat_age_seconds"] is None

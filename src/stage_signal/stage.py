@@ -772,6 +772,9 @@ def _attach_heartbeat_age(
 ) -> Optional[dict[str, Any]]:
     if status is None:
         return None
+    if status.get("state") != "running":
+        status["heartbeat_age_seconds"] = None
+        return status
     status["heartbeat_age_seconds"] = _compute_heartbeat_age_seconds(
         status.get("heartbeat_at"), now=now
     )

@@ -116,7 +116,7 @@ Exact schema and exit codes: see `docs/SPEC.md` (normative) and
 `1` generic/corrupt, `10` running, `11` blocked, `12` failed, `13` queued,
 `14` wait timeout, `15` not initialized, `2` bad args, `3` illegal transition.
 `wait --json` prints a structured JSON object (`outcome`, `wanted`, `observed_state`, `exit_code`, `timeout`, `stage_id`, `dir`, `status`) to stdout while preserving these exit codes.
-`status` prints human text by default (including heartbeat age, e.g. `heartbeat: <ISO> (age 42s)`, when recorded). `status --json` prints the status payload as JSON, including dynamic `heartbeat_age_seconds` (number or null) for direct staleness evaluations without timezone parsing.
+`status` prints human text by default (including heartbeat age, e.g. `heartbeat: <ISO> (age 42s)`, only while `running` with a valid heartbeat). `status --json` includes dynamic `heartbeat_age_seconds` (number while running with a valid heartbeat; otherwise `null`).
 `doctor --json` prints machine-readable health diagnostics with structured warnings (`ok`, `state`, `warnings`: `[{code, message, detail}]`, `status`, `summary`). When `running` has a dead PID or stale heartbeat, the summary reports `ATTENTION: running needs reclaim` (rather than `OK: running`), and `--json` exposes `summary` (`"ATTENTION: running needs reclaim"` vs `"OK: running"`) so orchestrators can branch without scraping WARNING text; exit 0 is preserved for advisory diagnostics (exit 1 on problems).
 
 To act on a `DEAD_PID` warning (which includes an explicit recovery hint naming `fail --reason TEXT --if-dead-pid`), `fail --reason TEXT --if-dead-pid` hard-fails a
