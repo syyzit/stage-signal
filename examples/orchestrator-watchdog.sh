@@ -28,6 +28,7 @@ WANT="terminal"
 TIMEOUT="3600"
 POLL="5"
 ONCE=0
+DOCTOR_RECLAIM=0
 
 usage() {
   sed -n '2,/^set -u/p' "$0" | sed 's/^# \{0,1\}//'
@@ -40,6 +41,7 @@ while [ $# -gt 0 ]; do
     --timeout) TIMEOUT="${2:?--timeout needs SEC}"; shift 2 ;;
     --poll) POLL="${2:?--poll needs SEC}"; shift 2 ;;
     --once) ONCE=1; shift ;;
+    --doctor-reclaim) DOCTOR_RECLAIM=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "orchestrator-watchdog: unknown arg: $1" >&2; usage >&2; exit 2 ;;
   esac
@@ -90,10 +92,71 @@ print('%s %s (attempt %s)' % (st.get('state'), st.get('stage_name') or '-', st.g
   return "$st_code"
 }
 
+# Opt-in reclaim of a crashed runner (default off): run `doctor --json` and,
+# only on a DEAD_PID warning while the stage is still `running`, call
+# `fail --reason TEXT --if-dead-pid` (guarded reclaim, SPEC §Terminal). The
+# guard refuses (exit 3, no mutation) if the pid is live or liveness unknown,
+# and never mutates outside `running`; `doctor` itself stays advisory-only.
+# The snapshot shown after reclaim may lag by one poll cycle. Exit codes:
+#   0 no DEAD_PID warning (or reclaim succeeded)
+#   1 doctor failed to produce JSON (no reclaim attempted)
+#   12 reclaim performed; stage is now `failed`
+#   3 guard refused (live/unknown pid) — no mutation, rerun after crash
+#     confirmation
+#
+# Manual check (reclaim path):
+#   stage-signal --dir .stage-signal init
+#   stage-signal --dir .stage-signal start --stage t1 --pid 999999999
+#   ./examples/orchestrator-watchdog.sh --dir .stage-signal --once --doctor-reclaim
+#   # -> exit 12, STATUS.json state=failed, one `failed` event appended
+#   # Repeat: exit 12 (no DEAD_PID left; --once observes failed), no new event
+doctor_reclaim() {
+  local tmp rc pid
+  tmp="$(mktemp "${TMPDIR:-/tmp}/stage-signal-watchdog.XXXXXX")" || return 1
+  if ! ST doctor --json >"$tmp" || [ ! -s "$tmp" ]; then
+    rm -f "$tmp"
+    echo "orchestrator-watchdog: doctor --json failed; refusing to reclaim" >&2
+    return 1
+  fi
+  pid="$(python3 -c "
+import json, sys
+try:
+    with open(sys.argv[1], encoding='utf-8') as fh:
+        diag = json.load(fh)
+except Exception as exc:
+    print(f'unparseable doctor output: {exc}', file=sys.stderr)
+    sys.exit(1)
+for w in diag.get('warnings', []):
+    if w.get('code') == 'DEAD_PID':
+        print(w.get('detail', {}).get('pid', ''))
+        break
+" "$tmp")"
+  rc=$?
+  rm -f "$tmp"
+  [ "$rc" -eq 0 ] || return 1
+  if [ -z "$pid" ]; then
+    return 0
+  fi
+  echo "orchestrator-watchdog: DEAD_PID warning for pid $pid; reclaiming via guarded fail" >&2
+  if ST fail --reason "reclaimed by orchestrator-watchdog: claiming pid $pid is dead (DEAD_PID)" --if-dead-pid; then
+    echo "orchestrator-watchdog: stage reclaimed as failed" >&2
+    return 12
+  fi
+  rc=$?
+  echo "orchestrator-watchdog: fail --if-dead-pid refused or failed (exit $rc); no mutation" >&2
+  return "$rc"
+}
+
 if [ "$ONCE" = "1" ]; then
   # Single poll for cron/timer use: never blocks.
   describe
-  exit $?
+  once_code=$?
+  if [ "$DOCTOR_RECLAIM" = "1" ]; then
+    doctor_reclaim
+    reclaim_code=$?
+    [ "$reclaim_code" -eq 0 ] || exit "$reclaim_code"
+  fi
+  exit "$once_code"
 fi
 
 echo "orchestrator-watchdog: waiting for state=$WANT timeout=${TIMEOUT}s poll=${POLL}s" >&2
