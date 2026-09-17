@@ -126,6 +126,17 @@ DOCTOR_JSON_KEYS = (
     "summary",
 )
 
+EVENT_RECORD_KEYS = (
+    "ts",
+    "type",
+    "stage_id",
+    "stage_name",
+    "state",
+    "attempt",
+    "message",
+    "detail",
+)
+
 WAIT_JSON_KEYS = (
     "outcome",
     "wanted",

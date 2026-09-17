@@ -6,6 +6,9 @@ See `docs/RELEASE.md` for the release procedure.
 
 ## [Unreleased]
 
+- Froze required event record keys via exported `EVENT_RECORD_KEYS` and the
+  `events --json` / `Stage.events()` array contract in SPEC §13.6, with
+  lifecycle, reclaim-trail, and filtering regression coverage (#105).
 - Locked `schema_version 1` read contract in SPEC Appendix §13 and added
   comprehensive regression tests ensuring `status --json`, `doctor --json`, and
   `wait --json` (including timeout path) preserve frozen key sets, exit codes,

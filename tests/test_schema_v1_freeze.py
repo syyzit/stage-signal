@@ -17,6 +17,7 @@ import pytest
 
 from stage_signal import (
     DOCTOR_JSON_KEYS,
+    EVENT_RECORD_KEYS,
     EVENT_TYPES,
     EXIT_BAD_ARGS,
     EXIT_BLOCKED,
@@ -52,6 +53,19 @@ from stage_signal.store import validate_status
 def test_schema_version_is_one() -> None:
     """schema_version must be exactly 1 under the v1 contract."""
     assert SCHEMA_VERSION == 1
+
+
+def test_event_record_keys_freeze() -> None:
+    assert EVENT_RECORD_KEYS == (
+        "ts",
+        "type",
+        "stage_id",
+        "stage_name",
+        "state",
+        "attempt",
+        "message",
+        "detail",
+    )
 
 
 def test_event_types_freeze() -> None:
