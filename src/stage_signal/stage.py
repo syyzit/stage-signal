@@ -741,6 +741,9 @@ class Stage:
         After successful ``Popen``, adopts the child process PID and
         identity token in STATUS under exclusive lock (preserving
         stage_id/attempt/session_id) so doctor and reclaim track the child.
+        The adoption is also recorded in that same locked section as a
+        SPEC ``heartbeat`` event with message ``adopted child pid <N>``
+        and detail ``{previous_pid, pid, pid_token}``.
 
         While child process is alive, bumps ``heartbeat`` every *every*
         seconds (default 60; validated 1 <= every <= stale_threshold - 1).
@@ -811,6 +814,7 @@ class Stage:
         try:
             with self._store.locked(exclusive=True):
                 current = self._store.read_status()
+                previous_pid = current.get("pid")
                 if current.get("state") == STATE_RUNNING:
                     try:
                         child_token = _pid_token(child_pid)
@@ -822,6 +826,22 @@ class Stage:
                     current["updated_at"] = ts
                     current["heartbeat_at"] = ts
                     self._store.write_status(current)
+                    self._store.append_event(
+                        {
+                            "ts": ts,
+                            "type": "heartbeat",
+                            "stage_id": current.get("stage_id"),
+                            "stage_name": current.get("stage_name"),
+                            "state": current.get("state"),
+                            "attempt": current.get("attempt"),
+                            "message": f"adopted child pid {child_pid}",
+                            "detail": {
+                                "previous_pid": previous_pid,
+                                "pid": child_pid,
+                                "pid_token": child_token,
+                            },
+                        }
+                    )
                     self._store.write_status_md(current)
         except Exception as exc:
             print(

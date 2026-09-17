@@ -439,7 +439,10 @@ stage-signal supervise [--every SEC] [--dir DIR] [--summary SUMMARY] [--reason R
   After `Popen` successfully spawns the child, `supervise` updates STATUS under exclusive lock:
   sets `pid` to the child's `proc.pid`, refreshes `pid_token` via the existing identity capture
   (or `null` if capture fails, same as `start`), and bumps `updated_at` and `heartbeat_at`.
-  `stage_id`, `stage_name`, `attempt`, and `session_id` are preserved unchanged. This ensures
+  `stage_id`, `stage_name`, `attempt`, and `session_id` are preserved unchanged.
+  PID adoption is recorded in the same locked section as a `heartbeat` event with message
+  `adopted child pid <N>` and detail `{previous_pid, pid, pid_token}` (no new event type).
+  This ensures
   `doctor` liveness checks and `reclaim --kill` target the active child worker rather than the supervisor
   wrapper. When the child process exits 0, transitions to `done` with `--summary` (default:
   `'command succeeded (exit 0): CMD'`). When the child process exits non-zero, transitions to `failed`
