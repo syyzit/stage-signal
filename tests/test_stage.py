@@ -6,6 +6,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -531,6 +532,84 @@ def test_wait_validates(stage: Stage) -> None:
         stage.wait("bogus", timeout=1)
     with pytest.raises(BadArgsError):
         stage.wait("terminal", timeout=0)
+    with pytest.raises(BadArgsError, match="cannot be combined"):
+        stage.wait("done", timeout=1, needs_reclaim=True)
+
+
+def test_wait_needs_reclaim_dead_pid(stage: Stage) -> None:
+    process = subprocess.Popen([sys.executable, "-c", "pass"])
+    process.wait(timeout=10)
+    stage.start(stage="m", pid=process.pid)
+    started = time.monotonic()
+    out = stage.wait(timeout=5, poll=0.05, needs_reclaim=True)
+    assert time.monotonic() - started < 2
+    assert out["state"] == "running"
+    assert out["needs_reclaim"] is True
+
+
+def test_wait_needs_reclaim_stale_heartbeat(stage: Stage) -> None:
+    stage.start(stage="m", pid=os.getpid())
+    status_file = stage.dir / "STATUS.json"
+    raw = json.loads(status_file.read_text(encoding="utf-8"))
+    raw["heartbeat_at"] = "2000-01-01T00:00:00+00:00"
+    status_file.write_text(json.dumps(raw), encoding="utf-8")
+    out = stage.wait(timeout=5, poll=0.05, needs_reclaim=True)
+    assert out["state"] == "running"
+    assert out["needs_reclaim"] is True
+
+
+def test_wait_needs_reclaim_polls_until_stale(stage: Stage) -> None:
+    import threading
+
+    stage.start(stage="m", pid=os.getpid())
+    assert stage.status()["needs_reclaim"] is False
+
+    def stale() -> None:
+        time.sleep(0.15)
+        status_file = stage.dir / "STATUS.json"
+        raw = json.loads(status_file.read_text(encoding="utf-8"))
+        raw["heartbeat_at"] = "2000-01-01T00:00:00+00:00"
+        status_file.write_text(json.dumps(raw), encoding="utf-8")
+
+    t = threading.Thread(target=stale)
+    t.start()
+    out = stage.wait(timeout=5, poll=0.05, needs_reclaim=True)
+    t.join()
+    assert out["state"] == "running"
+    assert out["needs_reclaim"] is True
+
+
+def test_wait_needs_reclaim_healthy_running_times_out(stage: Stage) -> None:
+    stage.start(stage="m", pid=os.getpid())
+    with pytest.raises(WaitTimeout) as exc:
+        stage.wait(timeout=0.2, poll=0.05, needs_reclaim=True)
+    assert exc.value.exit_code == 14
+    assert exc.value.last_status["state"] == "running"
+    assert exc.value.last_status["needs_reclaim"] is False
+
+
+@pytest.mark.parametrize("setup", ["done", "blocked", "failed"])
+def test_wait_needs_reclaim_terminal_without_reclaim_returns(
+    stage: Stage, setup: str
+) -> None:
+    if setup == "done":
+        stage.done()
+    elif setup == "blocked":
+        stage.blocked("waiting")
+    else:
+        stage.fail("previous")
+    started = time.monotonic()
+    out = stage.wait(timeout=30, poll=0.5, needs_reclaim=True)
+    assert time.monotonic() - started < 5
+    assert out["state"] == setup
+    assert out["needs_reclaim"] is False
+
+
+def test_wait_needs_reclaim_not_initialized(stage_dir: Path) -> None:
+    s = Stage(stage_dir)
+    with pytest.raises(NotInitialized) as exc:
+        s.wait(timeout=1, poll=0.05, needs_reclaim=True)
+    assert exc.value.exit_code == 15
 
 
 def test_diagnose(stage: Stage, stage_dir: Path) -> None:

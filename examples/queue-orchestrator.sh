@@ -6,6 +6,7 @@
 # transcripts, TUI state, or OpenCode DBs. It only calls:
 #   stage-signal status --json
 #   stage-signal wait --state terminal --timeout SEC --poll SEC
+#   stage-signal wait --needs-reclaim --timeout SEC --poll SEC  (reclaim path)
 # and maps the observed state to an exit code (see docs/SPEC.md §7).
 #
 # Queue file format (see examples/sample-queue.md):
@@ -24,6 +25,9 @@
 #   - current stage `blocked`/`failed`: stop for human/agent fix, exit 11/12.
 #   - current stage `running`/`queued`: `wait` for terminal (blocking), or
 #     with `--once` exit immediately with 10/13 for cron-style re-polling.
+#     Stuck running (DEAD_PID / STALE) is not this script's job: use
+#     `wait --needs-reclaim` → `fail --if-needs-reclaim` (see
+#     orchestrator-watchdog.sh --wait-reclaim), not a doctor sleep loop.
 #   - current stage not in queue (or no stage yet): act on status alone.
 #
 # How a bot calls it:

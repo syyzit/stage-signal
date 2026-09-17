@@ -17,7 +17,13 @@ from .errors import (
     StageError,
     WaitTimeout,
 )
-from .stage import Stage, verify_proof, want_matches, write_status_mirror
+from .stage import (
+    Stage,
+    verify_proof,
+    wait_condition_met,
+    want_matches,
+    write_status_mirror,
+)
 from .store import StageStore, resolve_dir
 
 __version__ = "0.1.6"
@@ -35,6 +41,7 @@ __all__ = [
     "resolve_dir",
     "state_exit_code",
     "verify_proof",
+    "wait_condition_met",
     "want_matches",
     "write_status_mirror",
     "SCHEMA_VERSION",

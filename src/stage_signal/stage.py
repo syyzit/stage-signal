@@ -45,11 +45,13 @@ __all__ = [
     "Stage",
     "state_exit_code",
     "want_matches",
+    "wait_condition_met",
     "verify_proof",
     "write_status_mirror",
 ]
 
 WAIT_CHOICES = ("done", "blocked", "failed", "terminal")
+WAIT_WANT_NEEDS_RECLAIM = "needs_reclaim"
 
 
 def want_matches(want: str, state: str) -> bool:
@@ -57,6 +59,18 @@ def want_matches(want: str, state: str) -> bool:
     if want == "terminal":
         return state in TERMINAL_STATES
     return state == want
+
+
+def wait_condition_met(
+    status: dict[str, Any],
+    *,
+    want: str,
+    needs_reclaim: bool = False,
+) -> bool:
+    """True when a wait snapshot satisfies the requested condition."""
+    if needs_reclaim:
+        return bool(status.get("needs_reclaim"))
+    return want_matches(want, str(status.get("state")))
 
 
 def verify_proof(ref: Optional[str] = None) -> dict[str, Any]:
@@ -630,9 +644,21 @@ class Stage:
         *,
         timeout: float = 3600,
         poll: float = 5,
+        needs_reclaim: bool = False,
     ) -> dict[str, Any]:
-        """Poll until *want* matches. Raises WaitTimeout (exit 14) on timeout."""
-        if want not in WAIT_CHOICES:
+        """Poll until *want* matches, or until ``needs_reclaim`` if that flag is set.
+
+        Raises WaitTimeout (exit 14) on timeout. When *needs_reclaim* is
+        true, a terminal ``done``/``blocked``/``failed`` snapshot without
+        reclaim is returned immediately so the caller can fail closed
+        (never treated as success). Healthy ``running`` keeps polling.
+        """
+        if needs_reclaim:
+            if want != "terminal":
+                raise BadArgsError(
+                    "wait needs_reclaim=True cannot be combined with a --state want"
+                )
+        elif want not in WAIT_CHOICES:
             raise BadArgsError(
                 f"invalid wait state {want!r} "
                 f"(choose from {', '.join(WAIT_CHOICES)})"
@@ -644,24 +670,27 @@ class Stage:
         deadline = time.monotonic() + timeout
         last: dict[str, Any] = self.status()  # raises NotInitialized early
         while True:
-            state = str(last.get("state"))
-            if want_matches(want, state):
+            if wait_condition_met(last, want=want, needs_reclaim=needs_reclaim):
                 return last
+            state = str(last.get("state"))
             if state in TERMINAL_STATES:
                 # A different terminal state already won (before or during
-                # the wait): report it now instead of hanging until timeout.
-                # The caller maps it to its exit code (SPEC §6).
+                # the wait), or --needs-reclaim hit terminal without reclaim:
+                # report it now instead of hanging until timeout. The caller
+                # maps it to a non-zero mismatch exit (SPEC §6).
                 return last
             remaining = deadline - time.monotonic()
             if remaining <= 0:
+                extra = ""
+                if needs_reclaim:
+                    extra = f", needs_reclaim={last.get('needs_reclaim')}"
                 raise WaitTimeout(
                     f"wait timed out after {timeout:g}s "
-                    f"(state={last.get('state')})",
+                    f"(state={last.get('state')}{extra})",
                     last_status=copy.deepcopy(last),
                 )
             time.sleep(min(poll, remaining))
-            with self._store.locked(exclusive=False):
-                last = _attach_heartbeat_age(copy.deepcopy(self._store.read_status()))
+            last = self.status()
 
     def diagnose(self, *, stale_after: Optional[float] = 300.0) -> dict[str, Any]:
         """Check dir health. Returns {"ok", "needs_reclaim", "state", "problems", "warnings", "status", "summary"}."""

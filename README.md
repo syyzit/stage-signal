@@ -88,18 +88,17 @@ stage-signal status --json
 stage-signal wait --state terminal --timeout 900
 # or wait --json for a structured outcome payload on stdout:
 stage-signal wait --json --state terminal --timeout 900
-# reset terminal *or* parked queued back to true idle queued:
-stage-signal clear-terminal
-# one-shot fail when doctor/status would set needs_reclaim (DEAD_PID or STALE):
+# reclaim loop (no cron+doctor sleep): poll until DEAD_PID/STALE, then fail:
+stage-signal wait --needs-reclaim --timeout 900 --poll 5
 stage-signal fail --reason "reclaim" --if-needs-reclaim
 # audit the reclaim (do not scrape events.jsonl with tail/jq):
 stage-signal events --tail 20 --type failed
 # reset to idle queued, then confirm the clear_terminal event:
 stage-signal clear-terminal
 stage-signal events --tail 5 --type clear_terminal
-# check directory health and inspect structured warnings (STALE_HEARTBEAT, DEAD_PID):
+# snapshot health / structured warnings (STALE_HEARTBEAT, DEAD_PID):
 stage-signal doctor --json
-# or exit 10 when reclaim is needed (dead PID or stale heartbeat) without requiring jq:
+# or a one-shot exit 10 when reclaim is already needed (without requiring jq):
 stage-signal doctor --exit-reclaim
 ```
 
@@ -121,10 +120,11 @@ On-disk layout (default):
 Exact schema and exit codes: see `docs/SPEC.md` (normative) and
 `docs/PRIOR_ART.md` (background).
 
-`status` / `wait` exit codes are part of the contract: `0` done/OK,
-`1` generic/corrupt, `10` running, `11` blocked, `12` failed, `13` queued,
+`status` / `wait` exit codes are part of the contract: `0` done/OK (also `wait --needs-reclaim` when reclaim is needed),
+`1` generic/corrupt (also `wait --needs-reclaim` ending in `done` without reclaim), `10` running, `11` blocked, `12` failed, `13` queued,
 `14` wait timeout, `15` not initialized, `2` bad args, `3` illegal transition.
-`wait --json` prints a structured JSON object (`outcome`, `wanted`, `observed_state` / `state`, `exit_code`, `timeout`, `stage_id`, `dir`, `reason`, `status`) to stdout while preserving these exit codes. `reason` is the blocked/failed error text, or a short timeout message; `null` otherwise.
+`wait --json` prints a structured JSON object (`outcome`, `wanted`, `observed_state` / `state`, `exit_code`, `timeout`, `stage_id`, `dir`, `reason`, `needs_reclaim`, `status`) to stdout while preserving these exit codes. `wanted` is the `--state` value, or `"needs_reclaim"` when `--needs-reclaim` is set. Top-level `needs_reclaim` is the same boolean as `status --json` / `doctor --json` (also nested on `status`). `reason` is the blocked/failed error text, or a short timeout message; `null` otherwise.
+`wait --needs-reclaim` polls until that boolean is true (running + `DEAD_PID` or `STALE_HEARTBEAT`, same detection as `doctor` / `status --json`). Healthy running keeps polling — do not treat `status` / `doctor --exit-reclaim` exit 10 as wait success. Terminal without reclaim fails closed (`done` → 1, `blocked` → 11, `failed` → 12). Library: `Stage.wait(..., needs_reclaim=True)`.
 `status` prints human text by default (including heartbeat age, e.g. `heartbeat: <ISO> (age 42s)`, only while `running` with a valid heartbeat). `status --json` includes dynamic `heartbeat_age_seconds` (number while running with a valid heartbeat; otherwise `null`) and the always-present boolean `needs_reclaim` with the same semantics as in `doctor --json` (`true` exactly when `running` and a `DEAD_PID` or `STALE_HEARTBEAT` warning applies, computed by the same detection logic as `doctor`; otherwise `false`).
 `doctor --json` (or `--format json`) and `Stage.diagnose()` provide machine-readable health diagnostics (`ok`, `needs_reclaim`, `state`, `problems`, `warnings`: `[{code, message, detail}]`, `status`, `summary`). The always-present boolean `needs_reclaim` is `true` exactly when the state is `running` and a `DEAD_PID` or `STALE_HEARTBEAT` warning applies; otherwise it is `false`, including healthy running, non-running states, and missing/unreadable status without reclaim warnings. Orchestrators should branch on `needs_reclaim` instead of string-matching `summary` or treating `ok` as a liveness signal. The summary still reports `ATTENTION: running needs reclaim` for reclaim warnings when there are no problems. `ok` means no problems: reclaim warnings alone preserve `ok: true` and exit 0 (exit 1 on problems), and `needs_reclaim` remains independent of any problems.
 To enable thin shell or watchdog scripts to branch on exit codes without requiring `jq`, `doctor --exit-reclaim` exits 10 when `needs_reclaim` is true (while still printing human or JSON output as requested). When `needs_reclaim` is false, it preserves existing exit codes (0 healthy/warnings, 1 problems, 2 bad args). Without `--exit-reclaim`, doctor retains its default advisory exit 0 on warnings.
@@ -134,7 +134,7 @@ To act on a `DEAD_PID` warning (which includes an explicit recovery hint naming 
 integer that is actually dead; a live, invalid, or undeterminable PID aborts
 with exit 3 and no mutation (outside `running`, normal fail rules apply). Doctor remains advisory-only.
 
-To reclaim whenever `needs_reclaim` would be true (DEAD_PID **or** STALE_HEARTBEAT, same detection as `doctor` / `status` / `Stage.diagnose()`), use `fail --reason TEXT --if-needs-reclaim`. That one-shot gate writes `failed` + reason only when reclaim is needed; healthy running and non-running states exit 3 with no mutation. `--if-dead-pid` and `--if-needs-reclaim` are mutually exclusive.
+To reclaim whenever `needs_reclaim` would be true (DEAD_PID **or** STALE_HEARTBEAT, same detection as `doctor` / `status` / `Stage.diagnose()`), wait with `wait --needs-reclaim` then `fail --reason TEXT --if-needs-reclaim`. That one-shot gate writes `failed` + reason only when reclaim is needed; healthy running and non-running states exit 3 with no mutation. `--if-dead-pid` and `--if-needs-reclaim` are mutually exclusive.
 
 `clear-terminal` resets `done`/`blocked`/`failed` **and** stuck `queued` (named or idle) back to idle queued, appending a `clear_terminal` event. From `running` it stays illegal — reclaim with `fail --if-needs-reclaim` or `fail --if-dead-pid` first. After either mutation, `stage-signal events [--tail N] [--type TYPE] [--json]` is the first-class audit path (human default newest-last, last 20; `--tail 0` = all; `--json` is a JSON array). Do not scrape `events.jsonl` with `tail`/`jq`.
 
@@ -152,7 +152,8 @@ stage-signal start --stage demo --meta owner=OpenLoop --meta '{"ticket": 42, "fl
 
 Minimal orchestrator loop (cron, bot, CI step, shell): see
 `examples/orchestrator-watchdog.sh` — it only calls
-`stage-signal status --json` / `stage-signal wait` and exits with the
+`stage-signal status --json` / `stage-signal wait` (including
+`wait --needs-reclaim` for the reclaim path) and exits with the
 observed-state code above. Acceptance sequence: `examples/orchestrator-smoke.sh`.
 
 The `examples/*.sh` scripts require a POSIX shell, such as Git Bash, WSL, or
@@ -185,7 +186,7 @@ Orchestrator loops need to differentiate between an active pending stage and an 
 - **Handling failures:** When an agent reports `fail`, orchestrators have two clean SPEC-compatible choices:
   - `stage-signal clear-terminal` to clear stage identity back to a true idle `queued -` state.
   - `stage-signal done --accept-failure --summary "accepted: ..."` to transition a failed stage to `done` with `"accepted_failure": true` recorded in `result`, without inventing a fake success.
-- **Stuck running:** When `status --json` / `doctor --json` reports `needs_reclaim: true`, `stage-signal fail --reason "..." --if-needs-reclaim` writes `failed` for both `DEAD_PID` and `STALE_HEARTBEAT`. Use `--if-dead-pid` only when the PID is confirmed dead. Audit with `stage-signal events --type failed` (then `clear-terminal` + `events --type clear_terminal` if returning to idle).
+- **Stuck running:** Do not cron-poll `doctor`. Block with `stage-signal wait --needs-reclaim`, then `fail --reason "..." --if-needs-reclaim` (writes `failed` for both `DEAD_PID` and `STALE_HEARTBEAT`). Use `--if-dead-pid` only when the PID is confirmed dead. Audit with `stage-signal events --type failed` (then `clear-terminal` + `events --type clear_terminal` if returning to idle). Snapshot `doctor --json` / `status --json` remains available; `doctor --exit-reclaim` is the one-shot exit-10 check.
 
 
 ### GitHub Action: wait without a venv

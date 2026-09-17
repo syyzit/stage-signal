@@ -20,7 +20,12 @@ from .constants import (
     state_exit_code,
 )
 from .errors import BadArgsError, StageError, WaitTimeout
-from .stage import WAIT_CHOICES, Stage, want_matches
+from .stage import (
+    WAIT_CHOICES,
+    WAIT_WANT_NEEDS_RECLAIM,
+    Stage,
+    wait_condition_met,
+)
 
 # Re-exported for tests / embedding.
 __all__ = ["build_parser", "main"]
@@ -154,8 +159,30 @@ def build_parser() -> argparse.ArgumentParser:
     )
     c.set_defaults(func=cmd_events)
 
-    c = sub.add_parser("wait", help="poll until a state is reached")
+    c = sub.add_parser(
+        "wait",
+        help="poll until a state is reached, or until needs_reclaim",
+        description=(
+            "Poll until --state matches, or until --needs-reclaim. "
+            "Healthy running is never success for --needs-reclaim "
+            "(keep polling; do not treat status/doctor exit 10 as met). "
+            "Terminal done/blocked/failed without reclaim fails closed "
+            "(exit 1/11/12). Timeout 14; not initialized 15."
+        ),
+    )
     c.add_argument("--state", default="terminal", choices=list(WAIT_CHOICES))
+    c.add_argument(
+        "--needs-reclaim",
+        action="store_true",
+        default=False,
+        help=(
+            "poll until needs_reclaim is true (running + DEAD_PID or "
+            "STALE_HEARTBEAT, same as doctor/status --json). Cannot be "
+            "combined with --state other than the default. Exit 0 when "
+            "reclaim is needed; keep polling healthy running; terminal "
+            "without reclaim fails closed (done=1, blocked=11, failed=12)"
+        ),
+    )
     c.add_argument("--timeout", type=float, default=WAIT_DEFAULT_TIMEOUT)
     c.add_argument("--poll", type=float, default=WAIT_DEFAULT_POLL)
     c.add_argument(
@@ -163,8 +190,9 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         default=False,
         help=(
-            "print one JSON object on stdout (state, stage_id, exit_code, "
-            "reason when blocked/failed/timeout); omit human text"
+            "print one JSON object on stdout (outcome, wanted, observed_state / "
+            "state, exit_code, timeout, stage_id, dir, reason, needs_reclaim, "
+            "status); omit human text"
         ),
     )
     c.set_defaults(func=cmd_wait)
@@ -314,10 +342,12 @@ def _wait_json_payload(
     """Machine-readable wait result (SPEC §6). Human text is omitted."""
     state = None
     stage_id = None
+    needs_reclaim = False
     if status:
         raw_state = status.get("state")
         state = str(raw_state) if raw_state is not None else None
         stage_id = status.get("stage_id")
+        needs_reclaim = bool(status.get("needs_reclaim"))
     if reason is None:
         reason = _status_reason(status)
     return {
@@ -330,8 +360,22 @@ def _wait_json_payload(
         "stage_id": stage_id,
         "dir": dir_path,
         "reason": reason,
+        "needs_reclaim": needs_reclaim,
         "status": status,
     }
+
+
+def _wait_mismatch_exit_code(state: str, *, needs_reclaim: bool) -> int:
+    """Map a wait mismatch snapshot to a non-zero observing exit.
+
+    Reuses the existing state codes (11/12/13/10). ``done`` observes as 0,
+    so ``wait --needs-reclaim`` maps that case to exit 1 — never silent
+    success when the reclaim condition was not met.
+    """
+    code = state_exit_code(state)
+    if needs_reclaim and code == EXIT_OK:
+        return EXIT_ERROR
+    return code
 
 
 # -- commands -----------------------------------------------------------
@@ -445,18 +489,35 @@ def cmd_status(args: argparse.Namespace) -> int:
 
 
 def cmd_wait(args: argparse.Namespace) -> int:
+    needs_reclaim = bool(getattr(args, "needs_reclaim", False))
+    if needs_reclaim and args.state != "terminal":
+        raise BadArgsError(
+            "wait --needs-reclaim cannot be combined with --state"
+        )
+    wanted = WAIT_WANT_NEEDS_RECLAIM if needs_reclaim else args.state
     stage_obj = _stage(args)
     try:
-        st = stage_obj.wait(args.state, timeout=args.timeout, poll=args.poll)
+        st = stage_obj.wait(
+            args.state,
+            timeout=args.timeout,
+            poll=args.poll,
+            needs_reclaim=needs_reclaim,
+        )
         state = str(st.get("state"))
-        is_met = want_matches(args.state, state)
-        exit_code = 0 if is_met else state_exit_code(state)
+        is_met = wait_condition_met(
+            st, want=args.state, needs_reclaim=needs_reclaim
+        )
+        exit_code = (
+            EXIT_OK
+            if is_met
+            else _wait_mismatch_exit_code(state, needs_reclaim=needs_reclaim)
+        )
         outcome = "met" if is_met else "mismatch"
         if args.json:
             print(json.dumps(
                 _wait_json_payload(
                     outcome=outcome,
-                    wanted=args.state,
+                    wanted=wanted,
                     status=st,
                     exit_code=exit_code,
                     timed_out=False,
@@ -466,17 +527,19 @@ def cmd_wait(args: argparse.Namespace) -> int:
             ))
             return exit_code
         if is_met:
-            print(f"wait met: {state} {_one_line(st)}")
-            return 0
-        # A different terminal state won first: report its code (SPEC §6).
-        print(f"wait ended in {state} (wanted {args.state})", file=sys.stderr)
+            label = wanted if needs_reclaim else state
+            print(f"wait met: {label} {_one_line(st)}")
+            return EXIT_OK
+        # A different terminal state won first, or --needs-reclaim hit
+        # terminal without reclaim: report a non-zero mismatch (SPEC §6).
+        print(f"wait ended in {state} (wanted {wanted})", file=sys.stderr)
         return exit_code
     except WaitTimeout as exc:
         if args.json:
             print(json.dumps(
                 _wait_json_payload(
                     outcome="timeout",
-                    wanted=args.state,
+                    wanted=wanted,
                     status=exc.last_status,
                     exit_code=exc.exit_code,
                     timed_out=True,
