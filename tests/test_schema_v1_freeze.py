@@ -34,6 +34,8 @@ from stage_signal import (
     EXIT_RUNNING,
     EXIT_WAIT_TIMEOUT,
     NOTE_ENTRY_KEYS,
+    PROOF_KEYS,
+    PROOF_VERIFIED_VALUES,
     SCHEMA_VERSION,
     STATES,
     STATUS_JSON_KEYS,
@@ -136,6 +138,189 @@ def test_artifact_note_entry_keys_on_disk_and_status_json(
             ]
         assert cli_data["artifacts"] == disk_data["artifacts"]
         assert cli_data["notes"] == disk_data["notes"]
+
+
+def test_proof_keys_freeze() -> None:
+    """PROOF_KEYS must match SPEC §13.10 required keys exactly."""
+    assert PROOF_KEYS == ("tool", "ref", "verified")
+    assert all(isinstance(k, str) for k in PROOF_KEYS)
+
+
+def test_proof_verified_values_freeze() -> None:
+    """PROOF_VERIFIED_VALUES must match SPEC §13.10 verified enum exactly."""
+    assert PROOF_VERIFIED_VALUES == (None, "file", "verify")
+    assert all(v is None or isinstance(v, str) for v in PROOF_VERIFIED_VALUES)
+
+
+def _assert_proof_contract(
+    proof: Any,
+    *,
+    expected_ref: str,
+    expected_verified: str | None,
+    expected_tool: str = "agent-done-or-not",
+    extra_field: str | None = None,
+) -> None:
+    assert isinstance(proof, dict)
+    assert set(PROOF_KEYS) <= proof.keys()
+    assert proof["tool"] == expected_tool
+    assert isinstance(proof["tool"], str)
+    assert proof["ref"] == expected_ref
+    assert isinstance(proof["ref"], str)
+    assert proof["verified"] == expected_verified
+    assert proof["verified"] in PROOF_VERIFIED_VALUES
+    if extra_field is not None:
+        assert extra_field in proof
+
+
+@pytest.mark.parametrize("extra_keys", [False, True])
+def test_proof_keys_on_disk_and_status_json(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    extra_keys: bool,
+) -> None:
+    """After proof-ref-only and --require-proof done paths, on-disk + status --json
+
+    non-null proof objects include frozen PROOF_KEYS and only PROOF_VERIFIED_VALUES.
+    Readers tolerate unknown additive keys without error.
+    """
+    stage_dir = tmp_path / ".stage-signal"
+    stage = Stage(str(stage_dir))
+    stage.init(project="proof-freeze")
+    status_file = stage_dir / "STATUS.json"
+    prefix = ["--dir", str(stage_dir)]
+
+    # 1. Initially (and after start), proof is null (valid under SPEC §13.10)
+    assert main(prefix + ["status", "--json"]) == EXIT_QUEUED
+    init_cli = json.loads(capsys.readouterr().out)
+    init_disk = json.loads(status_file.read_text(encoding="utf-8"))
+    assert init_cli["proof"] is None
+    assert init_disk["proof"] is None
+    assert stage.status()["proof"] is None
+
+    # Plain done without proof-ref leaves proof null
+    assert main(prefix + ["start", "--stage", "phase-0", "--pid", str(os.getpid())]) == EXIT_OK
+    capsys.readouterr()
+    assert main(prefix + ["done", "--summary", "plain done"]) == EXIT_OK
+    capsys.readouterr()
+    assert main(prefix + ["status", "--json"]) == EXIT_OK
+    plain_cli = json.loads(capsys.readouterr().out)
+    plain_disk = json.loads(status_file.read_text(encoding="utf-8"))
+    assert plain_cli["proof"] is None
+    assert plain_disk["proof"] is None
+    assert stage.status()["proof"] is None
+
+    # 2. Proof-ref-only done path: records pointer without verification (verified is None)
+    assert main(prefix + ["start", "--stage", "phase-ref", "--pid", str(os.getpid())]) == EXIT_OK
+    capsys.readouterr()
+    ref_target = "ledger/tx-1001"
+    assert main(prefix + ["done", "--summary", "ref only", "--proof-ref", ref_target]) == EXIT_OK
+    capsys.readouterr()
+
+    if extra_keys:
+        disk_data = json.loads(status_file.read_text(encoding="utf-8"))
+        disk_data["proof"]["future_checksum"] = "sha256:abc"
+        status_file.write_text(json.dumps(disk_data), encoding="utf-8")
+
+    assert main(prefix + ["status", "--json"]) == EXIT_OK
+    cli_ref = json.loads(capsys.readouterr().out)
+    disk_ref = json.loads(status_file.read_text(encoding="utf-8"))
+    lib_ref = stage.status()
+    for payload in (cli_ref, disk_ref, lib_ref):
+        _assert_proof_contract(
+            payload["proof"],
+            expected_ref=ref_target,
+            expected_verified=None,
+            extra_field="future_checksum" if extra_keys else None,
+        )
+
+    # 3. --require-proof file gate done path: verified is "file"
+    assert main(prefix + ["start", "--stage", "phase-file", "--pid", str(os.getpid())]) == EXIT_OK
+    capsys.readouterr()
+    receipt_file = tmp_path / "receipt.json"
+    receipt_file.write_text('{"tests": "passed", "exit_code": 0}\n', encoding="utf-8")
+    assert (
+        main(
+            prefix
+            + [
+                "done",
+                "--summary",
+                "file gate done",
+                "--proof-ref",
+                str(receipt_file),
+                "--require-proof",
+            ]
+        )
+        == EXIT_OK
+    )
+    capsys.readouterr()
+
+    if extra_keys:
+        disk_data = json.loads(status_file.read_text(encoding="utf-8"))
+        disk_data["proof"]["future_verified_by"] = "custom-agent"
+        status_file.write_text(json.dumps(disk_data), encoding="utf-8")
+
+    assert main(prefix + ["status", "--json"]) == EXIT_OK
+    cli_file = json.loads(capsys.readouterr().out)
+    disk_file = json.loads(status_file.read_text(encoding="utf-8"))
+    lib_file = stage.status()
+    for payload in (cli_file, disk_file, lib_file):
+        _assert_proof_contract(
+            payload["proof"],
+            expected_ref=str(receipt_file),
+            expected_verified="file",
+            extra_field="future_verified_by" if extra_keys else None,
+        )
+
+    # 4. --require-proof external verifier gate done path: verified is "verify"
+    bin_dir = tmp_path / "mock-bin"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    fake_sh = bin_dir / "agent-done-or-not"
+    fake_sh.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    try:
+        fake_sh.chmod(0o755)
+    except OSError:
+        pass
+    fake_cmd = bin_dir / "agent-done-or-not.cmd"
+    fake_cmd.write_text("@echo off\nexit /b 0\n", encoding="utf-8")
+    monkeypatch.setenv("PATH", str(bin_dir) + os.pathsep + os.environ["PATH"])
+    monkeypatch.delenv("STAGE_SIGNAL_PROOF_REF", raising=False)
+
+    assert main(prefix + ["start", "--stage", "phase-verify", "--pid", str(os.getpid())]) == EXIT_OK
+    capsys.readouterr()
+    verify_ref = "external-ledger/run-888"
+    assert (
+        main(
+            prefix
+            + [
+                "done",
+                "--summary",
+                "verify gate done",
+                "--proof-ref",
+                verify_ref,
+                "--require-proof",
+            ]
+        )
+        == EXIT_OK
+    )
+    capsys.readouterr()
+
+    if extra_keys:
+        disk_data = json.loads(status_file.read_text(encoding="utf-8"))
+        disk_data["proof"]["audit_meta"] = {"passed": True}
+        status_file.write_text(json.dumps(disk_data), encoding="utf-8")
+
+    assert main(prefix + ["status", "--json"]) == EXIT_OK
+    cli_verify = json.loads(capsys.readouterr().out)
+    disk_verify = json.loads(status_file.read_text(encoding="utf-8"))
+    lib_verify = stage.status()
+    for payload in (cli_verify, disk_verify, lib_verify):
+        _assert_proof_contract(
+            payload["proof"],
+            expected_ref=verify_ref,
+            expected_verified="verify",
+            extra_field="audit_meta" if extra_keys else None,
+        )
 
 
 def test_event_types_freeze() -> None:

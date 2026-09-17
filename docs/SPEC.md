@@ -732,5 +732,34 @@ The canonical warning code set is frozen in `WARNING_CODES`:
 
 The single source of truth for the warning codes is `WARNING_CODES` in `stage_signal.constants`, also exported from `stage_signal`. The individual `WARNING_CODE_*` constants remain exported as aliases. Orchestrators may stably branch on `warnings[].code` matching one of these identifiers.
 
+### 13.10 Proof object keys and verified enum freeze (`PROOF_KEYS`, `PROOF_VERIFIED_VALUES`)
+When `proof` is non-null in `STATUS.json` or in the output of `status --json` / `Stage.status()`, it MUST be an object including all required keys below. `proof: null` remains valid when no proof reference was recorded.
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `tool` | str | Verification/receipt tool name (e.g. `"agent-done-or-not"`). |
+| `ref` | str | Proof reference (receipt file path or external ledger label). |
+| `verified` | null\|"file"\|"verify" | Gate verification status. |
+
+The single source of truth for the required proof key set is
+`PROOF_KEYS = ("tool", "ref", "verified")` in `stage_signal.constants`, also
+exported from `stage_signal`.
+
+The canonical set of allowed `verified` values is frozen in `PROOF_VERIFIED_VALUES`:
+- `None` (`null` in JSON): pointer recorded without checking (`--proof-ref` alone)
+- `"file"`: passed `--require-proof` because `ref` is an existing non-empty file
+- `"verify"`: passed `--require-proof` via external verifier (`agent-done-or-not verify --ref R`)
+
+The single source of truth for the verified enum is
+`PROOF_VERIFIED_VALUES = (None, "file", "verify")` in `stage_signal.constants`, also
+exported from `stage_signal`.
+
+Under `schema_version: 1`, proof object evolution is **additive-only** (§13.1):
+these keys MUST NOT be removed, renamed, or change semantic meaning.
+Readers MUST tolerate unknown additional keys on the `proof` object.
+Composition and verification semantics remain defined in §9 and `docs/COMPOSE.md`;
+this section freezes the on-wire dictionary keys and closed verified enum under schema version 1.
+
+
 
 

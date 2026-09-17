@@ -128,6 +128,10 @@ STATUS_REQUIRED_KEYS = (
 ARTIFACT_ENTRY_KEYS = ("path", "label", "added_at")
 NOTE_ENTRY_KEYS = ("text", "added_at")
 
+PROOF_KEYS = ("tool", "ref", "verified")
+PROOF_REQUIRED_KEYS = PROOF_KEYS
+PROOF_VERIFIED_VALUES = (None, "file", "verify")
+
 STATUS_JSON_KEYS = STATUS_REQUIRED_KEYS + (
     "needs_reclaim",
     "heartbeat_age_seconds",
