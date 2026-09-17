@@ -374,7 +374,9 @@ stage-signal doctor [--stale-after SEC] [--json] [--format human|json]
   Orchestrators that need to **wait** until `needs_reclaim` is true should
   use `wait --needs-reclaim` (not a `doctor` sleep loop), then reclaim with
   `reclaim --reason TEXT` (or `fail --reason TEXT --if-needs-reclaim`).
-  `fail --if-dead-pid` remains the narrower DEAD_PID-only gate. `doctor` itself never mutates.
+  For snapshot checks, orchestrators can branch on `doctor --exit-reclaim` (exits 10 on needs_reclaim)
+  or use `orchestrator-watchdog.sh --once --doctor-reclaim` (reclaims via `reclaim --keep-failed`
+  and exits 12). `fail --if-dead-pid` remains the narrower DEAD_PID-only gate. `doctor` itself never mutates.
   Passing `stale_after=None` to `Stage.diagnose()` disables heartbeat checks.
 - `reclaim --reason TEXT [--keep-failed]` is the one-shot pairing for `wait --needs-reclaim`.
   When `needs_reclaim` is true (`running` + `DEAD_PID` or `STALE_HEARTBEAT`, same detection

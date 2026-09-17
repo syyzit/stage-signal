@@ -186,7 +186,7 @@ Orchestrator loops need to differentiate between an active pending stage and an 
 - **Handling failures:** When an agent reports `fail`, orchestrators have two clean SPEC-compatible choices:
   - `stage-signal clear-terminal` to clear stage identity back to a true idle `queued -` state.
   - `stage-signal done --accept-failure --summary "accepted: ..."` to transition a failed stage to `done` with `"accepted_failure": true` recorded in `result`, without inventing a fake success.
-- **Stuck running:** Do not cron-poll `doctor`. Block with `stage-signal wait --needs-reclaim`, then `reclaim --reason "..."` (one-shot fail+clear to idle queued for relaunch; or `--keep-failed` / `fail --if-needs-reclaim`). Use `--if-dead-pid` only when the PID is confirmed dead. Audit with `stage-signal events --tail 20`. Snapshot `doctor --json` / `status --json` remains available; `doctor --exit-reclaim` is the one-shot exit-10 check.
+- **Stuck running:** Do not cron-poll `doctor`. Block with `stage-signal wait --needs-reclaim`, then `reclaim --reason "..."` (one-shot fail+clear to idle queued for relaunch; or `--keep-failed` / `fail --if-needs-reclaim`). Use `--if-dead-pid` only when the PID is confirmed dead. Audit with `stage-signal events --tail 20`. Snapshot `doctor --json` / `status --json` remains available; `doctor --exit-reclaim` is the one-shot exit-10 check (and `examples/orchestrator-watchdog.sh --once --doctor-reclaim` reclaims snapshot `needs_reclaim` via `reclaim --keep-failed`).
 
 
 ### GitHub Action: wait without a venv
