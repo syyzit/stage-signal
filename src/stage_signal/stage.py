@@ -617,7 +617,7 @@ class Stage:
                 last = _attach_heartbeat_age(copy.deepcopy(self._store.read_status()))
 
     def diagnose(self, *, stale_after: Optional[float] = 300.0) -> dict[str, Any]:
-        """Check dir health. Returns {"ok", "state", "problems", "warnings", "status", "summary"}."""
+        """Check dir health. Returns {"ok", "needs_reclaim", "state", "problems", "warnings", "status", "summary"}."""
         problems: list[str] = []
         warnings: list[dict[str, Any]] = []
         status: Optional[dict[str, Any]] = None
@@ -626,6 +626,7 @@ class Stage:
             problems.append(f"missing dir: {store.dir}")
             return {
                 "ok": False,
+                "needs_reclaim": False,
                 "state": None,
                 "problems": problems,
                 "warnings": warnings,
@@ -710,17 +711,17 @@ class Stage:
                         })
                 except Exception:
                     pass
+        needs_reclaim = (
+            status is not None
+            and status.get("state") == STATE_RUNNING
+            and any(
+                w.get("code") in {WARNING_CODE_STALE_HEARTBEAT, WARNING_CODE_DEAD_PID}
+                for w in warnings
+            )
+        )
         summary: Optional[str] = None
         if not problems:
-            reclaim_needed = (
-                status is not None
-                and status.get("state") == STATE_RUNNING
-                and any(
-                    isinstance(w, dict) and w.get("code") in {WARNING_CODE_STALE_HEARTBEAT, WARNING_CODE_DEAD_PID}
-                    for w in warnings
-                )
-            )
-            if reclaim_needed:
+            if needs_reclaim:
                 summary = DOCTOR_SUMMARY_RECLAIM_NEEDED
             else:
                 state_str = status.get("state") if isinstance(status, dict) else "uninitialized dir exists"
@@ -728,6 +729,7 @@ class Stage:
 
         return {
             "ok": not problems,
+            "needs_reclaim": needs_reclaim,
             "state": status.get("state") if isinstance(status, dict) else None,
             "problems": problems,
             "warnings": warnings,

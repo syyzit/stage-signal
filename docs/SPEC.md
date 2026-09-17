@@ -264,13 +264,20 @@ stage-signal doctor [--stale-after SEC] [--json] [--format human|json]
   When `running` and `now - heartbeat_at > SEC`, human output prints
   `WARNING: STALE: ...`.
   `--json` (or `--format json`) prints a structured JSON object:
-  `{"ok": bool, "state": str|null, "problems": list[str], "warnings": [{"code": str, "message": str, "detail": object}], "status": object|null, "summary": str|null}`.
+  `{"ok": bool, "needs_reclaim": bool, "state": str|null, "problems": list[str], "warnings": [{"code": str, "message": str, "detail": object}], "status": object|null, "summary": str|null}`.
+  `Stage.diagnose()` returns the same fields. `needs_reclaim` is always present:
+  `true` exactly when the state is `running` and a `DEAD_PID` or
+  `STALE_HEARTBEAT` warning applies; `false` otherwise, including healthy running,
+  non-running states, and missing/unreadable status without reclaim warnings.
+  It is independent of `ok` (which means no problems) and remains `true` if
+  reclaim warnings coexist with problems. Reclaim warnings alone do not change
+  `ok: true` or exit 0.
   Structured warning codes include:
   - `STALE_HEARTBEAT`: heartbeat older than threshold (detail: `{"age": float|null, "threshold": float, "heartbeat_at": str|null}`) or missing entirely.
   - `DEAD_PID`: claiming process is not alive (detail: `{"pid": int, "recovery_hint": str}`).
     The warning message includes an explicit recovery hint naming `fail --reason TEXT --if-dead-pid`.
   - `UNPARSEABLE_HEARTBEAT`: invalid heartbeat timestamp format (detail: `{"heartbeat_at": str}`).
-  Warnings never change stage state and do not trigger a non-zero exit code (exit 0 on healthy/warnings, 1 on problems, 2 on bad args); orchestrators can branch directly on the `.summary` JSON field (`"ATTENTION: running needs reclaim"` vs `"OK: running"`) without scraping human warning text.
+  Warnings never change stage state and do not trigger a non-zero exit code (exit 0 on healthy/warnings, 1 on problems, 2 on bad args); orchestrators should branch on the `needs_reclaim` boolean rather than string-matching `summary` or scraping human warning text.
   Passing `stale_after=None` to `Stage.diagnose()` disables heartbeat checks.
 
 ## 7. Exit codes (part of the contract)
