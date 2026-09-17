@@ -435,11 +435,17 @@ stage-signal supervise [--every SEC] [--dir DIR] [--summary SUMMARY] [--reason R
   Runs and supervises a child process `CMD`, automatically bumping stage `heartbeat` every `--every`
   seconds (default 60; validated `1 <= every <= stale_threshold - 1`, default stale threshold 300)
   while the child process is alive. The stage must already be in state `running` (refuses with exit 3 /
-  `IllegalTransition` otherwise; exit 15 / `NotInitialized` if not initialized). When the child process exits 0,
-  transitions to `done` with `--summary` (default: `'command succeeded (exit 0): CMD'`). When the child process
-  exits non-zero, transitions to `failed` with `--reason` (default: `'command failed with exit code N: CMD'` or
-  `'command terminated by SIGNUM: CMD'`). Signals (`SIGINT`, `SIGTERM`) are forwarded to the child process;
-  the supervisor waits for child exit and records the terminal transition before returning.
+  `IllegalTransition` otherwise; exit 15 / `NotInitialized` if not initialized).
+  After `Popen` successfully spawns the child, `supervise` updates STATUS under exclusive lock:
+  sets `pid` to the child's `proc.pid`, refreshes `pid_token` via the existing identity capture
+  (or `null` if capture fails, same as `start`), and bumps `updated_at` and `heartbeat_at`.
+  `stage_id`, `stage_name`, `attempt`, and `session_id` are preserved unchanged. This ensures
+  `doctor` liveness checks and `reclaim --kill` target the active child worker rather than the supervisor
+  wrapper. When the child process exits 0, transitions to `done` with `--summary` (default:
+  `'command succeeded (exit 0): CMD'`). When the child process exits non-zero, transitions to `failed`
+  with `--reason` (default: `'command failed with exit code N: CMD'` or `'command terminated by SIGNUM: CMD'`).
+  Signals (`SIGINT`, `SIGTERM`) are forwarded to the child process; the supervisor waits for child
+  exit and records the terminal transition before returning (pid lifecycle unchanged after that).
   Exit code matches the child process exit code (or `128 + SIGNUM` if terminated by signal, 2 on bad args,
   3 on illegal transition, 15 if not initialized, 127 if command not found, 126 if permission denied).
   Library: `Stage.supervise(cmd, *, every=60.0, stale_threshold=300.0, summary=None, reason=None, write_status_mirror=None, cwd=None, env=None) -> int`.

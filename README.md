@@ -179,7 +179,7 @@ stage-signal start --stage test-suite --pid $$
 stage-signal supervise --every 30 -- pytest -v
 ```
 
-`supervise` returns the child process exit code (or `128 + SIGNUM` on signal termination; standard error codes 2, 3, 15 on bad args or setup failures).
+`supervise` returns the child process exit code (or `128 + SIGNUM` on signal termination; standard error codes 2, 3, 15 on bad args or setup failures). Upon starting the child, `supervise` adopts the child's `pid` and `pid_token` in `STATUS` (under exclusive lock) so `doctor` and `reclaim --kill` track the active worker process rather than the supervisor wrapper.
 
 ### Driving coding agents (agy, OpenCode, etc.)
 
