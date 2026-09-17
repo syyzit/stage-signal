@@ -122,6 +122,32 @@ git worktree add /repos/lanes/lane-agy -b agy/feature-auth
 git worktree add /repos/lanes/lane-oc -b oc/feature-billing
 ```
 
+### Pin the CLI source as well as the state directory
+
+When dogfooding stage-signal itself, isolated worktrees do not isolate a shared
+`.venv` editable install: it may still import another lane's older source.
+`--dir "$WORKTREE/.stage-signal"` selects state, not Python code. Prefer a
+per-worktree venv, or set `PYTHONPATH="$WORKTREE/src"` (with an absolute
+`WORKTREE`) separately for each lane's agent and watchdog processes:
+
+```bash
+PYTHONPATH="$WORKTREE/src" python -m stage_signal --dir "$WORKTREE/.stage-signal" doctor --json
+PYTHONPATH="$WORKTREE/src" stage-signal fail -h
+```
+
+Use the intended venv's interpreter/entry point. On a post-#43 tree the help
+must include `--if-dead-pid`; if recovery rejects that flag, check the imported
+source before treating it as a PID-proof failure. After merging CLI-flag
+changes, reinstall the editable package **from main** if sharing a `.venv`,
+then check the shared command without a `PYTHONPATH` override. Do not reinstall
+from a lane into that shared venv.
+
+See [Contributing: isolated worktrees](../../CONTRIBUTING.md#dogfooding-from-isolated-worktrees)
+for import-path diagnostics and the `ss()` launcher pattern using
+`sys.executable -m stage_signal` with a per-call environment. Apply it to both
+local `.agloop/launch-agy.py` and `.agloop/launch-opencode.py` helpers when they
+are maintained outside the tracked worktree.
+
 ### Why Worktree Isolation is Mandatory
 
 1. **Git Working Copy Conflicts**:
