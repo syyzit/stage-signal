@@ -111,7 +111,7 @@ You are working ONE milestone in this repository: <STAGE_NAME>.
    stage-signal heartbeat
    stage-signal note "Finished refactor, running test suite"
 3. Run verification tests:
-   pytest
+   .venv/bin/pytest
 4. If completed cleanly:
    git commit -m "feat: complete <STAGE_NAME>"
    stage-signal done --summary "completed <STAGE_NAME>" --git-head $(git rev-parse HEAD)
@@ -120,6 +120,8 @@ You are working ONE milestone in this repository: <STAGE_NAME>.
 6. If tests fail or code invariants break:
    stage-signal fail --reason "Description of failure"
 ```
+
+> **Virtual environment note:** Prompt templates should instruct agents to prefer the worktree or main checkout `.venv` (e.g. `.venv/bin/pytest` installed with `.[dev]`) rather than bare system `pytest`, ensuring test dependencies like `pytest-timeout` are active.
 
 ---
 
