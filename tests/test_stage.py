@@ -312,6 +312,162 @@ def test_fail_if_needs_reclaim_mutually_exclusive_with_if_dead_pid(stage: Stage)
     assert {name: (stage.dir / name).read_bytes() for name in before} == before
 
 
+def _assert_idle_queued(st: dict) -> None:
+    assert st["state"] == "queued"
+    assert st["stage_name"] is None
+    assert st["stage_id"] is None
+    assert st["pid"] is None
+    assert st["error"] is None
+    assert st["result"] is None
+
+
+def test_reclaim_dead_pid_ends_idle_queued(stage: Stage) -> None:
+    process = subprocess.Popen([sys.executable, "-c", "pass"])
+    process.wait(timeout=10)
+    stage.start(stage="m", pid=process.pid)
+    assert stage.status()["needs_reclaim"] is True
+    assert stage.diagnose()["needs_reclaim"] is True
+
+    st = stage.reclaim("worker exited")
+
+    _assert_idle_queued(st)
+    status = stage.status()
+    _assert_idle_queued(status)
+    assert status["needs_reclaim"] is False
+    events = [json.loads(line) for line in (stage.dir / "events.jsonl").read_text().splitlines()]
+    assert events[-2]["type"] == "failed"
+    assert events[-2]["message"] == "worker exited"
+    assert events[-2]["state"] == "failed"
+    assert events[-1]["type"] == "clear_terminal"
+    assert events[-1]["message"] == "cleared to idle queued"
+    assert events[-1]["state"] == "queued"
+    assert events[-1]["detail"] == {"keep_stage": False}
+
+
+def test_reclaim_stale_heartbeat_ends_idle_queued(stage: Stage) -> None:
+    stage.start(stage="m", pid=os.getpid())
+    status_file = stage.dir / "STATUS.json"
+    raw = json.loads(status_file.read_text(encoding="utf-8"))
+    raw["heartbeat_at"] = "2000-01-01T00:00:00+00:00"
+    status_file.write_text(json.dumps(raw), encoding="utf-8")
+    assert stage.status()["needs_reclaim"] is True
+
+    st = stage.reclaim("stale runner")
+
+    _assert_idle_queued(st)
+    events = [json.loads(line) for line in (stage.dir / "events.jsonl").read_text().splitlines()]
+    assert events[-2]["type"] == "failed"
+    assert events[-2]["message"] == "stale runner"
+    assert events[-1]["type"] == "clear_terminal"
+
+
+def test_reclaim_keep_failed_stops_after_fail(stage: Stage) -> None:
+    process = subprocess.Popen([sys.executable, "-c", "pass"])
+    process.wait(timeout=10)
+    stage.start(stage="m", pid=process.pid)
+
+    st = stage.reclaim("audit then clear", keep_failed=True)
+
+    assert st["state"] == "failed"
+    assert st["error"]["reason"] == "audit then clear"
+    events = [json.loads(line) for line in (stage.dir / "events.jsonl").read_text().splitlines()]
+    assert events[-1]["type"] == "failed"
+    assert events[-1]["message"] == "audit then clear"
+    assert not any(e["type"] == "clear_terminal" for e in events)
+
+
+def test_reclaim_healthy_running_no_mutation(stage: Stage) -> None:
+    stage.start(stage="m", pid=os.getpid())
+    before = {name: (stage.dir / name).read_bytes() for name in ("STATUS.json", "STATUS.md", "events.jsonl")}
+
+    with pytest.raises(IllegalTransition, match="needs_reclaim is false") as exc:
+        stage.reclaim("not reclaimable")
+
+    assert exc.value.exit_code == 3
+    assert {name: (stage.dir / name).read_bytes() for name in before} == before
+    assert stage.status()["state"] == "running"
+
+
+@pytest.mark.parametrize("state", ["queued", "done", "blocked", "failed"])
+def test_reclaim_terminal_without_reclaim_no_mutation(
+    stage: Stage, monkeypatch: pytest.MonkeyPatch, state: str
+) -> None:
+    if state == "done":
+        stage.done()
+    elif state == "blocked":
+        stage.blocked("waiting")
+    elif state == "failed":
+        stage.fail("previous failure")
+    before = {name: (stage.dir / name).read_bytes() for name in ("STATUS.json", "STATUS.md", "events.jsonl")}
+
+    def unexpected_probe(pid):
+        pytest.fail("non-running reclaim must not probe pid")
+
+    monkeypatch.setattr("stage_signal.stage._is_pid_alive", unexpected_probe)
+    with pytest.raises(IllegalTransition, match="needs_reclaim is false") as exc:
+        stage.reclaim("not reclaimable")
+
+    assert exc.value.exit_code == 3
+    assert {name: (stage.dir / name).read_bytes() for name in before} == before
+
+
+def test_reclaim_empty_reason(stage: Stage) -> None:
+    with pytest.raises(BadArgsError, match="non-empty"):
+        stage.reclaim("  ")
+
+
+def test_reclaim_idempotent_second_call_no_mutation(stage: Stage) -> None:
+    process = subprocess.Popen([sys.executable, "-c", "pass"])
+    process.wait(timeout=10)
+    stage.start(stage="m", pid=process.pid)
+    stage.reclaim("first")
+    before = {name: (stage.dir / name).read_bytes() for name in ("STATUS.json", "STATUS.md", "events.jsonl")}
+
+    with pytest.raises(IllegalTransition, match="needs_reclaim is false") as exc:
+        stage.reclaim("second")
+
+    assert exc.value.exit_code == 3
+    assert {name: (stage.dir / name).read_bytes() for name in before} == before
+    _assert_idle_queued(stage.status())
+
+
+def test_reclaim_race_one_winner(stage: Stage) -> None:
+    import threading
+
+    process = subprocess.Popen([sys.executable, "-c", "pass"])
+    process.wait(timeout=10)
+    stage.start(stage="m", pid=process.pid)
+
+    winners: list[dict] = []
+    losers: list[BaseException] = []
+    barrier = threading.Barrier(2)
+
+    def worker() -> None:
+        try:
+            barrier.wait(timeout=5)
+            winners.append(Stage(stage.dir).reclaim("race"))
+        except IllegalTransition as exc:
+            losers.append(exc)
+        except BaseException as exc:  # pragma: no cover
+            losers.append(exc)
+
+    threads = [threading.Thread(target=worker) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+        assert not thread.is_alive()
+
+    assert len(winners) == 1
+    assert len(losers) == 1
+    assert isinstance(losers[0], IllegalTransition)
+    assert losers[0].exit_code == 3
+    _assert_idle_queued(stage.status())
+    events = [json.loads(line) for line in (stage.dir / "events.jsonl").read_text().splitlines()]
+    assert sum(1 for e in events if e["type"] == "failed") == 1
+    assert sum(1 for e in events if e["type"] == "clear_terminal") == 1
+
+
 def test_clear_terminal(stage: Stage) -> None:
     st0 = stage.clear_terminal()  # queued is allowed (abandon/reset)
     assert st0["state"] == "queued"

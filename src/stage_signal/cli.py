@@ -1,4 +1,4 @@
-"""stage-signal CLI: init/start/heartbeat/note/artifact/done/blocked/fail/status/wait/events/clear-terminal/doctor."""
+"""stage-signal CLI: init/start/heartbeat/note/artifact/done/blocked/fail/reclaim/status/wait/events/clear-terminal/doctor."""
 
 from __future__ import annotations
 
@@ -115,6 +115,30 @@ def build_parser() -> argparse.ArgumentParser:
     )
     c.add_argument("--write-status-mirror", action="store_true", default=None)
     c.set_defaults(func=cmd_fail)
+
+    c = sub.add_parser(
+        "reclaim",
+        help="fail a needs_reclaim stage then clear-terminal to idle queued",
+        description=(
+            "When needs_reclaim is true (DEAD_PID or STALE_HEARTBEAT, same as "
+            "doctor/status), transition to failed with --reason then "
+            "clear-terminal to idle queued in one exclusive lock (two events: "
+            "failed, then clear_terminal). When needs_reclaim is false, exit 3 "
+            "with no mutation (mirror fail --if-needs-reclaim). --keep-failed "
+            "stops after fail so a watchdog can audit events then clear."
+        ),
+    )
+    c.add_argument("--reason", required=True)
+    c.add_argument(
+        "--keep-failed",
+        action="store_true",
+        default=False,
+        help=(
+            "stop after fail without clear-terminal (leave state failed for "
+            "watchdog audit, then clear separately)"
+        ),
+    )
+    c.set_defaults(func=cmd_reclaim)
 
     c = sub.add_parser("status", help="show current STATUS (exit code reflects state)")
     c.add_argument("--json", action="store_true", default=False)
@@ -451,6 +475,18 @@ def cmd_fail(args: argparse.Namespace) -> int:
         write_status_mirror=args.write_status_mirror,
     )
     print(f"failed {_one_line(st)}: {args.reason}")
+    return 0
+
+
+def cmd_reclaim(args: argparse.Namespace) -> int:
+    st = _stage(args).reclaim(
+        args.reason,
+        keep_failed=getattr(args, "keep_failed", False),
+    )
+    if getattr(args, "keep_failed", False):
+        print(f"reclaimed {_one_line(st)}: {args.reason}")
+    else:
+        print(f"reclaimed {_one_line(st)}")
     return 0
 
 

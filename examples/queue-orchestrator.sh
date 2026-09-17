@@ -26,7 +26,7 @@
 #   - current stage `running`/`queued`: `wait` for terminal (blocking), or
 #     with `--once` exit immediately with 10/13 for cron-style re-polling.
 #     Stuck running (DEAD_PID / STALE) is not this script's job: use
-#     `wait --needs-reclaim` → `fail --if-needs-reclaim` (see
+#     `wait --needs-reclaim` → `reclaim --reason …` (see
 #     orchestrator-watchdog.sh --wait-reclaim), not a doctor sleep loop.
 #   - current stage not in queue (or no stage yet): act on status alone.
 #

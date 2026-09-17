@@ -7,7 +7,7 @@ The core thesis of `stage-signal` is simple:
 
 The orchestrator never scrapes terminal UIs, never parses markdown chat logs for "I am done", and never inspects internal agent databases. It relies solely on `stage-signal` CLI commands, on-disk status files, and normalized exit codes.
 
-Because the stage contract is completely decoupled from the agent implementation, the exact same orchestrator pattern works interchangeably with **Google Antigravity CLI (`agy`)** and **OpenCode (`opencode`)**. For multi-lane parallel execution in isolated worktrees with watchdog health monitoring, see [`docs/examples/orchestrator.md`](../docs/examples/orchestrator.md#reclaim-loop-wait---needs-reclaim). The reclaim loop is `wait --needs-reclaim` → `fail --if-needs-reclaim` → optional `events` audit → `clear-terminal` / restart — not a hand-rolled `doctor` sleep. Branch on `.needs_reclaim`, not `.summary` or `.ok`; inspect warning codes only to choose the response. The [watchdog](orchestrator-watchdog.sh) `--wait-reclaim` flag runs that loop. `--once --doctor-reclaim` remains a snapshot DEAD_PID-only reclaim (logs ATTENTION without failing a live runner with only a stale heartbeat; `--once` still reports running as `10`). To abandon a parked `queued` stage (never started), use `clear-terminal` (now allowed from queued). After either, audit with `stage-signal events --tail 20` (optional `--type failed` / `--type clear_terminal`; `--json` prints a JSON array). Do not scrape `events.jsonl`.
+Because the stage contract is completely decoupled from the agent implementation, the exact same orchestrator pattern works interchangeably with **Google Antigravity CLI (`agy`)** and **OpenCode (`opencode`)**. For multi-lane parallel execution in isolated worktrees with watchdog health monitoring, see [`docs/examples/orchestrator.md`](../docs/examples/orchestrator.md#reclaim-loop-wait---needs-reclaim). The reclaim loop is `wait --needs-reclaim` → `reclaim --reason …` → `start` — not a hand-rolled `doctor` sleep. Use `reclaim --keep-failed` + `events` + `clear-terminal` when the watchdog must inspect `failed` before clearing. Branch on `.needs_reclaim`, not `.summary` or `.ok`; inspect warning codes only to choose the response. The [watchdog](orchestrator-watchdog.sh) `--wait-reclaim` flag runs that loop. `--once --doctor-reclaim` remains a snapshot DEAD_PID-only reclaim (logs ATTENTION without failing a live runner with only a stale heartbeat; `--once` still reports running as `10`). To abandon a parked `queued` stage (never started), use `clear-terminal` (now allowed from queued). After either, audit with `stage-signal events --tail 20` (optional `--type failed` / `--type clear_terminal`; `--json` prints a JSON array). Do not scrape `events.jsonl`.
 
 ---
 
@@ -298,7 +298,7 @@ with open(log, "ab", buffering=0) as lf:
 In both setups:
 - The daemon redirects stdout and stderr to a private log file (`.agloop/run.log` or `.museloop/run.log`).
 - The external loop polls `queue-orchestrator.sh --queue QUEUE.md --once` via cron or a lightweight watchdog script.
-- Stuck `running` (DEAD_PID / STALE) is `wait --needs-reclaim` → `fail --if-needs-reclaim` → `events` → `clear-terminal` / restart, not a `doctor` sleep loop. See `orchestrator-watchdog.sh --wait-reclaim`.
+- Stuck `running` (DEAD_PID / STALE) is `wait --needs-reclaim` → `reclaim --reason …` → `start`, not a `doctor` sleep loop. See `orchestrator-watchdog.sh --wait-reclaim`. Use `reclaim --keep-failed` when the watchdog must audit `failed` before `clear-terminal`.
 
 ---
 

@@ -194,7 +194,7 @@ The exit code matches the current state (`10` for running, `0` for done, etc.).
 
 ### Reclaim loop: `wait --needs-reclaim`
 
-Do **not** cron-sleep on `doctor --json` / `doctor --exit-reclaim` to notice a dead PID or stale heartbeat. Block on the first-class waiter, then fail, audit, and reset:
+Do **not** cron-sleep on `doctor --json` / `doctor --exit-reclaim` to notice a dead PID or stale heartbeat. Block on the first-class waiter, then reclaim (fail+clear in one lock), optionally audit, and start:
 
 ```bash
 # Exit 0 when needs_reclaim becomes true (running + DEAD_PID or STALE_HEARTBEAT).
@@ -202,19 +202,20 @@ Do **not** cron-sleep on `doctor --json` / `doctor --exit-reclaim` to notice a d
 # Terminal without reclaim fails closed: done=1, blocked=11, failed=12.
 # Timeout=14; not initialized=15.
 if stage-signal --dir "$WORKTREE/.stage-signal" wait --needs-reclaim --timeout 3600 --poll 5; then
-  stage-signal --dir "$WORKTREE/.stage-signal" fail \
-    --reason "watchdog reclaim (DEAD_PID or STALE_HEARTBEAT)" --if-needs-reclaim
+  stage-signal --dir "$WORKTREE/.stage-signal" reclaim \
+    --reason "watchdog reclaim (DEAD_PID or STALE_HEARTBEAT)"
   # First-class audit (newest last). --json prints a JSON array, not NDJSON.
   stage-signal --dir "$WORKTREE/.stage-signal" events --tail 20 --type failed
-  # Return the worktree to idle, or restart the agent on a fresh start.
-  stage-signal --dir "$WORKTREE/.stage-signal" clear-terminal
   stage-signal --dir "$WORKTREE/.stage-signal" events --tail 5 --type clear_terminal
+  # Worktree is idle queued; start a new attempt, or use --keep-failed to
+  # stop after fail, audit, then clear-terminal separately:
+  # stage-signal --dir "$WORKTREE/.stage-signal" reclaim --reason "..." --keep-failed
 fi
 ```
 
 `wait --json --needs-reclaim` uses the same payload shape as `wait --json` (`outcome`, `wanted`, `observed_state` / `state`, `exit_code`, `timeout`, `stage_id`, `dir`, `reason`, `status`) with `wanted: "needs_reclaim"` and an always-present top-level `needs_reclaim` boolean (also nested on `status`). The [watchdog example](../../examples/orchestrator-watchdog.sh) exposes this as `--wait-reclaim`.
 
-`--if-dead-pid` remains the narrower DEAD_PID-only gate. `--if-dead-pid` and `--if-needs-reclaim` are mutually exclusive.
+`--if-dead-pid` remains the narrower DEAD_PID-only gate. `--if-dead-pid` and `--if-needs-reclaim` are mutually exclusive. `reclaim` is the one-shot fail+clear product command.
 
 ### CI reclaim gate: composite GitHub Action
 
@@ -233,9 +234,9 @@ In CI/CD watchdog workflows where a preinstalled venv is not present, the compos
 - name: Reclaim needed
   if: steps.wait.outputs.needs-reclaim == 'true'
   run: |
-    echo "reclaim-needed: stage ${{ steps.wait.outputs.stage-id }}"
-    # Fail stage if reclaim needed, triggering recovery or notification:
-    # stage-signal --dir .stage-signal fail --reason "CI watchdog reclaim" --if-needs-reclaim
+          echo "reclaim-needed: stage ${{ steps.wait.outputs.stage-id }}"
+          # Fail+clear to idle queued (or --keep-failed to audit then clear):
+          # stage-signal --dir .stage-signal reclaim --reason "CI watchdog reclaim"
 
 - name: Watchdog timed out
   if: steps.wait.outputs.timed-out == 'true'
@@ -342,11 +343,11 @@ fi
 
 Warning checks are secondary detail for choosing a response, not the primary health gate. A stale heartbeat does not prove the PID is dead: do not call `fail --if-dead-pid` for a stale-only live runner. The [watchdog example](../../examples/orchestrator-watchdog.sh) logs ATTENTION and returns `0` from its reclaim check in that case; `--once` still returns the observed running-state code `10`. Guarded fail rechecks the current PID under lock and can refuse if the snapshot has changed.
 
-To reclaim **either** `DEAD_PID` or `STALE_HEARTBEAT` in one shot (same `needs_reclaim` semantics as `doctor` / `status` / `Stage.diagnose()`), prefer the blocking loop above (`wait --needs-reclaim` → `fail --if-needs-reclaim`). The fail gate itself writes `failed` + reason only when reclaim is needed; healthy running and non-running states exit 3 with no mutation.
+To reclaim **either** `DEAD_PID` or `STALE_HEARTBEAT` in one shot (same `needs_reclaim` semantics as `doctor` / `status` / `Stage.diagnose()`), prefer the blocking loop above (`wait --needs-reclaim` → `reclaim --reason TEXT`). That command writes `failed` + reason then clears to idle queued in one lock; healthy running and non-running states exit 3 with no mutation. `reclaim --keep-failed` stops after fail for audit-then-clear. `fail --if-needs-reclaim` remains the fail-only gate.
 
 `--if-dead-pid` remains the narrower DEAD_PID-only gate. `--if-dead-pid` and `--if-needs-reclaim` are mutually exclusive.
 
-A parked `queued` stage (named or idle, no PID/heartbeat) cannot be `clear-terminal`'d on older trees. Current contract: `clear-terminal` accepts `queued` as well as `done`/`blocked`/`failed` and resets to idle queued with a `clear_terminal` event. From `running` it stays illegal — reclaim with `fail --if-needs-reclaim` first:
+A parked `queued` stage (named or idle, no PID/heartbeat) cannot be `clear-terminal`'d on older trees. Current contract: `clear-terminal` accepts `queued` as well as `done`/`blocked`/`failed` and resets to idle queued with a `clear_terminal` event. From `running` it stays illegal — reclaim with `reclaim --reason TEXT` (or `fail --if-needs-reclaim`) first:
 
 ```bash
 # Abandon a stuck queued stage (never started / parked) back to idle.
@@ -490,10 +491,12 @@ reclaim_lane() {
   local wt="$2"
 
   if stage-signal --dir "$wt/.stage-signal" wait --needs-reclaim --timeout 1800 --poll 10; then
-    echo "[$name] needs_reclaim; failing via --if-needs-reclaim" >&2
-    if stage-signal --dir "$wt/.stage-signal" fail \
-      --reason "[$name] watchdog reclaim (DEAD_PID or STALE_HEARTBEAT)" --if-needs-reclaim; then
+    echo "[$name] needs_reclaim; reclaiming (fail+clear to idle queued)" >&2
+    if stage-signal --dir "$wt/.stage-signal" reclaim \
+      --reason "[$name] watchdog reclaim (DEAD_PID or STALE_HEARTBEAT)"; then
       stage-signal --dir "$wt/.stage-signal" events --tail 20 --type failed >&2 || true
+      stage-signal --dir "$wt/.stage-signal" events --tail 5 --type clear_terminal >&2 || true
+      # idle queued — caller may start a new attempt
     fi
   fi
 }
@@ -534,5 +537,5 @@ echo "Lane opencode finished with code $STATUS_OC"
 
 - [ ] **One Worktree Per Lane**: Separate directories, separate branches, separate `.stage-signal/` folders.
 - [ ] **Accurate PIDs**: Pass the live PID to `start --pid` so `doctor` can spot process deaths.
-- [ ] **Automated Health Checks**: Block with `wait --needs-reclaim` then `fail --if-needs-reclaim` (optional `events` audit, then `clear-terminal` / restart). Do not sleep-loop `doctor`. Snapshot `doctor --json` still exists for inspection; branch on `.needs_reclaim == true`, never `.summary` or `.ok`. `fail --if-dead-pid` remains the narrower DEAD_PID-only gate.
-- [ ] **Clean Resets**: Use `stage-signal clear-terminal` to reset a terminal *or* parked queued worktree back to `queued -` between tasks. From `running`, reclaim first. After `fail --if-needs-reclaim` / `clear-terminal`, audit with `stage-signal events --tail 20` (optional `--type failed|clear_terminal`, `--json` for a JSON array).
+- [ ] **Automated Health Checks**: Block with `wait --needs-reclaim` then `reclaim --reason …` (optional `events` audit, then `start`). Use `reclaim --keep-failed` when the watchdog must inspect `failed` before `clear-terminal`. Do not sleep-loop `doctor`. Snapshot `doctor --json` still exists for inspection; branch on `.needs_reclaim == true`, never `.summary` or `.ok`. `fail --if-dead-pid` remains the narrower DEAD_PID-only gate.
+- [ ] **Clean Resets**: Use `stage-signal clear-terminal` to reset a terminal *or* parked queued worktree back to `queued -` between tasks. From `running`, `reclaim --reason TEXT` first. After `reclaim` / `fail --if-needs-reclaim` / `clear-terminal`, audit with `stage-signal events --tail 20` (optional `--type failed|clear_terminal`, `--json` for a JSON array).

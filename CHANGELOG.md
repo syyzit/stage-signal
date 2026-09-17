@@ -34,6 +34,12 @@ See `docs/RELEASE.md` for the release procedure.
 - Updated example workflows `examples/github-action-wait.yml` and added sibling
   `examples/github-action-wait-reclaim.yml` with copy-paste `if:` branches for
   reclaim-needed vs timeout vs terminal-without-reclaim (#85).
+- Added `stage-signal reclaim --reason TEXT [--keep-failed]` and
+  `Stage.reclaim(reason, keep_failed=False)`: when `needs_reclaim` is true,
+  fail then `clear-terminal` to idle queued in one exclusive lock (two
+  events, one exit 0); when false, exit 3 with no mutation. `--keep-failed`
+  stops after fail for watchdog audit then clear. Orchestrator reclaim loop
+  is `wait --needs-reclaim` → `reclaim --reason …` → `start` (#84).
 
 ## [0.1.6] — 2026-09-17
 

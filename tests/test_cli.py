@@ -148,6 +148,145 @@ def test_fail_help_documents_if_needs_reclaim() -> None:
     assert "--if-needs-reclaim" in help_text
 
 
+def test_reclaim_in_top_level_help() -> None:
+    help_text = build_parser().format_help()
+    assert "reclaim" in help_text
+
+
+def test_reclaim_help_documents_reason_and_keep_failed() -> None:
+    parser = build_parser()
+    reclaim_parser = None
+    for action in parser._actions:
+        if hasattr(action, "_name_parser_map") and "reclaim" in action._name_parser_map:
+            reclaim_parser = action._name_parser_map["reclaim"]
+            break
+    assert reclaim_parser is not None
+    help_text = reclaim_parser.format_help()
+    assert "--reason" in help_text
+    assert "--keep-failed" in help_text
+    assert "needs_reclaim" in help_text
+
+
+def test_cli_reclaim_dead_pid_ends_idle_queued(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    stage = Stage(tmp_path / ".stage-signal")
+    stage.init()
+    process = subprocess.Popen([sys.executable, "-c", "pass"])
+    process.wait(timeout=10)
+    stage.start(stage="m", pid=process.pid)
+
+    assert main(["--dir", str(stage.dir), "reclaim", "--reason", "worker exited"]) == 0
+    out = capsys.readouterr().out
+    assert "reclaimed queued" in out
+    st = stage.status()
+    assert st["state"] == "queued"
+    assert st["stage_name"] is None
+    assert st["error"] is None
+    events = [json.loads(line) for line in (stage.dir / "events.jsonl").read_text().splitlines()]
+    assert events[-2]["type"] == "failed"
+    assert events[-2]["message"] == "worker exited"
+    assert events[-1]["type"] == "clear_terminal"
+
+
+def test_cli_reclaim_stale_ends_idle_queued(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    stage = Stage(tmp_path / ".stage-signal")
+    stage.init()
+    stage.start(stage="m", pid=os.getpid())
+    status_file = stage.dir / "STATUS.json"
+    raw = json.loads(status_file.read_text(encoding="utf-8"))
+    raw["heartbeat_at"] = "2000-01-01T00:00:00+00:00"
+    status_file.write_text(json.dumps(raw), encoding="utf-8")
+
+    assert main(["--dir", str(stage.dir), "reclaim", "--reason", "stale runner"]) == 0
+    assert "reclaimed queued" in capsys.readouterr().out
+    st = stage.status()
+    assert st["state"] == "queued"
+    assert st["stage_name"] is None
+
+
+def test_cli_reclaim_keep_failed(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    stage = Stage(tmp_path / ".stage-signal")
+    stage.init()
+    process = subprocess.Popen([sys.executable, "-c", "pass"])
+    process.wait(timeout=10)
+    stage.start(stage="m", pid=process.pid)
+
+    assert main([
+        "--dir", str(stage.dir), "reclaim", "--reason", "audit", "--keep-failed",
+    ]) == 0
+    out = capsys.readouterr().out
+    assert "reclaimed failed" in out
+    assert "audit" in out
+    st = stage.status()
+    assert st["state"] == "failed"
+    assert st["error"]["reason"] == "audit"
+    events = [json.loads(line) for line in (stage.dir / "events.jsonl").read_text().splitlines()]
+    assert events[-1]["type"] == "failed"
+
+
+def test_cli_reclaim_healthy_running_no_mutation(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    stage = Stage(tmp_path / ".stage-signal")
+    stage.init()
+    stage.start(stage="m", pid=os.getpid())
+    before = {name: (stage.dir / name).read_bytes() for name in ("STATUS.json", "STATUS.md", "events.jsonl")}
+
+    assert main(["--dir", str(stage.dir), "reclaim", "--reason", "not reclaimable"]) == 3
+    err = capsys.readouterr().err
+    assert "reclaim refused" in err
+    assert "needs_reclaim is false" in err
+    assert {name: (stage.dir / name).read_bytes() for name in before} == before
+
+
+@pytest.mark.parametrize("state,setup", [
+    ("queued", None),
+    ("done", "done"),
+    ("blocked", "blocked"),
+    ("failed", "failed"),
+])
+def test_cli_reclaim_terminal_without_reclaim_no_mutation(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], state: str, setup: str | None
+) -> None:
+    stage = Stage(tmp_path / ".stage-signal")
+    stage.init()
+    if setup == "done":
+        stage.done()
+    elif setup == "blocked":
+        stage.blocked("waiting")
+    elif setup == "failed":
+        stage.fail("previous")
+    before = {name: (stage.dir / name).read_bytes() for name in ("STATUS.json", "STATUS.md", "events.jsonl")}
+
+    assert main(["--dir", str(stage.dir), "reclaim", "--reason", "not reclaimable"]) == 3
+    err = capsys.readouterr().err
+    assert "reclaim refused" in err
+    assert f"state='{state}'" in err
+    assert {name: (stage.dir / name).read_bytes() for name in before} == before
+
+
+def test_cli_reclaim_idempotent_second_call(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    stage = Stage(tmp_path / ".stage-signal")
+    stage.init()
+    process = subprocess.Popen([sys.executable, "-c", "pass"])
+    process.wait(timeout=10)
+    stage.start(stage="m", pid=process.pid)
+    assert main(["--dir", str(stage.dir), "reclaim", "--reason", "first"]) == 0
+    capsys.readouterr()
+    before = {name: (stage.dir / name).read_bytes() for name in ("STATUS.json", "STATUS.md", "events.jsonl")}
+
+    assert main(["--dir", str(stage.dir), "reclaim", "--reason", "second"]) == 3
+    assert "needs_reclaim is false" in capsys.readouterr().err
+    assert {name: (stage.dir / name).read_bytes() for name in before} == before
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="watchdog requires a POSIX shell")
 @pytest.mark.parametrize("dead_pid,stale", [(False, False), (False, True), (True, False), (True, True)])
 def test_watchdog_needs_reclaim(tmp_path: Path, dead_pid: bool, stale: bool) -> None:
@@ -207,6 +346,43 @@ def test_watchdog_wait_reclaim(tmp_path: Path, dead_pid: bool, stale: bool) -> N
     command = [
         "sh", str(root / "examples/orchestrator-watchdog.sh"),
         "--dir", str(stage.dir), "--wait-reclaim", "--timeout", "5", "--poll", "0.05",
+    ]
+
+    result = subprocess.run(command, env=env, capture_output=True, text=True, timeout=10)
+
+    assert result.returncode == 0, result.stderr
+    st = stage.status()
+    assert st["state"] == "queued"
+    assert st["stage_name"] is None
+    assert "idle queued" in result.stderr
+    events = [json.loads(line) for line in (stage.dir / "events.jsonl").read_text().splitlines()]
+    assert events[-2]["type"] == "failed"
+    assert "needs_reclaim" in events[-2]["message"]
+    assert events[-1]["type"] == "clear_terminal"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="watchdog requires a POSIX shell")
+@pytest.mark.parametrize("dead_pid,stale", [(True, False), (False, True)])
+def test_watchdog_wait_reclaim_keep_failed(tmp_path: Path, dead_pid: bool, stale: bool) -> None:
+    root = Path(__file__).resolve().parents[1]
+    stage = Stage(tmp_path / ".stage-signal")
+    stage.init()
+    pid = os.getpid()
+    if dead_pid:
+        process = subprocess.Popen([sys.executable, "-c", "pass"])
+        process.wait(timeout=10)
+        pid = process.pid
+    status = stage.start(stage="watchdog-wait-keep", pid=pid)
+    if stale:
+        status["heartbeat_at"] = "2000-01-01T00:00:00+00:00"
+        (stage.dir / "STATUS.json").write_text(json.dumps(status))
+    env = dict(os.environ)
+    env["PATH"] = str(Path(sys.executable).parent) + os.pathsep + env.get("PATH", "")
+    env["PYTHONPATH"] = str(root / "src")
+    command = [
+        "sh", str(root / "examples/orchestrator-watchdog.sh"),
+        "--dir", str(stage.dir), "--wait-reclaim", "--keep-failed",
+        "--timeout", "5", "--poll", "0.05",
     ]
 
     result = subprocess.run(command, env=env, capture_output=True, text=True, timeout=10)

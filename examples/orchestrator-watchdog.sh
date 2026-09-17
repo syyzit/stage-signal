@@ -8,27 +8,32 @@
 #   stage-signal events [--tail N] [--type TYPE] [--json]
 # then decides what to do next (enqueue the next stage, alert, stop).
 # Reclaim loop (no doctor sleep):
-#   wait --needs-reclaim → fail --if-needs-reclaim → events → clear-terminal
-# After fail --if-needs-reclaim / clear-terminal, audit via `events`
+#   wait --needs-reclaim → reclaim --reason … → idle queued (ready for start)
+#   or: reclaim --keep-failed → events → clear-terminal
+# After reclaim / clear-terminal, audit via `events`
 # (do not scrape events.jsonl with tail/jq).
 #
 # Usage:
 #   ./examples/orchestrator-watchdog.sh [--dir PATH] [--state WANT] [--timeout SEC] [--poll SEC] [--once]
-#   ./examples/orchestrator-watchdog.sh [--dir PATH] --wait-reclaim [--timeout SEC] [--poll SEC]
+#   ./examples/orchestrator-watchdog.sh [--dir PATH] --wait-reclaim [--timeout SEC] [--poll SEC] [--keep-failed]
 #
 #   --dir PATH       stage dir (default: ./.stage-signal or $STAGE_SIGNAL_DIR)
 #   --state WANT     done|blocked|failed|terminal (default: terminal)
 #   --timeout SEC    wait timeout in seconds (default: 3600)
 #   --poll SEC       poll interval in seconds (default: 5)
 #   --once           single status check, no blocking wait (cron style)
-#   --wait-reclaim   block on wait --needs-reclaim, then fail --if-needs-reclaim
-#                    (cannot combine with --once; use --once --doctor-reclaim
-#                    for a snapshot DEAD_PID-only reclaim)
+#   --wait-reclaim   block on wait --needs-reclaim, then reclaim --reason
+#                    (fail+clear to idle queued; cannot combine with --once;
+#                    use --once --doctor-reclaim for a snapshot DEAD_PID-only
+#                    reclaim)
+#   --keep-failed    with --wait-reclaim, stop after fail without clear
+#                    (stage stays failed, exit 12; audit then clear-terminal)
 #
 # Exit code follows the observed-state contract (see README / docs/SPEC.md):
-#   0 condition met, 10 running, 11 blocked, 12 failed,
+#   0 condition met / reclaim-to-idle succeeded, 10 running, 11 blocked,
+#   12 failed (including --wait-reclaim --keep-failed),
 #   13 queued, 14 wait timeout, 15 not initialized, 1 wait --needs-reclaim
-#   ended in done without reclaim, 2 bad args.
+#   ended in done without reclaim, 2 bad args, 3 reclaim refused.
 #
 # Requires the `stage-signal` entry point on PATH (see README: create a venv,
 # then `pip install -e .`).
@@ -41,6 +46,7 @@ POLL="5"
 ONCE=0
 DOCTOR_RECLAIM=0
 WAIT_RECLAIM=0
+KEEP_FAILED=0
 
 usage() {
   sed -n '2,/^set -u/p' "$0" | sed 's/^# \{0,1\}//'
@@ -55,6 +61,7 @@ while [ $# -gt 0 ]; do
     --once) ONCE=1; shift ;;
     --doctor-reclaim) DOCTOR_RECLAIM=1; shift ;;
     --wait-reclaim) WAIT_RECLAIM=1; shift ;;
+    --keep-failed) KEEP_FAILED=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "orchestrator-watchdog: unknown arg: $1" >&2; usage >&2; exit 2 ;;
   esac
@@ -113,8 +120,9 @@ print('%s %s (attempt %s)' % (st.get('state'), st.get('stage_name') or '-', st.g
 # STALE_HEARTBEAT-only (live runner) logs ATTENTION and does not fail: a stale
 # heartbeat does not prove the PID is dead. For the first-class blocking
 # reclaim loop (DEAD_PID or STALE_HEARTBEAT), use `--wait-reclaim` which
-# calls `wait --needs-reclaim` then `fail --if-needs-reclaim` (same
-# needs_reclaim semantics as diagnose/doctor/status). `--doctor-reclaim`
+# calls `wait --needs-reclaim` then `reclaim --reason` (same
+# needs_reclaim semantics as diagnose/doctor/status; default fail+clear
+# to idle queued). `--keep-failed` stops after fail. `--doctor-reclaim`
 # stays DEAD_PID-only so a hung-but-alive runner is not auto-failed.
 # The snapshot shown after reclaim may lag by one poll cycle. Exit codes:
 #   0 no DEAD_PID warning (or reclaim succeeded)
@@ -179,22 +187,42 @@ if [ "$WAIT_RECLAIM" = "1" ] && [ "$ONCE" = "1" ]; then
   exit 2
 fi
 
+if [ "$KEEP_FAILED" = "1" ] && [ "$WAIT_RECLAIM" != "1" ]; then
+  echo "orchestrator-watchdog: --keep-failed requires --wait-reclaim" >&2
+  exit 2
+fi
+
 if [ "$WAIT_RECLAIM" = "1" ]; then
   # First-class reclaim loop: no doctor sleep.
-  #   wait --needs-reclaim → fail --if-needs-reclaim → events
-  # clear-terminal / restart is left to the caller (or run after this exits 12).
+  #   wait --needs-reclaim → reclaim --reason → idle queued
+  #   or reclaim --keep-failed (leave failed for events audit + clear-terminal)
   echo "orchestrator-watchdog: waiting for needs_reclaim timeout=${TIMEOUT}s poll=${POLL}s" >&2
   if ST wait --needs-reclaim --timeout "$TIMEOUT" --poll "$POLL"; then
-    echo "orchestrator-watchdog: needs_reclaim; failing via --if-needs-reclaim" >&2
-    if ST fail --reason "reclaimed by orchestrator-watchdog: needs_reclaim (DEAD_PID or STALE_HEARTBEAT)" --if-needs-reclaim; then
-      echo "orchestrator-watchdog: stage reclaimed as failed" >&2
-      ST events --tail 20 --type failed >&2 || true
-      describe || true
-      exit 12
+    if [ "$KEEP_FAILED" = "1" ]; then
+      echo "orchestrator-watchdog: needs_reclaim; reclaim --keep-failed" >&2
+      if ST reclaim --reason "reclaimed by orchestrator-watchdog: needs_reclaim (DEAD_PID or STALE_HEARTBEAT)" --keep-failed; then
+        echo "orchestrator-watchdog: stage reclaimed as failed" >&2
+        ST events --tail 20 --type failed >&2 || true
+        describe || true
+        exit 12
+      else
+        rc=$?
+        echo "orchestrator-watchdog: reclaim --keep-failed refused or failed (exit $rc); no mutation" >&2
+        exit "$rc"
+      fi
     else
-      rc=$?
-      echo "orchestrator-watchdog: fail --if-needs-reclaim refused or failed (exit $rc); no mutation" >&2
-      exit "$rc"
+      echo "orchestrator-watchdog: needs_reclaim; reclaim (fail+clear to idle queued)" >&2
+      if ST reclaim --reason "reclaimed by orchestrator-watchdog: needs_reclaim (DEAD_PID or STALE_HEARTBEAT)"; then
+        echo "orchestrator-watchdog: stage reclaimed to idle queued" >&2
+        ST events --tail 20 --type failed >&2 || true
+        ST events --tail 5 --type clear_terminal >&2 || true
+        describe || true
+        exit 0
+      else
+        rc=$?
+        echo "orchestrator-watchdog: reclaim refused or failed (exit $rc); no mutation" >&2
+        exit "$rc"
+      fi
     fi
   else
     wait_code=$?

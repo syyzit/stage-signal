@@ -77,4 +77,21 @@ ST start --stage reclaim --pid 999999999 >/dev/null || fail "start reclaim dead 
 ST wait --needs-reclaim --timeout 2 --poll 0.1 >/dev/null || fail "wait --needs-reclaim on DEAD_PID should exit 0"
 pass "wait --needs-reclaim on DEAD_PID -> exit 0"
 
+ST reclaim --reason "smoke reclaim dead pid" >/dev/null || fail "reclaim on DEAD_PID"
+[ "$(STATE_OF)" = "queued" ] || fail "expected queued after reclaim"
+NAME="$(ST status --json | python3 -c "import json,sys; print(json.load(sys.stdin).get('stage_name'))")"
+[ "$NAME" = "None" ] || fail "expected idle queued (stage_name null) after reclaim, got $NAME"
+pass "reclaim --reason -> idle queued"
+
+ST events --json --type failed --tail 1 >/dev/null || fail "events after reclaim (failed)"
+ST events --json --type clear_terminal --tail 1 >/dev/null || fail "events after reclaim (clear_terminal)"
+pass "events after reclaim"
+
+ST start --stage reclaim2 --pid $$ >/dev/null || fail "start reclaim2 healthy"
+ST reclaim --reason "should refuse" >/dev/null 2>&1
+code=$?
+[ "$code" -eq 3 ] || fail "reclaim on healthy running should exit 3, got $code"
+[ "$(STATE_OF)" = "running" ] || fail "healthy reclaim must not mutate"
+pass "reclaim on healthy running -> exit 3, no mutation"
+
 echo "ALL SMOKE CHECKS PASSED"

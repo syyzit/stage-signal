@@ -106,8 +106,8 @@ jobs:
         run: |
           echo "reclaim-needed stage_id=${{ steps.wait.outputs.stage-id }}"
           echo "state=${{ steps.wait.outputs.state }}"
-          # Optional: fail the stage if needs reclaim, or trigger alerting / recovery
-          # stage-signal --dir .stage-signal fail --reason "CI watchdog reclaim" --if-needs-reclaim
+          # Optional: fail+clear to idle queued (or --keep-failed to audit then clear)
+          # stage-signal --dir .stage-signal reclaim --reason "CI watchdog reclaim"
 
       # Branch 2: Watchdog timed out (timed-out == 'true', outcome == 'timeout', exit-code 14)
       - name: Watchdog timed out
