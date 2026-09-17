@@ -125,6 +125,9 @@ STATUS_REQUIRED_KEYS = (
     "meta",
 )
 
+ARTIFACT_ENTRY_KEYS = ("path", "label", "added_at")
+NOTE_ENTRY_KEYS = ("text", "added_at")
+
 STATUS_JSON_KEYS = STATUS_REQUIRED_KEYS + (
     "needs_reclaim",
     "heartbeat_age_seconds",

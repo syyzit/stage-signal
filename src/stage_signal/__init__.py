@@ -1,6 +1,7 @@
 """stage-signal public API."""
 
 from .constants import (
+    ARTIFACT_ENTRY_KEYS,
     DEFAULT_STALE_THRESHOLD,
     DOCTOR_JSON_KEYS,
     EVENT_RECORD_KEYS,
@@ -16,6 +17,7 @@ from .constants import (
     EXIT_QUEUED,
     EXIT_RUNNING,
     EXIT_WAIT_TIMEOUT,
+    NOTE_ENTRY_KEYS,
     SCHEMA_VERSION,
     STATES,
     STATUS_JSON_KEYS,
@@ -92,6 +94,8 @@ __all__ = [
     "EXIT_QUEUED",
     "EXIT_WAIT_TIMEOUT",
     "EXIT_NOT_INITIALIZED",
+    "ARTIFACT_ENTRY_KEYS",
+    "NOTE_ENTRY_KEYS",
     "STATUS_REQUIRED_KEYS",
     "STATUS_JSON_KEYS",
     "DOCTOR_JSON_KEYS",
