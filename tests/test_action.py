@@ -29,12 +29,14 @@ def test_action_yml_declares_outputs_and_inputs() -> None:
     assert "timed-out:" in content
     assert "stage-id:" in content
     assert "json:" in content
+    assert "reason:" in content
     assert "poll:" in content
     assert "id: wait" in content
     assert "steps.wait.outputs.state" in content
     assert "steps.wait.outputs.outcome" in content
     assert "steps.wait.outputs.exit-code" in content
     assert "steps.wait.outputs.timed-out" in content
+    assert "steps.wait.outputs.reason" in content
 
 
 def _parse_github_output(path: Path) -> dict[str, str]:
@@ -123,6 +125,7 @@ def _run_action_wait_step(
         outcome = ""
         timed_out = "false"
         stage_id = ""
+        reason = ""
 
         if raw_json.strip():
             try:
@@ -132,6 +135,15 @@ def _run_action_wait_step(
                 exit_code = int(data.get("exit_code", exit_code))
                 timed_out = "true" if data.get("timeout") else "false"
                 stage_id = str(data.get("stage_id") or "")
+                reason = str(data.get("reason") or "")
+                status = data.get("status") or {}
+                if isinstance(status, dict):
+                    if not stage_id:
+                        stage_id = str(status.get("stage_id") or "")
+                    if not reason:
+                        err = status.get("error") or {}
+                        if isinstance(err, dict):
+                            reason = str(err.get("reason") or "")
             except Exception:
                 pass
 
@@ -142,6 +154,10 @@ def _run_action_wait_step(
                     st = json.loads(status_file.read_text(encoding="utf-8"))
                     observed = str(st.get("state") or "")
                     stage_id = str(st.get("stage_id") or "")
+                    if not reason:
+                        err = st.get("error") or {}
+                        if isinstance(err, dict):
+                            reason = str(err.get("reason") or "")
                 except Exception:
                     pass
 
@@ -158,6 +174,10 @@ def _run_action_wait_step(
 
         if exit_code == 14:
             timed_out = "true"
+            if not reason:
+                reason = "wait timed out"
+
+        reason = " ".join(reason.splitlines()).strip()
 
         nl = "\n"
         with open(gh_out, "a", encoding="utf-8") as f:
@@ -171,6 +191,7 @@ def _run_action_wait_step(
             f.write(f"timed_out={timed_out}{nl}")
             f.write(f"stage-id={stage_id}{nl}")
             f.write(f"stage_id={stage_id}{nl}")
+            f.write(f"reason={reason}{nl}")
             if raw_json.strip():
                 delim = f"ghdel_{uuid.uuid4().hex}"
                 f.write(f"json<<{delim}{nl}{raw_json.strip()}{nl}{delim}{nl}")
@@ -192,6 +213,7 @@ def test_action_wait_met_done(tmp_path: Path) -> None:
     assert out["exit-code"] == "0"
     assert out["timed-out"] == "false"
     assert out["stage-id"] == "ci-123"
+    assert out["reason"] == ""
     assert "tests passed" in out["json"]
 
 
@@ -208,6 +230,7 @@ def test_action_wait_mismatch_blocked(tmp_path: Path) -> None:
     assert out["exit-code"] == "11"
     assert out["timed-out"] == "false"
     assert out["stage-id"] == "rev-1"
+    assert out["reason"] == "waiting for approval"
 
 
 def test_action_wait_mismatch_failed(tmp_path: Path) -> None:
@@ -223,6 +246,7 @@ def test_action_wait_mismatch_failed(tmp_path: Path) -> None:
     assert out["exit-code"] == "12"
     assert out["timed-out"] == "false"
     assert out["stage-id"] == "dep-2"
+    assert out["reason"] == "out of memory"
 
 
 def test_action_wait_timeout(tmp_path: Path) -> None:
@@ -237,6 +261,7 @@ def test_action_wait_timeout(tmp_path: Path) -> None:
     assert out["exit-code"] == "14"
     assert out["timed-out"] == "true"
     assert out["stage-id"] == "long-1"
+    assert "timed out" in out["reason"]
 
 
 def test_action_wait_fallback_no_json(tmp_path: Path) -> None:
@@ -252,3 +277,17 @@ def test_action_wait_fallback_no_json(tmp_path: Path) -> None:
     assert out["exit-code"] == "11"
     assert out["timed-out"] == "false"
     assert out["stage-id"] == "fb-1"
+    assert out["reason"] == "need creds"
+
+
+def test_example_workflow_branches_on_ci_outcomes() -> None:
+    content = (ROOT / "examples" / "github-action-wait.yml").read_text(encoding="utf-8")
+    assert "continue-on-error: true" in content
+    assert "steps.wait.outputs.state == 'done'" in content
+    assert "steps.wait.outputs.state == 'blocked'" in content
+    assert "steps.wait.outputs.state == 'failed'" in content
+    assert "steps.wait.outputs.timed-out == 'true'" in content
+    assert "steps.wait.outputs.reason" in content
+    assert "steps.wait.outputs.exit-code" in content
+    assert "exit 1" in content
+

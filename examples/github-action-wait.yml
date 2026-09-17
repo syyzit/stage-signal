@@ -1,3 +1,25 @@
+# Copy-paste GitHub Actions workflow: wait on an existing `.stage-signal/` dir
+# and branch on done / blocked / failed / timeout without scraping logs.
+#
+# Composite action inputs (all optional):
+#   dir, state, timeout, poll, python-version, version, cache,
+#   cache-dependency-path, pip-cache
+#
+# Composite action outputs:
+#   state / observed-state / observed_state
+#   outcome                  (met | mismatch | timeout | error)
+#   exit-code / exit_code    (0 met, 11 blocked, 12 failed, 14 timeout, …)
+#   timed-out / timed_out    ("true" | "false")
+#   stage-id / stage_id
+#   reason                   (blocked/failed text, or timeout message)
+#   json                     (raw wait --json payload)
+#
+# Pin the action ref (@v0.1.6) independently of the optional `version` pip pin.
+# Composite steps use `shell: bash` (GitHub-hosted Ubuntu / macOS / Windows).
+# Non-zero wait codes fail the step unless `continue-on-error: true` — that
+# is what keeps 11/12/14 from collapsing into a generic failure so later
+# `if:` branches can read `state` / `timed-out` / `reason`.
+
 name: Wait for stage signal
 
 on:
@@ -9,6 +31,7 @@ jobs:
     timeout-minutes: 65
     steps:
       - uses: actions/checkout@v4
+
       - name: Wait for an existing stage
         id: wait
         continue-on-error: true
@@ -17,9 +40,39 @@ jobs:
           dir: .stage-signal
           state: terminal
           timeout: 3600
+          # poll: "5.0"
           version: "0.1.6"
-      - name: Branch on wait outcome
+
+      - name: Stage done
+        if: steps.wait.outputs.state == 'done'
         run: |
-          echo "outcome=${{ steps.wait.outputs.outcome }}"
-          echo "state=${{ steps.wait.outputs.state }}"
-          echo "exit_code=${{ steps.wait.outputs.exit_code }}"
+          echo "done stage_id=${{ steps.wait.outputs.stage-id }}"
+          echo "exit_code=${{ steps.wait.outputs.exit-code }}"
+
+      - name: Stage blocked
+        if: steps.wait.outputs.state == 'blocked'
+        run: |
+          echo "blocked stage_id=${{ steps.wait.outputs.stage-id }}"
+          echo "reason=${{ steps.wait.outputs.reason }}"
+
+      - name: Stage failed
+        if: steps.wait.outputs.state == 'failed'
+        run: |
+          echo "failed stage_id=${{ steps.wait.outputs.stage-id }}"
+          echo "reason=${{ steps.wait.outputs.reason }}"
+
+      - name: Wait timed out
+        if: steps.wait.outputs.timed-out == 'true'
+        run: |
+          echo "timeout observed_state=${{ steps.wait.outputs.state }}"
+          echo "reason=${{ steps.wait.outputs.reason }}"
+
+      # Optional: fail the job unless the stage reached done.
+      # Waiting for `terminal` treats blocked/failed as outcome=met (exit 0);
+      # branch on `state` (and `timed-out`) rather than `outcome` or the raw
+      # wait exit code alone.
+      - name: Fail unless done
+        if: steps.wait.outputs.state != 'done'
+        run: |
+          echo "not done: state=${{ steps.wait.outputs.state }} reason=${{ steps.wait.outputs.reason }}"
+          exit 1

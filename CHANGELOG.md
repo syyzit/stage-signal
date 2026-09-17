@@ -6,6 +6,13 @@ See `docs/RELEASE.md` for the release procedure.
 
 ## [Unreleased]
 
+- `wait --json` includes a top-level `reason` (`status.error.reason` when
+  blocked/failed, or the short timeout message; otherwise `null`).
+- Composite action exposes a `reason` step output so CI can branch on
+  done / blocked / failed / timeout without scraping logs.
+- Example workflow `examples/github-action-wait.yml` shows copy-paste
+  `if:` branches for those four outcomes.
+
 ## [0.1.6] — 2026-09-17
 
 - Added `needs_reclaim` boolean to `stage-signal doctor --json` output and `Stage.diagnose()`,
