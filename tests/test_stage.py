@@ -1207,6 +1207,43 @@ def test_done_accept_failure_illegal_states(stage: Stage) -> None:
 
 
 
+@pytest.mark.parametrize(
+    ("locale", "timezone"),
+    [("fr_FR.UTF-8", "Europe/Paris"), ("ja_JP.UTF-8", "Asia/Tokyo")],
+)
+def test_pid_token_macos_pins_locale_and_timezone(
+    monkeypatch: pytest.MonkeyPatch, locale: str, timezone: str
+) -> None:
+    from stage_signal.stage import _pid_token
+
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setenv("LC_ALL", locale)
+    monkeypatch.setenv("TZ", timezone)
+    inherited_env = dict(os.environ)
+    calls = []
+
+    def fake_run(args: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        calls.append(args)
+        assert args == ["ps", "-o", "lstart=", "-p", "123"]
+        env = kwargs.pop("env")
+        assert env["LC_ALL"] == "C"
+        assert env["TZ"] == "UTC"
+        assert all(
+            env[key] == value
+            for key, value in inherited_env.items()
+            if key not in {"LC_ALL", "TZ"}
+        )
+        assert kwargs == {"capture_output": True, "text": True, "timeout": 5}
+        return subprocess.CompletedProcess(
+            args, 0, stdout="  Thu Sep 17 18:00:00 2026\n"
+        )
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    assert _pid_token(123) == "Thu Sep 17 18:00:00 2026"
+    assert len(calls) == 1
+    assert dict(os.environ) == inherited_env
+
+
 def test_start_records_pid_token(stage: Stage) -> None:
     st = stage.start(stage="m1")
     assert st["pid"] == os.getpid()
