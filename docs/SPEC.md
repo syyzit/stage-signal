@@ -100,6 +100,7 @@ includes a dynamically computed `heartbeat_age_seconds`: number of elapsed
 seconds since `heartbeat_at` (float ≥ 0), or `null` when no heartbeat timestamp
 is recorded or unparseable. This dynamic field is computed on read and is not
 persisted to `STATUS.json` on disk.
+Heartbeat age is available only when `state == "running"`; for `done`, `failed`, `blocked`, or `queued`, human `status` omits `(age …)` and JSON `heartbeat_age_seconds` is `null`, even if `heartbeat_at` remains recorded.
 
 ## 4. States & transitions
 
