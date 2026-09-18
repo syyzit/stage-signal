@@ -58,6 +58,9 @@ from stage_signal import (
     PROOF_KEYS,
     PROOF_VERIFIED_VALUES,
     PUBLIC_EXPORTS,
+    RECLAIM_ALLOWED_SOURCES,
+    RECLAIM_CLEAR_TERMINAL_DETAIL_KEYS,
+    RECLAIM_FAILED_DETAIL_KEYS,
     RESULT_KEYS,
     SCHEMA_VERSION,
     STATE_BLOCKED,
@@ -3746,7 +3749,7 @@ def test_diagnose_doctor_json_summary_null_on_problems(
 
 
 def test_public_exports_constant_freeze() -> None:
-    """PUBLIC_EXPORTS matches the frozen 114-element tuple in SPEC §13.21."""
+    """PUBLIC_EXPORTS matches the frozen 117-element tuple in SPEC §13.21."""
     expected = (
         "ALLOWED_TRANSITIONS",
         "ARTIFACT_ENTRY_KEYS",
@@ -3801,6 +3804,9 @@ def test_public_exports_constant_freeze() -> None:
         "PROOF_REQUIRED_KEYS",
         "PROOF_VERIFIED_VALUES",
         "PUBLIC_EXPORTS",
+        "RECLAIM_ALLOWED_SOURCES",
+        "RECLAIM_CLEAR_TERMINAL_DETAIL_KEYS",
+        "RECLAIM_FAILED_DETAIL_KEYS",
         "RESULT_KEYS",
         "SCHEMA_VERSION",
         "STAGE_PUBLIC_METHODS",
@@ -3865,7 +3871,7 @@ def test_public_exports_constant_freeze() -> None:
     )
     assert PUBLIC_EXPORTS == expected
     assert isinstance(PUBLIC_EXPORTS, tuple)
-    assert len(PUBLIC_EXPORTS) == 114
+    assert len(PUBLIC_EXPORTS) == 117
     assert PUBLIC_EXPORTS == tuple(sorted(PUBLIC_EXPORTS))
     assert len(PUBLIC_EXPORTS) == len(set(PUBLIC_EXPORTS))
 
@@ -3992,6 +3998,9 @@ def test_public_exports_category_coverage() -> None:
         "STATUS_MD_REQUIRED_HEADINGS",
         "STATUS_MD_HEADINGS",
         "PUBLIC_EXPORTS",
+        "RECLAIM_ALLOWED_SOURCES",
+        "RECLAIM_CLEAR_TERMINAL_DETAIL_KEYS",
+        "RECLAIM_FAILED_DETAIL_KEYS",
         "SUPERVISE_ADOPT_MESSAGE_FORMAT",
         "SUPERVISE_ADOPT_DETAIL_KEYS",
         "SUPERVISE_DONE_SUMMARY_FORMAT",
@@ -4691,7 +4700,49 @@ def test_clear_terminal_audit_event_shape_freeze(tmp_path: Path) -> None:
 
 
 # =============================================================================
-# 23. Heartbeat liveness contract freeze (SPEC §13.27, issue #148)
+# =============================================================================
+# 23. Reclaim fail-and-clear contract freeze (SPEC §13.25, issue #145)
+# =============================================================================
+
+
+def test_reclaim_constants_freeze() -> None:
+    """Reclaim frozen constants match the exact values in SPEC §13.25.1."""
+    assert RECLAIM_ALLOWED_SOURCES == ("running",)
+    assert isinstance(RECLAIM_ALLOWED_SOURCES, tuple)
+    assert set(RECLAIM_ALLOWED_SOURCES) == {STATE_RUNNING}
+
+    # Matches transition matrix query helpers (SPEC §13.19)
+    assert set(allowed_source_states("reclaim")) == set(RECLAIM_ALLOWED_SOURCES)
+    assert set(allowed_source_states("reclaim --keep-failed")) == set(
+        RECLAIM_ALLOWED_SOURCES
+    )
+    assert set(allowed_source_states("reclaim_keep_failed")) == set(
+        RECLAIM_ALLOWED_SOURCES
+    )
+
+    assert RECLAIM_FAILED_DETAIL_KEYS == ("reclaim", "keep_failed")
+    assert isinstance(RECLAIM_FAILED_DETAIL_KEYS, tuple)
+
+    assert RECLAIM_CLEAR_TERMINAL_DETAIL_KEYS == ("keep_stage", "reclaim")
+    assert isinstance(RECLAIM_CLEAR_TERMINAL_DETAIL_KEYS, tuple)
+
+
+def test_reclaim_constants_exported_from_top_level() -> None:
+    """Reclaim freeze constants are exported from top-level stage_signal (SPEC §13.25)."""
+    import stage_signal
+
+    for name, expected in (
+        ("RECLAIM_ALLOWED_SOURCES", RECLAIM_ALLOWED_SOURCES),
+        ("RECLAIM_FAILED_DETAIL_KEYS", RECLAIM_FAILED_DETAIL_KEYS),
+        ("RECLAIM_CLEAR_TERMINAL_DETAIL_KEYS", RECLAIM_CLEAR_TERMINAL_DETAIL_KEYS),
+    ):
+        assert hasattr(stage_signal, name), f"stage_signal missing {name!r}"
+        assert name in stage_signal.__all__, f"{name!r} not in stage_signal.__all__"
+        assert getattr(stage_signal, name) is expected
+
+
+# =============================================================================
+# 24. Heartbeat liveness contract freeze (SPEC §13.27, issue #148)
 # =============================================================================
 
 
@@ -4726,6 +4777,250 @@ def test_heartbeat_constants_exported_from_top_level() -> None:
         assert hasattr(stage_signal, name), f"stage_signal missing {name!r}"
         assert name in stage_signal.__all__, f"{name!r} not in stage_signal.__all__"
         assert getattr(stage_signal, name) is expected
+
+
+def test_reclaim_guard_semantics(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Reclaim enforces needs_reclaim guard; rejects uninit/badargs/healthy/non-running (SPEC §13.25.2).
+
+    Synchronous state-machine tests with zero sleeps/threads.
+    """
+    from stage_signal.cli import main
+
+    stage_dir = tmp_path / ".stage-signal"
+    stage = Stage(str(stage_dir))
+
+    # 1. Uninitialized: exit 15 / NotInitialized
+    with pytest.raises(NotInitialized):
+        stage.reclaim(reason="not init")
+    assert main(["--dir", str(stage_dir), "reclaim", "--reason", "not init"]) == EXIT_NOT_INITIALIZED
+    capsys.readouterr()
+
+    # Initialize
+    stage.init(project="reclaim-guard-freeze")
+
+    # 2. Empty reason: exit 2 / BadArgsError
+    with pytest.raises(BadArgsError, match="non-empty"):
+        stage.reclaim(reason="")
+    with pytest.raises(BadArgsError, match="non-empty"):
+        stage.reclaim(reason="   ")
+    assert main(["--dir", str(stage_dir), "reclaim", "--reason", "  "]) == EXIT_BAD_ARGS
+    capsys.readouterr()
+
+    # 3. Non-running states: queued, done, blocked, failed -> IllegalTransition (exit 3)
+    # 3a. From queued (initial idle queued)
+    status_before = (stage_dir / "STATUS.json").read_bytes()
+    with pytest.raises(IllegalTransition, match="needs_reclaim is false"):
+        stage.reclaim(reason="cannot reclaim queued")
+    assert (stage_dir / "STATUS.json").read_bytes() == status_before
+    assert main(["--dir", str(stage_dir), "reclaim", "--reason", "cannot reclaim queued"]) == EXIT_ILLEGAL_TRANSITION
+    capsys.readouterr()
+
+    # 3b. From done
+    stage.start(stage="done-step", pid=os.getpid())
+    stage.done(summary="all good")
+    status_before = (stage_dir / "STATUS.json").read_bytes()
+    with pytest.raises(IllegalTransition, match="needs_reclaim is false"):
+        stage.reclaim(reason="cannot reclaim done")
+    assert (stage_dir / "STATUS.json").read_bytes() == status_before
+    assert main(["--dir", str(stage_dir), "reclaim", "--reason", "cannot reclaim done"]) == EXIT_ILLEGAL_TRANSITION
+    capsys.readouterr()
+
+    # 3c. From blocked
+    stage.start(stage="blocked-step", pid=os.getpid())
+    stage.blocked(reason="waiting for gate")
+    status_before = (stage_dir / "STATUS.json").read_bytes()
+    with pytest.raises(IllegalTransition, match="needs_reclaim is false"):
+        stage.reclaim(reason="cannot reclaim blocked")
+    assert (stage_dir / "STATUS.json").read_bytes() == status_before
+    assert main(["--dir", str(stage_dir), "reclaim", "--reason", "cannot reclaim blocked"]) == EXIT_ILLEGAL_TRANSITION
+    capsys.readouterr()
+
+    # 3d. From failed
+    stage.start(stage="failed-step", pid=os.getpid())
+    stage.fail(reason="normal failure")
+    status_before = (stage_dir / "STATUS.json").read_bytes()
+    with pytest.raises(IllegalTransition, match="needs_reclaim is false"):
+        stage.reclaim(reason="cannot reclaim failed")
+    assert (stage_dir / "STATUS.json").read_bytes() == status_before
+    assert main(["--dir", str(stage_dir), "reclaim", "--reason", "cannot reclaim failed"]) == EXIT_ILLEGAL_TRANSITION
+    capsys.readouterr()
+
+    # 4. From running but healthy: live PID, fresh heartbeat -> IllegalTransition (exit 3)
+    stage.start(stage="healthy-running", pid=os.getpid())
+    status_before = (stage_dir / "STATUS.json").read_bytes()
+    events_before = len(stage.events())
+    with pytest.raises(IllegalTransition, match="needs_reclaim is false"):
+        stage.reclaim(reason="healthy cannot be reclaimed")
+    assert (stage_dir / "STATUS.json").read_bytes() == status_before
+    assert len(stage.events()) == events_before
+    assert main(["--dir", str(stage_dir), "reclaim", "--reason", "healthy cannot be reclaimed"]) == EXIT_ILLEGAL_TRANSITION
+    capsys.readouterr()
+
+
+def test_reclaim_default_sequence_semantics(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Default reclaim fails then immediately clears to idle queued under single lock (SPEC §13.25.3, §13.25.6)."""
+    stage_dir = tmp_path / ".stage-signal"
+    stage = Stage(str(stage_dir))
+    stage.init(project="reclaim-default-freeze")
+
+    stage.start(stage="work-step", pid=99999)
+    # Simulate dead PID -> needs_reclaim becomes True
+    monkeypatch.setattr("stage_signal.stage._is_pid_alive", lambda pid: False)
+
+    events_before = len(stage.events())
+    cleared = stage.reclaim("worker terminated unexpectedly")
+
+    # Final returned state is idle queued
+    assert cleared["state"] == STATE_QUEUED
+    assert cleared["stage_id"] is None
+    assert cleared["stage_name"] is None
+    assert cleared["pid"] is None
+    assert cleared["pid_token"] is None
+    assert cleared["result"] is None
+    assert cleared["error"] is None
+    assert cleared["proof"] is None
+    assert cleared["artifacts"] == []
+    assert cleared["meta"] == {}
+
+    # Exactly two events appended in sequence: failed then clear_terminal
+    events = stage.events()
+    assert len(events) == events_before + 2
+
+    # Step 1 event: failed
+    ev_failed = events[-2]
+    assert ev_failed["type"] == "failed"
+    assert ev_failed["state"] == STATE_FAILED
+    assert ev_failed["stage_name"] == "work-step"
+    assert ev_failed["message"] == "worker terminated unexpectedly"
+    assert tuple(ev_failed["detail"].keys()) == RECLAIM_FAILED_DETAIL_KEYS
+    assert ev_failed["detail"] == {"reclaim": True, "keep_failed": False}
+
+    # Step 2 event: clear_terminal
+    ev_clear = events[-1]
+    assert ev_clear["type"] == "clear_terminal"
+    assert ev_clear["state"] == STATE_QUEUED
+    assert ev_clear["stage_id"] is None
+    assert ev_clear["stage_name"] is None
+    assert ev_clear["message"] == CLEAR_TERMINAL_MESSAGE_IDLE == "cleared to idle queued"
+    assert tuple(ev_clear["detail"].keys()) == RECLAIM_CLEAR_TERMINAL_DETAIL_KEYS
+    assert ev_clear["detail"] == {"keep_stage": False, "reclaim": True}
+
+
+def test_reclaim_keep_failed_semantics(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """reclaim --keep-failed stops after failed, preserving stage identity (SPEC §13.25.4, §13.25.6)."""
+    stage_dir = tmp_path / ".stage-signal"
+    stage = Stage(str(stage_dir))
+    stage.init(project="reclaim-keep-failed-freeze")
+
+    stage.start(stage="audit-step", pid=99999, meta={"k": "v"})
+    monkeypatch.setattr("stage_signal.stage._is_pid_alive", lambda pid: False)
+
+    events_before = len(stage.events())
+    failed_st = stage.reclaim("preserve for audit", keep_failed=True)
+
+    # State is failed and identity is preserved
+    assert failed_st["state"] == STATE_FAILED
+    assert failed_st["stage_name"] == "audit-step"
+    assert failed_st["pid"] == 99999
+    assert failed_st["meta"] == {"k": "v"}
+    assert failed_st["error"] is not None
+    assert failed_st["error"]["reason"] == "preserve for audit"
+    assert failed_st["error"]["kind"] == STATE_FAILED
+
+    # Exactly ONE event appended: failed
+    events = stage.events()
+    assert len(events) == events_before + 1
+    ev_failed = events[-1]
+    assert ev_failed["type"] == "failed"
+    assert ev_failed["state"] == STATE_FAILED
+    assert ev_failed["stage_name"] == "audit-step"
+    assert ev_failed["message"] == "preserve for audit"
+    assert tuple(ev_failed["detail"].keys()) == RECLAIM_FAILED_DETAIL_KEYS
+    assert ev_failed["detail"] == {"reclaim": True, "keep_failed": True}
+
+
+def test_reclaim_kill_best_effort_semantics_no_sleep(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """--kill executes after guard, continues on signal failure, verifies token (SPEC §13.25.5).
+
+    Pure synchronous unit test: mocks process termination without sleeps or forks.
+    """
+    from stage_signal.stage import _terminate_pid
+
+    stage_dir = tmp_path / ".stage-signal"
+    stage = Stage(str(stage_dir))
+    stage.init(project="reclaim-kill-freeze")
+
+    # 1. When guard fails, terminate_pid is NEVER called
+    stage.start(stage="live-step", pid=os.getpid())
+    kill_called = []
+    monkeypatch.setattr(
+        "stage_signal.stage._terminate_pid",
+        lambda pid, **kw: kill_called.append((pid, kw)),
+    )
+    with pytest.raises(IllegalTransition, match="needs_reclaim is false"):
+        stage.reclaim("should fail guard", kill=True)
+    assert len(kill_called) == 0
+
+    # 2. When guard passes, terminate_pid is called after guard; reclaim succeeds even if terminate fails
+    monkeypatch.setattr("stage_signal.stage._is_pid_alive", lambda pid: False)
+    def failing_terminate(pid: Any, **kw: Any) -> bool:
+        kill_called.append((pid, kw))
+        return False
+
+    monkeypatch.setattr("stage_signal.stage._terminate_pid", failing_terminate)
+    cleared = stage.reclaim("worker dead", kill=True)
+    assert len(kill_called) == 1
+    assert kill_called[0][0] == os.getpid()
+    assert cleared["state"] == STATE_QUEUED
+
+    # 3. _terminate_pid token mismatch skips signaling
+    # Verify the token mismatch branch in _terminate_pid directly
+    monkeypatch.setattr("stage_signal.stage._is_pid_alive", lambda pid: True)
+    monkeypatch.setattr("stage_signal.stage._pid_token_matches", lambda pid, tok: False)
+    signals_sent = []
+    monkeypatch.setattr("stage_signal.stage._signal_pid_best_effort", lambda pid, sig: signals_sent.append((pid, sig)))
+    result = _terminate_pid(pid=12345, token="expected_token")
+    assert result is False
+    assert len(signals_sent) == 0
+
+
+def test_reclaim_cli_semantics(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """CLI reclaim outputs expected human lines and exit codes (SPEC §13.25.2, §13.25.3, §13.25.4)."""
+    from stage_signal.cli import main
+
+    stage_dir = tmp_path / ".stage-signal"
+    stage = Stage(str(stage_dir))
+    stage.init(project="reclaim-cli-freeze")
+
+    stage.start(stage="cli-reclaim-step", pid=99999)
+    monkeypatch.setattr("stage_signal.stage._is_pid_alive", lambda pid: False)
+
+    # CLI default reclaim
+    code = main(["--dir", str(stage_dir), "reclaim", "--reason", "cli dead runner"])
+    assert code == EXIT_OK
+    out = capsys.readouterr().out
+    assert "reclaimed" in out
+    assert "cli dead runner" in out
+    assert stage.status()["state"] == STATE_QUEUED
+
+    # Re-start and CLI keep-failed reclaim
+    stage.start(stage="cli-keep-step", pid=99999)
+    code = main(["--dir", str(stage_dir), "reclaim", "--reason", "audit later", "--keep-failed"])
+    assert code == EXIT_OK
+    out = capsys.readouterr().out
+    assert "reclaimed (kept failed)" in out
+    assert "audit later" in out
+    assert stage.status()["state"] == STATE_FAILED
 
 
 def test_heartbeat_allowed_source_semantics(
