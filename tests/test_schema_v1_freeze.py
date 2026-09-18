@@ -8124,3 +8124,379 @@ def test_events_cross_links_freeze() -> None:
     assert len(PUBLIC_EXPORTS) == 134
 
 
+# ---------------------------------------------------------------------------
+# §13.37: Doctor / diagnose read contract freeze
+# ---------------------------------------------------------------------------
+
+
+def test_doctor_json_keys_exact_freeze() -> None:
+    """DOCTOR_JSON_KEYS is exactly the 7 frozen diagnosis keys in order (SPEC §13.37.1)."""
+    assert DOCTOR_JSON_KEYS == (
+        "ok",
+        "needs_reclaim",
+        "state",
+        "problems",
+        "warnings",
+        "status",
+        "summary",
+    )
+    assert isinstance(DOCTOR_JSON_KEYS, tuple)
+    assert len(DOCTOR_JSON_KEYS) == 7
+    assert len(set(DOCTOR_JSON_KEYS)) == 7
+
+
+def test_doctor_read_pure_shared_lock_no_mutation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Stage.diagnose() is a non-mutating shared-lock read with detached snapshots (SPEC §13.37.2).
+
+    Synchronous test with zero sleeps/threads.
+    """
+    import contextlib
+
+    from stage_signal.store import StageStore
+
+    stage_dir = tmp_path / ".stage-signal"
+    stage = Stage(str(stage_dir))
+    stage.init(project="doctor-pure-read-freeze")
+    stage.start(stage="pure-step", pid=os.getpid())
+
+    status_file = stage_dir / STATUS_FILENAME
+    status_md_file = stage_dir / "STATUS.md"
+    events_file = stage_dir / "events.jsonl"
+    raw_before = status_file.read_bytes()
+    md_before = status_md_file.read_bytes()
+    events_before = events_file.read_bytes()
+    n_events_before = len(stage.events())
+
+    # Record the lock mode diagnose() requests: must be shared (exclusive=False).
+    lock_modes: list[bool] = []
+    orig_locked = StageStore.locked
+
+    @contextlib.contextmanager
+    def _recording_locked(self: StageStore, exclusive: bool = True):  # type: ignore[no-untyped-def]
+        lock_modes.append(exclusive)
+        with orig_locked(self, exclusive=exclusive):
+            yield
+
+    monkeypatch.setattr(StageStore, "locked", _recording_locked)
+
+    first = stage.diagnose()
+    second = stage.diagnose()
+
+    for key in DOCTOR_JSON_KEYS:
+        assert key in first, f"guaranteed key {key!r} missing from Stage.diagnose()"
+        assert key in second
+    assert lock_modes, "diagnose() must enter store.locked()"
+    assert all(mode is False for mode in lock_modes), f"diagnose() must use shared lock, got {lock_modes!r}"
+
+    # Pure read: no stage files change, no events appended.
+    assert status_file.read_bytes() == raw_before
+    assert status_md_file.read_bytes() == md_before
+    assert events_file.read_bytes() == events_before
+    assert len(stage.events()) == n_events_before
+
+    # Consecutive diagnoses agree on persisted shape; nested status is the
+    # detached snapshot with running-only heartbeat_age_seconds.
+    assert second["ok"] is first["ok"] is True
+    assert second["state"] == first["state"] == STATE_RUNNING
+    assert second["needs_reclaim"] == first["needs_reclaim"] is False
+    assert second["problems"] == first["problems"] == []
+    assert isinstance(first["status"], dict)
+    assert isinstance(first["status"]["heartbeat_age_seconds"], float)
+    assert isinstance(second["status"]["heartbeat_age_seconds"], float)
+    for key in first["status"]:
+        if key == "heartbeat_age_seconds":
+            continue  # wall-clock age may tick between consecutive reads
+        assert second["status"][key] == first["status"][key]
+
+    # Detached: caller mutation never reaches disk.
+    first["state"] = "HACKED"
+    first["status"]["state"] = "HACKED"
+    first["needs_reclaim"] = "HACKED"
+    assert status_file.read_bytes() == raw_before
+    assert stage.diagnose()["state"] == STATE_RUNNING
+
+    # Missing-dir early return takes no lock and creates no layout.
+    missing = tmp_path / "absent-doctor-dir"
+    assert not missing.exists()
+    lock_modes.clear()
+    diag_missing = Stage(str(missing)).diagnose()
+    assert diag_missing["ok"] is False
+    assert diag_missing["state"] is None
+    assert diag_missing["status"] is None
+    assert diag_missing["summary"] is None
+    assert diag_missing["needs_reclaim"] is False
+    assert any("missing dir" in p for p in diag_missing["problems"])
+    assert lock_modes == [], "missing-dir path must not enter store.locked()"
+    assert not missing.exists(), "diagnose() must not create a missing dir"
+
+
+def test_doctor_needs_reclaim_agreement_with_status_freeze(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """diagnose() needs_reclaim agrees with status() at defaults; stale_after override works (SPEC §13.37.3).
+
+    Synchronous test with zero sleeps/threads (staleness is crafted on disk, not waited out).
+    """
+    import stage_signal.stage as stage_mod
+
+    stage_dir = tmp_path / ".stage-signal"
+    stage = Stage(str(stage_dir))
+    stage.init(project="doctor-agreement-freeze")
+    status_file = stage_dir / STATUS_FILENAME
+
+    def agreement(*, stale_after: Any = DEFAULT_STALE_THRESHOLD) -> None:
+        diag = stage.diagnose(stale_after=stale_after)
+        st = stage.status()
+        if stale_after == DEFAULT_STALE_THRESHOLD:
+            assert diag["needs_reclaim"] == st["needs_reclaim"], (
+                f"default-threshold agreement failed in state {st['state']!r}: "
+                f"diagnose={diag['needs_reclaim']!r} status={st['needs_reclaim']!r}"
+            )
+
+    # Live claimant, fresh heartbeat: no reclaim anywhere.
+    monkeypatch.setattr(stage_mod, "_is_pid_alive", lambda pid: True)
+    stage.start(stage="agree-healthy", pid=os.getpid())
+    agreement()
+    assert stage.diagnose()["needs_reclaim"] is False
+
+    # Dead claimant (mocked liveness): DEAD_PID -> reclaim true on both observers.
+    monkeypatch.setattr(stage_mod, "_is_pid_alive", lambda pid: False)
+    agreement()
+    diag = stage.diagnose()
+    assert diag["needs_reclaim"] is True
+    assert any(w["code"] == WARNING_CODE_DEAD_PID for w in diag["warnings"])
+
+    # Stale heartbeat crafted on disk with a live claimant: STALE -> reclaim true.
+    monkeypatch.setattr(stage_mod, "_is_pid_alive", lambda pid: True)
+    raw = json.loads(status_file.read_text(encoding="utf-8"))
+    raw["heartbeat_at"] = "2000-01-01T00:00:00+00:00"
+    status_file.write_text(json.dumps(raw, indent=2) + "\n", encoding="utf-8")
+    agreement()
+    assert stage.diagnose()["needs_reclaim"] is True
+    assert stage.diagnose(stale_after=3600 * 24 * 365 * 30)["needs_reclaim"] is False
+    assert stage.diagnose(stale_after=None)["needs_reclaim"] is False
+
+    # Unparseable heartbeat: null age, UNPARSEABLE alone is not reclaim.
+    raw = json.loads(status_file.read_text(encoding="utf-8"))
+    raw["heartbeat_at"] = "not-a-timestamp"
+    status_file.write_text(json.dumps(raw, indent=2) + "\n", encoding="utf-8")
+    agreement()
+    garbled = stage.diagnose()
+    assert garbled["needs_reclaim"] is False
+    assert any(w["code"] == WARNING_CODE_UNPARSEABLE_HEARTBEAT for w in garbled["warnings"])
+    assert garbled["status"]["heartbeat_age_seconds"] is None
+
+    # Non-running states never reclaim even with a dead claimant + stale clock.
+    monkeypatch.setattr(stage_mod, "_is_pid_alive", lambda pid: False)
+    raw = json.loads(status_file.read_text(encoding="utf-8"))
+    raw["heartbeat_at"] = "2000-01-01T00:00:00+00:00"
+    status_file.write_text(json.dumps(raw, indent=2) + "\n", encoding="utf-8")
+    for action, kwargs in (
+        ("done", {"summary": "agree done"}),
+        ("blocked", {"reason": "agree blocked"}),
+        ("fail", {"reason": "agree failed"}),
+    ):
+        stage.start(stage=f"agree-{action}", pid=os.getpid())
+        getattr(stage, action)(**kwargs)
+        agreement()
+        assert stage.diagnose()["needs_reclaim"] is False
+        assert stage.status()["needs_reclaim"] is False
+    stage.clear_terminal()
+    agreement()
+    assert stage.diagnose()["needs_reclaim"] is False
+
+
+def test_doctor_warnings_and_summary_reuse_freeze(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Warnings reuse WARNING_KEYS/CODES and summary reuses §13.22 strings incl. null rule (SPEC §13.37.4).
+
+    Synchronous test with zero sleeps/threads.
+    """
+    import stage_signal.stage as stage_mod
+
+    # Frozen warning + summary symbols keep their exact values (owned by §13.8 / §13.22).
+    assert WARNING_KEYS == ("code", "message", "detail")
+    assert WARNING_CODES == ("STALE_HEARTBEAT", "DEAD_PID", "UNPARSEABLE_HEARTBEAT")
+    assert DOCTOR_SUMMARY_RECLAIM_NEEDED == "ATTENTION: running needs reclaim"
+    assert DOCTOR_SUMMARY_OK_FORMAT == "OK: {state}"
+    assert doctor_summary_ok("running") == "OK: running"
+    assert doctor_summary_ok("queued") == "OK: queued"
+
+    stage_dir = tmp_path / ".stage-signal"
+    stage = Stage(str(stage_dir))
+    stage.init(project="doctor-summary-freeze")
+
+    # Healthy queued: OK summary via helper.
+    diag = stage.diagnose()
+    assert diag["ok"] is True
+    assert diag["state"] == STATE_QUEUED
+    assert diag["summary"] == doctor_summary_ok("queued") == "OK: queued"
+    assert diag["warnings"] == []
+
+    # Healthy running: OK summary, every warning (none here) matches frozen shape.
+    monkeypatch.setattr(stage_mod, "_is_pid_alive", lambda pid: True)
+    stage.start(stage="summary-step", pid=os.getpid())
+    diag = stage.diagnose()
+    assert diag["summary"] == "OK: running"
+    for w in diag["warnings"]:
+        assert set(WARNING_KEYS) <= w.keys()
+        assert w["code"] in WARNING_CODES
+
+    # Needs reclaim: exact reclaim string, byte-for-byte.
+    monkeypatch.setattr(stage_mod, "_is_pid_alive", lambda pid: False)
+    diag = stage.diagnose()
+    assert diag["needs_reclaim"] is True
+    assert diag["summary"] == DOCTOR_SUMMARY_RECLAIM_NEEDED
+    assert diag["summary"] == "ATTENTION: running needs reclaim"
+
+    # needs_reclaim stays true while problems coexist, but summary goes null.
+    (stage_dir / "events.jsonl").write_text("{corrupt json\n", encoding="utf-8")
+    diag = stage.diagnose()
+    assert diag["ok"] is False
+    assert diag["problems"], "corrupt events.jsonl must surface problems"
+    assert diag["needs_reclaim"] is True
+    assert diag["summary"] is None
+    assert diag["status"] is not None  # STATUS still parses; only events are corrupt
+
+
+def test_doctor_cli_shapes_and_exits_freeze(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Human PROBLEM/WARNING/summary lines vs --json object; 0/1/2/10 exits (SPEC §13.37.5).
+
+    Synchronous test with zero sleeps/threads.
+    """
+    import stage_signal.stage as stage_mod
+
+    stage_dir = tmp_path / ".stage-signal"
+    monkeypatch.setattr(stage_mod, "_is_pid_alive", lambda pid: True)
+    stage = Stage(str(stage_dir))
+    stage.init(project="doctor-shapes-freeze")
+
+    def doctor(argv: list[str]) -> tuple[int, str]:
+        capsys.readouterr()
+        rc = main(["--dir", str(stage_dir)] + argv)
+        return rc, capsys.readouterr().out
+
+    # Healthy queued human: single OK line, no PROBLEM/WARNING prefixes.
+    rc, out = doctor(["doctor"])
+    assert rc == EXIT_OK
+    assert out.strip() == "OK: queued"
+    assert "PROBLEM:" not in out
+    assert "WARNING:" not in out
+
+    # Healthy queued --json: all 7 keys, --format json is byte-identical.
+    rc, out_json = doctor(["doctor", "--json"])
+    assert rc == EXIT_OK
+    payload = json.loads(out_json)
+    for key in DOCTOR_JSON_KEYS:
+        assert key in payload, f"guaranteed key {key!r} missing from doctor --json [queued]"
+    assert payload["ok"] is True
+    assert payload["state"] == "queued"
+    assert payload["summary"] == "OK: queued"
+    assert payload["problems"] == []
+    assert payload["warnings"] == []
+    rc, out_format = doctor(["doctor", "--format", "json"])
+    assert rc == EXIT_OK
+    assert json.loads(out_format) == payload
+    rc, out_human = doctor(["doctor", "--format", "human"])
+    assert rc == EXIT_OK
+    assert out_human.strip() == "OK: queued"
+
+    # Reclaim warning human: WARNING + ATTENTION lines, no OK line; --exit-reclaim maps to 10.
+    stage.start(stage="shaped-reclaim", pid=os.getpid())
+    raw = json.loads((stage_dir / STATUS_FILENAME).read_text(encoding="utf-8"))
+    raw["heartbeat_at"] = "2000-01-01T00:00:00+00:00"
+    (stage_dir / STATUS_FILENAME).write_text(json.dumps(raw, indent=2) + "\n", encoding="utf-8")
+    rc, out = doctor(["doctor"])
+    assert rc == EXIT_OK  # warnings stay exit 0 without the flag
+    assert "WARNING: STALE:" in out
+    assert "ATTENTION: running needs reclaim" in out
+    assert "OK: running" not in out
+    rc, out = doctor(["doctor", "--json"])
+    assert rc == EXIT_OK
+    assert json.loads(out)["summary"] == "ATTENTION: running needs reclaim"
+    rc, out = doctor(["doctor", "--exit-reclaim"])
+    assert rc == EXIT_RUNNING == 10
+    assert "ATTENTION: running needs reclaim" in out
+    rc, out = doctor(["doctor", "--exit-reclaim", "--json"])
+    assert rc == EXIT_RUNNING == 10
+    assert json.loads(out)["needs_reclaim"] is True
+    # Per-call threshold override silences the crafted staleness.
+    rc, out = doctor(["doctor", "--stale-after", "999999999", "--json"])
+    assert rc == EXIT_OK
+    assert json.loads(out)["warnings"] == []
+
+    # Problems: corrupt STATUS -> exit 1 on both shapes with no state/summary payload.
+    (stage_dir / STATUS_FILENAME).write_text("{not valid json", encoding="utf-8")
+    for argv in (["doctor"], ["doctor", "--json"]):
+        rc, out = doctor(argv)
+        assert rc == EXIT_ERROR == 1
+    rc, out = doctor(["doctor", "--json"])
+    payload = json.loads(out)
+    assert payload["ok"] is False
+    assert payload["state"] is None
+    assert payload["status"] is None
+    assert payload["summary"] is None
+    assert payload["needs_reclaim"] is False
+    assert payload["problems"], "corrupt STATUS must surface problems"
+    rc, out = doctor(["doctor"])
+    assert "PROBLEM:" in out
+    # Problems + reclaim under --exit-reclaim still exits 10 (flag wins).
+    monkeypatch.setattr(stage_mod, "_is_pid_alive", lambda pid: False)
+    (stage_dir / "events.jsonl").write_text("{corrupt json\n", encoding="utf-8")
+    stage2_dir = tmp_path / "prob-reclaim" / ".stage-signal"
+    stage2 = Stage(str(stage2_dir))
+    stage2.init(project="prob-reclaim-freeze")
+    stage2.start(stage="prob-reclaim-step", pid=os.getpid())
+    (stage2_dir / "events.jsonl").write_text("{corrupt json\n", encoding="utf-8")
+    capsys.readouterr()
+    assert main(["--dir", str(stage2_dir), "doctor", "--exit-reclaim"]) == EXIT_RUNNING == 10
+
+    # Uninitialized dir is problems (exit 1), never exit 15 like status.
+    missing = tmp_path / "never-created"
+    capsys.readouterr()
+    assert main(["--dir", str(missing), "doctor"]) == EXIT_ERROR == 1
+    capsys.readouterr()
+    assert main(["--dir", str(missing), "doctor", "--json"]) == EXIT_ERROR == 1
+    capsys.readouterr()
+    assert main(["--dir", str(missing), "doctor", "--json"]) == EXIT_ERROR == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is False
+
+    # Bad args exit 2.
+    with pytest.raises(SystemExit) as exc_info:
+        main(["--dir", str(stage_dir), "doctor", "--stale-after", "not_a_number"])
+    assert exc_info.value.code == EXIT_BAD_ARGS == 2
+
+
+def test_doctor_read_cross_links_freeze() -> None:
+    """Doctor read reuses frozen method-surface and export symbols; adds no export (SPEC §13.37.6)."""
+    import stage_signal
+
+    assert "diagnose" in STAGE_PUBLIC_METHODS
+    assert callable(Stage.diagnose)
+
+    for name in (
+        "DOCTOR_JSON_KEYS",
+        "WARNING_KEYS",
+        "WARNING_CODES",
+        "WARNING_CODE_STALE_HEARTBEAT",
+        "WARNING_CODE_DEAD_PID",
+        "WARNING_CODE_UNPARSEABLE_HEARTBEAT",
+        "DOCTOR_SUMMARY_RECLAIM_NEEDED",
+        "DOCTOR_SUMMARY_OK_FORMAT",
+        "doctor_summary_ok",
+        "DEFAULT_STALE_THRESHOLD",
+    ):
+        assert hasattr(stage_signal, name), f"stage_signal missing {name!r}"
+        assert name in stage_signal.__all__, f"{name!r} not in stage_signal.__all__"
+        assert name in PUBLIC_EXPORTS, f"{name!r} not in PUBLIC_EXPORTS"
+
+    # §13.37 adds no export: the inventory stays at the 134 frozen symbols.
+    assert len(PUBLIC_EXPORTS) == 134
+
+

@@ -1058,7 +1058,12 @@ class Stage:
     def diagnose(
         self, *, stale_after: Optional[float] = DEFAULT_STALE_THRESHOLD
     ) -> dict[str, Any]:
-        """Check dir health. Returns {"ok", "needs_reclaim", "state", "problems", "warnings", "status", "summary"}."""
+        """Check dir health. Returns {"ok", "needs_reclaim", "state", "problems", "warnings", "status", "summary"}.
+
+        Pure observer (SPEC §13.37): holds a shared lock for STATUS/events
+        reads, mutates no stage state, appends no events, and rewrites
+        neither STATUS.md nor the .orch mirror.
+        """
         problems: list[str] = []
         warnings: list[dict[str, Any]] = []
         status: Optional[dict[str, Any]] = None
@@ -1074,26 +1079,27 @@ class Stage:
                 "status": None,
                 "summary": None,
             }
-        if not store.is_initialized:
-            problems.append(f"missing STATUS: {store.status_path}")
-        else:
+        with store.locked(exclusive=False):
+            if not store.is_initialized:
+                problems.append(f"missing STATUS: {store.status_path}")
+            else:
+                try:
+                    status = store.read_status()
+                except NotInitialized as exc:
+                    problems.append(str(exc))
+                except Exception as exc:  # CorruptStatusError etc.
+                    problems.append(str(exc))
+            if store.is_initialized:
+                try:
+                    store.read_events()
+                except Exception as exc:
+                    problems.append(str(exc))
             try:
-                status = store.read_status()
-            except NotInitialized as exc:
-                problems.append(str(exc))
-            except Exception as exc:  # CorruptStatusError etc.
-                problems.append(str(exc))
-        if store.is_initialized:
-            try:
-                store.read_events()
-            except Exception as exc:
-                problems.append(str(exc))
-        try:
-            store.ensure_layout()
-            with open(store.lock_path, "a"):
-                pass
-        except OSError as exc:
-            problems.append(f"lock file not writable: {exc}")
+                store.ensure_layout()
+                with open(store.lock_path, "a"):
+                    pass
+            except OSError as exc:
+                problems.append(f"lock file not writable: {exc}")
         warnings, needs_reclaim = _reclaim_diagnostics(status, stale_after=stale_after)
         summary: Optional[str] = None
         if not problems:
