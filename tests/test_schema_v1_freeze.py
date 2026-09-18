@@ -90,6 +90,8 @@ from stage_signal import (
     STATUS_MD_TITLE,
     STATUS_REQUIRED_KEYS,
     STAGE_PUBLIC_METHODS,
+    START_ALLOWED_SOURCES,
+    START_DETAIL_KEYS,
     SUPERVISE_ADOPT_DETAIL_KEYS,
     SUPERVISE_ADOPT_MESSAGE_FORMAT,
     SUPERVISE_DEFAULT_EVERY,
@@ -3760,7 +3762,7 @@ def test_diagnose_doctor_json_summary_null_on_problems(
 
 
 def test_public_exports_constant_freeze() -> None:
-    """PUBLIC_EXPORTS matches the frozen 128-element tuple in SPEC §13.21."""
+    """PUBLIC_EXPORTS matches the frozen 130-element tuple in SPEC §13.21."""
     expected = (
         "ALLOWED_TRANSITIONS",
         "ARTIFACT_ALLOWED_SOURCES",
@@ -3832,6 +3834,8 @@ def test_public_exports_constant_freeze() -> None:
         "RESULT_KEYS",
         "SCHEMA_VERSION",
         "STAGE_PUBLIC_METHODS",
+        "START_ALLOWED_SOURCES",
+        "START_DETAIL_KEYS",
         "STATES",
         "STATE_BLOCKED",
         "STATE_DONE",
@@ -3893,7 +3897,7 @@ def test_public_exports_constant_freeze() -> None:
     )
     assert PUBLIC_EXPORTS == expected
     assert isinstance(PUBLIC_EXPORTS, tuple)
-    assert len(PUBLIC_EXPORTS) == 128
+    assert len(PUBLIC_EXPORTS) == 130
     assert PUBLIC_EXPORTS == tuple(sorted(PUBLIC_EXPORTS))
     assert len(PUBLIC_EXPORTS) == len(set(PUBLIC_EXPORTS))
 
@@ -4038,6 +4042,8 @@ def test_public_exports_category_coverage() -> None:
         "DONE_ALLOWED_SOURCES",
         "DONE_ACCEPT_FAILURE_ALLOWED_SOURCES",
         "DONE_DETAIL_KEYS",
+        "START_ALLOWED_SOURCES",
+        "START_DETAIL_KEYS",
         "FAIL_ALLOWED_SOURCES",
         "FAIL_DETAIL_KEYS",
         "FAIL_IF_DEAD_PID_ALLOWED_SOURCES",
@@ -6583,3 +6589,393 @@ def test_fail_success_payload_and_audit_freeze(tmp_path: Path) -> None:
     assert raw["state"] == STATE_FAILED
     assert raw["error"] == st["error"]
     assert raw["result"] is None
+
+
+# =============================================================================
+# 29. Start claim-running contract freeze (SPEC §13.33, issue #160)
+# =============================================================================
+
+
+def test_start_constants_freeze() -> None:
+    """START_* constants match SPEC §13.33 and agree with transition matrix."""
+    assert START_ALLOWED_SOURCES == ("queued", "running", "done", "blocked", "failed")
+    assert isinstance(START_ALLOWED_SOURCES, tuple)
+    assert len(START_ALLOWED_SOURCES) == 5
+    assert set(START_ALLOWED_SOURCES) == set(STATES)
+    for terminal in TERMINAL_STATES:
+        assert terminal in START_ALLOWED_SOURCES
+
+    assert START_DETAIL_KEYS == ("stage_id", "session_id", "pid", "model", "variant")
+    assert isinstance(START_DETAIL_KEYS, tuple)
+    assert len(START_DETAIL_KEYS) == 5
+    assert len(set(START_DETAIL_KEYS)) == 5
+
+    # Allowed sources agree with the frozen transition matrix (SPEC §13.19)
+    assert tuple(allowed_source_states("start")) == START_ALLOWED_SOURCES
+    for src in START_ALLOWED_SOURCES:
+        assert is_transition_allowed(src, "start") is True
+        assert transition_target(src, "start") == STATE_RUNNING
+
+
+def test_start_constants_exported_from_top_level() -> None:
+    """Start freeze constants are exported from top-level stage_signal (SPEC §13.33)."""
+    import stage_signal
+
+    for name, expected in (
+        ("START_ALLOWED_SOURCES", START_ALLOWED_SOURCES),
+        ("START_DETAIL_KEYS", START_DETAIL_KEYS),
+    ):
+        assert hasattr(stage_signal, name), f"stage_signal missing {name!r}"
+        assert name in stage_signal.__all__, f"{name!r} not in stage_signal.__all__"
+        assert getattr(stage_signal, name) is expected
+
+
+def test_start_allowed_from_any_state(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Start succeeds from queued, running, done, blocked, and failed (SPEC §4 rule 2, §13.33).
+
+    Synchronous tests with zero sleeps/threads.
+    """
+    stage_dir = tmp_path / ".stage-signal"
+    stage = Stage(str(stage_dir))
+    stage.init(project="start-sources-test")
+
+    # 1. queued -> running (fresh claim, attempt starts at 1)
+    assert stage.status()["state"] == STATE_QUEUED
+    st = stage.start(stage="step-a", pid=os.getpid())
+    assert st["state"] == STATE_RUNNING
+    assert st["stage_id"] == "step-a"
+    assert st["stage_name"] == "step-a"
+    assert st["attempt"] == 1
+
+    # 2. running -> running (same-stage retry bumps attempt)
+    st = stage.start(stage="step-a", pid=os.getpid())
+    assert st["state"] == STATE_RUNNING
+    assert st["attempt"] == 2
+
+    # 3. done -> running (terminal cleared for a new attempt)
+    stage.done(summary="finished step-a")
+    assert stage.status()["state"] == STATE_DONE
+    st = stage.start(stage="step-b", pid=os.getpid())
+    assert st["state"] == STATE_RUNNING
+    assert st["stage_id"] == "step-b"
+    assert st["attempt"] == 1
+
+    # 4. blocked -> running
+    stage.blocked(reason="waiting on reviewer")
+    assert stage.status()["state"] == STATE_BLOCKED
+    st = stage.start(stage="step-c", pid=os.getpid())
+    assert st["state"] == STATE_RUNNING
+    assert st["attempt"] == 1
+
+    # 5. failed -> running via CLI (exit 0, `started` summary line)
+    stage.fail(reason="crashed")
+    assert stage.status()["state"] == STATE_FAILED
+    capsys.readouterr()
+    assert main(["--dir", str(stage_dir), "start", "--stage", "step-d"]) == EXIT_OK
+    out = capsys.readouterr().out
+    assert out.startswith("started running step-d (attempt 1)")
+    assert stage.status()["state"] == STATE_RUNNING
+    assert stage.status()["attempt"] == 1
+
+
+def test_start_stage_and_stage_id_validation(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Empty stage names are BadArgs; strip/default/verbatim id rules (SPEC §13.33.3).
+
+    Synchronous tests with zero sleeps/threads.
+    """
+    stage_dir = tmp_path / ".stage-signal"
+    stage = Stage(str(stage_dir))
+    stage.init(project="start-validation-test")
+    status_file = stage_dir / "STATUS.json"
+
+    def assert_no_mutation(snapshot: str, event_count: int) -> None:
+        assert status_file.read_text(encoding="utf-8") == snapshot
+        assert len(stage.events()) == event_count
+
+    # Empty / whitespace-only / None stage is BadArgs (exit 2) with no mutation
+    for bad_stage in ("", "   ", "\t \n", None):
+        with pytest.raises(BadArgsError, match="start requires a non-empty --stage NAME"):
+            stage.start(stage=bad_stage)  # type: ignore[arg-type]
+    assert_no_mutation(status_file.read_text(encoding="utf-8"), 1)
+
+    capsys.readouterr()
+    assert main(["--dir", str(stage_dir), "start", "--stage", "  "]) == EXIT_BAD_ARGS
+    assert_no_mutation(status_file.read_text(encoding="utf-8"), 1)
+
+    # Missing --stage flag is argparse exit 2
+    with pytest.raises(SystemExit) as exc_info:
+        main(["--dir", str(stage_dir), "start"])
+    assert exc_info.value.code == EXIT_BAD_ARGS
+    capsys.readouterr()
+    assert_no_mutation(status_file.read_text(encoding="utf-8"), 1)
+
+    # Stored stage_name is stripped; default stage_id derives from the stripped name
+    st = stage.start(stage="  spaced  ", pid=os.getpid())
+    assert st["stage_name"] == "spaced"
+    assert st["stage_id"] == "spaced"
+
+    # Empty-string stage_id falls back to the stripped stage name
+    st = stage.start(stage="fallback", stage_id="", pid=os.getpid())
+    assert st["stage_id"] == "fallback"
+
+    # Explicit truthy stage_id wins verbatim (no stripping) and defines the series
+    st = stage.start(stage="label", stage_id="  custom-id  ", pid=os.getpid())
+    assert st["stage_name"] == "label"
+    assert st["stage_id"] == "  custom-id  "
+    assert st["attempt"] == 1
+    st = stage.start(stage="label", stage_id="  custom-id  ", pid=os.getpid())
+    assert st["attempt"] == 2
+
+
+def test_start_pid_validation_and_default(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Non-integer/negative pids are BadArgs; omitted pid claims self (SPEC §13.33.3/13.33.4).
+
+    Synchronous tests with zero sleeps/threads.
+    """
+    stage_dir = tmp_path / ".stage-signal"
+    stage = Stage(str(stage_dir))
+    stage.init(project="start-pid-test")
+    status_file = stage_dir / "STATUS.json"
+
+    def assert_no_mutation(snapshot: str, event_count: int) -> None:
+        assert status_file.read_text(encoding="utf-8") == snapshot
+        assert len(stage.events()) == event_count
+
+    # Negative or non-integer pid is BadArgs with no mutation
+    with pytest.raises(BadArgsError, match="invalid pid"):
+        stage.start(stage="x", pid=-1)
+    assert_no_mutation(status_file.read_text(encoding="utf-8"), 1)
+    with pytest.raises(BadArgsError, match="invalid pid"):
+        stage.start(stage="x", pid="123")  # type: ignore[arg-type]
+    assert_no_mutation(status_file.read_text(encoding="utf-8"), 1)
+
+    # CLI --pid with a non-numeric value fails in argparse with exit 2
+    with pytest.raises(SystemExit) as exc_info:
+        main(["--dir", str(stage_dir), "start", "--stage", "x", "--pid", "abc"])
+    assert exc_info.value.code == EXIT_BAD_ARGS
+    capsys.readouterr()
+    assert_no_mutation(status_file.read_text(encoding="utf-8"), 1)
+
+    # Omitted pid resolves to the calling process; start never probes liveness
+    st = stage.start(stage="self-claim")
+    assert st["pid"] == os.getpid()
+
+    # An explicit pid is stored as-is even when that pid is not alive
+    st = stage.start(stage="explicit-claim", pid=424242)
+    assert st["pid"] == 424242
+
+
+def test_start_claim_fields_pid_token(tmp_path: Path) -> None:
+    """Session/pid/pid_token/model/variant recorded and replaced each start (SPEC §13.33.4).
+
+    Synchronous tests with zero sleeps/threads.
+    """
+    stage_dir = tmp_path / ".stage-signal"
+    stage = Stage(str(stage_dir))
+    stage.init(project="start-claim-test")
+
+    st = stage.start(
+        stage="claim-a",
+        session_id="ses-1",
+        pid=os.getpid(),
+        model="muse-spark",
+        variant="free",
+    )
+    assert st["session_id"] == "ses-1"
+    assert st["pid"] == os.getpid()
+    assert st["model"] == "muse-spark"
+    assert st["variant"] == "free"
+    token = st["pid_token"]
+    assert token is None or (isinstance(token, str) and len(token) > 0)
+
+    # Omitted annotations stay null
+    st = stage.start(stage="claim-b", pid=os.getpid())
+    assert st["session_id"] is None
+    assert st["model"] is None
+    assert st["variant"] is None
+    token2 = st["pid_token"]
+    assert token2 is None or (isinstance(token2, str) and len(token2) > 0)
+
+    # Claim fields are replaced (not merged) on every start
+    assert st["session_id"] != "ses-1"
+    assert st["model"] != "muse-spark"
+
+
+def test_start_attempt_and_field_lifecycle(tmp_path: Path) -> None:
+    """Attempt series, conditional artifact clear, notes/meta/result lifecycle (SPEC §13.33.5).
+
+    Synchronous tests with zero sleeps/threads.
+    """
+    stage_dir = tmp_path / ".stage-signal"
+    stage = Stage(str(stage_dir))
+    stage.init(project="start-lifecycle-test")
+
+    # Same stage_id retries bump attempt and keep artifacts
+    stage.start(stage="series-a", pid=os.getpid(), meta={"ticket": "1"})
+    stage.artifact("dist/out.bin", label="binary")
+    stage.note("progress note")
+    st = stage.start(stage="series-a", pid=os.getpid(), meta={"ticket": "2"})
+    assert st["attempt"] == 2
+    assert [a["path"] for a in st["artifacts"]] == ["dist/out.bin"]
+    # Meta is replaced entirely, notes are preserved
+    assert st["meta"] == {"ticket": "2"}
+    assert [n["text"] for n in st["notes"]] == ["progress note"]
+    # Fresh-claim heartbeat reset
+    assert st["heartbeat_note"] is None
+    assert isinstance(st["started_at"], str) and st["started_at"]
+    assert isinstance(st["heartbeat_at"], str) and st["heartbeat_at"]
+
+    # New stage_id resets attempt to 1 and clears artifacts but keeps notes
+    st = stage.start(stage="series-b", pid=os.getpid())
+    assert st["attempt"] == 1
+    assert st["artifacts"] == []
+    assert [n["text"] for n in st["notes"]] == ["progress note"]
+    assert st["meta"] == {}
+
+    # Terminal payloads and proof receipts are cleared by the next claim
+    stage.done(summary="series-b done", proof_ref="ledger:proof-1")
+    assert stage.status()["result"] is not None
+    assert stage.status()["proof"] is not None
+    st = stage.start(stage="series-c", pid=os.getpid())
+    assert st["result"] is None
+    assert st["error"] is None
+    assert st["proof"] is None
+
+    # Error payloads are cleared the same way
+    stage.fail(reason="series-c broke")
+    assert stage.status()["error"] is not None
+    st = stage.start(stage="series-d", pid=os.getpid())
+    assert st["state"] == STATE_RUNNING
+    assert st["error"] is None
+    assert st["result"] is None
+    # All on-disk required keys remain present after every start
+    raw = json.loads((stage_dir / STATUS_FILENAME).read_text(encoding="utf-8"))
+    for key in STATUS_REQUIRED_KEYS:
+        assert key in raw
+
+
+def test_start_meta_validation_and_cli_merge(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """--meta K=V/JSON merge (later wins); invalid entries are exit 2 (SPEC §6, §13.33.5).
+
+    Synchronous tests with zero sleeps/threads.
+    """
+    stage_dir = tmp_path / ".stage-signal"
+    stage = Stage(str(stage_dir))
+    stage.init(project="start-meta-test")
+    status_file = stage_dir / "STATUS.json"
+
+    # Library dict meta is stored as-is
+    st = stage.start(stage="meta-lib", pid=os.getpid(), meta={"k": "v", "n": 1})
+    assert st["meta"] == {"k": "v", "n": 1}
+
+    # CLI repeatable --meta merges in order, later wins, JSON types preserved
+    capsys.readouterr()
+    assert main([
+        "--dir", str(stage_dir), "start", "--stage", "meta-cli",
+        "--meta", "ticket=42",
+        "--meta", '{"flag": true, "n": 3}',
+        "--meta", "ticket=43",
+    ]) == EXIT_OK
+    capsys.readouterr()
+    assert stage.status()["meta"] == {"ticket": "43", "flag": True, "n": 3}
+
+    # Invalid --meta entries are BadArgs (exit 2) with no mutation
+    before = status_file.read_text(encoding="utf-8")
+    events_before = len(stage.events())
+    capsys.readouterr()
+    assert main([
+        "--dir", str(stage_dir), "start", "--stage", "meta-bad",
+        "--meta", "bareword",
+    ]) == EXIT_BAD_ARGS
+    assert status_file.read_text(encoding="utf-8") == before
+    assert len(stage.events()) == events_before
+    assert stage.status()["meta"] == {"ticket": "43", "flag": True, "n": 3}
+
+
+def test_start_audit_event_shape(tmp_path: Path) -> None:
+    """Each start appends one start event: stripped message + raw-args detail (SPEC §13.33.6)."""
+    stage_dir = tmp_path / ".stage-signal"
+    stage = Stage(str(stage_dir))
+    stage.init(project="start-audit-test")
+
+    events_before = len(stage.events())
+    st = stage.start(
+        stage="  audit-stage  ",
+        session_id="ses-audit",
+        pid=424243,
+        model="model-a",
+        variant="variant-a",
+    )
+    events = stage.events()
+    assert len(events) == events_before + 1
+    last = events[-1]
+    assert last["type"] == "start"
+    assert last["type"] in EVENT_TYPES
+    assert last["state"] == STATE_RUNNING
+    assert last["stage_id"] == "audit-stage"
+    assert last["stage_name"] == "audit-stage"
+    assert last["attempt"] == st["attempt"]
+    assert last["message"] == "audit-stage"
+    assert last["ts"] == st["updated_at"]
+    for key in EVENT_RECORD_KEYS:
+        assert key in last
+
+    # Detail carries the raw call arguments in START_DETAIL_KEYS order
+    detail = last["detail"]
+    assert tuple(detail.keys()) == START_DETAIL_KEYS
+    assert set(detail.keys()) == set(START_DETAIL_KEYS)
+    assert detail == {
+        "stage_id": "audit-stage",
+        "session_id": "ses-audit",
+        "pid": 424243,
+        "model": "model-a",
+        "variant": "variant-a",
+    }
+
+    # Omitted pid: detail records null while STATUS records the resolved claimant
+    st = stage.start(stage="audit-self")
+    last = stage.events()[-1]
+    assert last["detail"]["pid"] is None
+    assert last["detail"]["stage_id"] == "audit-self"
+    assert tuple(last["detail"].keys()) == START_DETAIL_KEYS
+    assert st["pid"] == os.getpid()
+
+
+def test_start_git_override_and_uninitialized(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Explicit git overrides stored verbatim; uninitialized start is exit 15 (SPEC §13.33.5).
+
+    Synchronous tests with zero sleeps/threads.
+    """
+    from stage_signal import cli
+
+    stage_dir = tmp_path / ".stage-signal"
+    stage = Stage(str(stage_dir))
+    stage.init(project="start-git-test")
+
+    st = stage.start(
+        stage="git-stage",
+        pid=os.getpid(),
+        git_head="head-explicit",
+        git_branch="branch-explicit",
+    )
+    assert st["git_head"] == "head-explicit"
+    assert st["git_branch"] == "branch-explicit"
+
+    missing_dir = tmp_path / "nonexistent" / ".stage-signal"
+    missing_stage = Stage(str(missing_dir))
+    with pytest.raises(NotInitialized):
+        missing_stage.start(stage="cannot start")
+
+    capsys.readouterr()
+    rc = cli.main(["--dir", str(missing_dir), "start", "--stage", "cannot start"])
+    assert rc == EXIT_NOT_INITIALIZED

@@ -1387,7 +1387,7 @@ External orchestrators, Python embedders, typing tools, and harnesses interact w
 
 #### 13.21.1 Canonical export inventory
 
-`stage_signal` exports exactly 128 public symbols matching `stage_signal.__all__`. These symbols are structured into four canonical categories:
+`stage_signal` exports exactly 130 public symbols matching `stage_signal.__all__`. These symbols are structured into four canonical categories:
 
 ##### 1. Classes (§11, §13.20)
 - `Stage`: The primary high-level lifecycle orchestrator, embedding context manager, and transition driver (§11, §13.20).
@@ -1428,7 +1428,7 @@ All six structured exceptions inherit from `StageError` and carry a normative `.
 - **Inventories:**
   - `CLI_SUBCOMMANDS`: 15 frozen CLI subcommands (§13.15).
   - `STAGE_PUBLIC_METHODS`: 15 frozen `Stage` public instance methods (§13.20).
-  - `PUBLIC_EXPORTS`: 128 frozen public symbols exported from top-level package namespace (§13.21).
+  - `PUBLIC_EXPORTS`: 130 frozen public symbols exported from top-level package namespace (§13.21).
 - **Exit codes:**
   - `EXIT_CODES`: Tuple of all 10 standard exit codes (§7, §13.4).
   - Individual exit codes: `EXIT_OK` (0), `EXIT_ERROR` (1), `EXIT_BAD_ARGS` (2), `EXIT_ILLEGAL_TRANSITION` (3), `EXIT_RUNNING` (10), `EXIT_BLOCKED` (11), `EXIT_FAILED` (12), `EXIT_QUEUED` (13), `EXIT_WAIT_TIMEOUT` (14), `EXIT_NOT_INITIALIZED` (15) (§7, §13.4).
@@ -1508,6 +1508,9 @@ All six structured exceptions inherit from `StageError` and carry a normative `.
   - `DONE_ALLOWED_SOURCES`: Legal source states for plain `done` (`"queued"`, `"running"`, `"done"`; §4 rule 5, §13.30).
   - `DONE_ACCEPT_FAILURE_ALLOWED_SOURCES`: Legal source states for `done --accept-failure` (`"failed"`; §4 rule 5, §13.30).
   - `DONE_DETAIL_KEYS`: Audit detail keys (`"proof"`, `"git_head"`, `"accepted_failure"`; §5, §13.30).
+- **Start claim-running:**
+  - `START_ALLOWED_SOURCES`: Legal source states (all five: `"queued"`, `"running"`, `"done"`, `"blocked"`, `"failed"`; §4 rule 2, §13.33).
+  - `START_DETAIL_KEYS`: Audit detail keys (`"stage_id"`, `"session_id"`, `"pid"`, `"model"`, `"variant"`; §5, §13.33).
 
 #### 13.21.2 Frozen structure export (`PUBLIC_EXPORTS`)
 
@@ -1585,6 +1588,8 @@ PUBLIC_EXPORTS: tuple[str, ...] = (
     "RESULT_KEYS",
     "SCHEMA_VERSION",
     "STAGE_PUBLIC_METHODS",
+    "START_ALLOWED_SOURCES",
+    "START_DETAIL_KEYS",
     "STATES",
     "STATE_BLOCKED",
     "STATE_DONE",
@@ -1665,7 +1670,7 @@ Under `schema_version: 1`, the top-level public export inventory is strictly **a
 - Existing symbols in `PUBLIC_EXPORTS` MUST NOT be removed, renamed, or relocated.
 - Existing symbol types, semantics, and contracts MUST NOT undergo breaking changes.
 - Future minor or patch releases under schema version 1 MAY add new classes, helper functions, or frozen constants to `stage_signal`, expanding `PUBLIC_EXPORTS` and `__all__`.
-- External orchestrators, embedders, and typing definitions can safely rely on the uninterrupted presence of all 128 public exports throughout the entire lifecycle of `schema_version: 1`.
+- External orchestrators, embedders, and typing definitions can safely rely on the uninterrupted presence of all 130 public exports throughout the entire lifecycle of `schema_version: 1`.
 
 ### 13.22 Doctor human summary strings freeze (`DOCTOR_SUMMARY_RECLAIM_NEEDED`, `DOCTOR_SUMMARY_OK_FORMAT`)
 
@@ -2611,3 +2616,120 @@ Under `schema_version: 1`, the fail terminal contract is strictly **additive-onl
 - No new event type is introduced for failing: the audit record stays a `failed` event (§13.5).
 - New fail detail keys or guard modes MAY be added in minor or patch releases only as additional constants; existing frozen values MUST keep their exact values.
 - Readers MUST tolerate unknown future `failed` detail keys and unknown future `error` object keys without failing.
+
+### 13.33 Start claim-running contract freeze (`START_ALLOWED_SOURCES`, `START_DETAIL_KEYS`)
+
+`Stage.start` / `stage-signal start --stage NAME [...]` (§4 rule 2, §6, §13.20) claims a stage for execution by transitioning to the live `running` state, recording the caller claim (`session_id`, `pid`, `pid_token`), refreshing VCS context, and emitting a corresponding audit event. Under `schema_version: 1`, the allowed sources (every state — `start` never refuses on state grounds), the stage/stage-id/pid/meta input validation, the session/pid/pid-token claim semantics, the initial `running` STATUS field set (including the attempt bump-vs-reset rule and the conditional `artifacts` clear), and the `start` audit event shape are frozen so orchestrators can (re)claim any stage — fresh, retried, or previously terminal — and branch on the recorded claim without scraping human text. The `start` event type itself is frozen in §13.5 and the record keys in §13.6; the allowed edges are frozen in §13.19. (§13.32 is reserved for the `blocked` contract, #159; reclaim internals stay owned by §13.25 and are cross-linked only, never re-frozen here.)
+
+#### 13.33.1 Frozen constants and exact values
+
+The single sources of truth are defined in `stage_signal.constants` and exported from `stage_signal` and `__all__`:
+
+```python
+START_ALLOWED_SOURCES = (
+    "queued",
+    "running",
+    "done",
+    "blocked",
+    "failed",
+)
+
+START_DETAIL_KEYS = (
+    "stage_id",
+    "session_id",
+    "pid",
+    "model",
+    "variant",
+)
+```
+
+- `START_ALLOWED_SOURCES`: exactly `("queued", "running", "done", "blocked", "failed")` — every lifecycle state (§4 rule 2, §13.12). It MUST equal `allowed_source_states("start")` from `ALLOWED_TRANSITIONS` (§13.19), whose five frozen edges are `(queued, "start") -> running`, `(running, "start") -> running`, `(done, "start") -> running`, `(blocked, "start") -> running`, and `(failed, "start") -> running`. The target state is always `running`.
+- `START_DETAIL_KEYS`: exactly `("stage_id", "session_id", "pid", "model", "variant")`. Audit detail keys on the `start` event record (§13.33.6). The record carries the raw call arguments (not the resolved claim): `pid` is the explicitly passed `--pid` value, or `null` when omitted even though STATUS records the resolved claimant.
+
+#### 13.33.2 Allowed sources: claim from any state
+
+`start` is permitted from **every** state (§4 rule 2, §13.12, §13.19). There is no state guard and no `IllegalTransition` source refusal: claiming a fresh `queued` stage, retrying a live `running` stage, and clearing a previous terminal (`done`, `blocked`, `failed`) for a new attempt all succeed with exit 0. This is how a previous terminal is cleared for a new attempt — no separate unlock is needed (§4 rule 2).
+
+| Precondition failure | Library | CLI exit |
+|----------------------|---------|----------|
+| Stage not initialized (missing dir/STATUS) | `NotInitialized` | 15 (`EXIT_NOT_INITIALIZED`; §7, §13.4, §13.17) |
+| Corrupt `STATUS.json` / unreadable events | `CorruptStatusError` | 1 (`EXIT_ERROR`; §7, §13.4, §13.17) |
+| Missing, empty, or whitespace-only `--stage` / `stage_id` fallback (§13.33.3) | `BadArgsError` | 2 (`EXIT_BAD_ARGS`; §7, §13.4, §13.17) |
+| Invalid `pid` (non-integer or negative; §13.33.3) | `BadArgsError` | 2 (`EXIT_BAD_ARGS`; §7, §13.4, §13.17) |
+| Invalid `--meta` entry (bare word, malformed JSON, non-object JSON, empty key; §13.33.5) | `BadArgsError` | 2 (`EXIT_BAD_ARGS`; §7, §13.4, §13.17) |
+
+On any precondition or validation failure, **no mutation occurs**: `STATUS.json`, `events.jsonl`, and status mirrors remain completely unmodified. In particular `start` never probes pid liveness and never consults `needs_reclaim`: a dead claimant or a stale heartbeat never blocks a claim (recovery policy itself is owned by §13.25).
+
+#### 13.33.3 Stage name, stage-id, and pid validation
+
+From the exact implementation in `Stage.start` (`src/stage_signal/stage.py`), evaluated in order before any mutation:
+
+- **Stage validation:** `if not stage or not stage.strip(): raise BadArgsError("start requires a non-empty --stage NAME")`.
+  - Passing `None`, an empty string `""`, or a whitespace-only string raises `BadArgsError`.
+  - In the CLI, `--stage` is `required=True`, so omitting the flag makes `argparse` fail with exit 2 (`EXIT_BAD_ARGS`); passing `--stage ""` or `--stage "  "` reaches `Stage.start`, which raises `BadArgsError` (exit 2).
+  - The stored `stage_name` is the stripped name (`stage.strip()`); the audit `message` carries the same stripped name (§13.33.6). A valid name is otherwise stored byte-for-byte as supplied after stripping (no further normalization).
+- **Stage-id resolution:** `new_id = stage_id or stage.strip()`.
+  - An explicit truthy `--stage-id` wins and is used verbatim (no stripping, no normalization): it defines the attempt series (§13.33.5).
+  - A missing, `None`, or empty-string `stage_id` falls back to the stripped stage name, so `stage_id` defaults to `stage_name` (§3).
+- **Pid validation:** `if pid is not None and (not isinstance(pid, int) or pid < 0): raise BadArgsError(f"invalid pid: {pid!r}")`.
+  - `None` (CLI flag omitted) means "claim as the current process" and resolves to `os.getpid()` (§13.33.4).
+  - A non-integer (e.g. a string) or a negative integer raises `BadArgsError` (exit 2) with no mutation. In the CLI, `--pid` is `type=int`, so a non-numeric value fails in `argparse` with exit 2 before reaching `Stage.start`.
+
+#### 13.33.4 Session, pid, and pid-token claim semantics
+
+On success, the caller claim is recorded under the exclusive mutation lock; git detection runs before the lock (subprocess + lock is a Windows hang risk) and never blocks the claim:
+
+- `session_id`: exactly the supplied `--session` value (or `None` when omitted). Opaque to the lifecycle: never validated, never interpreted, replaced on every `start`, cleared on idle reset, preserved by `clear-terminal --keep-stage` (§4 rule 8, §13.26).
+- `pid`: the resolved claimant. An explicit valid `pid` is stored as-is; when omitted, `resolved_pid = os.getpid()` — the process executing the `start` call. Every `start` replaces the previous `pid`, including same-stage retries.
+- `pid_token`: the opaque process-start identity captured best-effort for the resolved pid (`_pid_token(resolved_pid)`): Linux `/proc/<pid>/stat` field 22 (clock ticks since boot), macOS `ps -o lstart=` under a stable locale/timezone, Windows `GetProcessTimes` via ctypes (best effort). Capture failure yields `null` and never prevents the claim. Every `start` replaces the previous token with the newly captured value or `null`, including retries of the same stage (§4 rule 2).
+- The recorded `pid` / `pid_token` pair is **consumed** (not redefined) by the advisory liveness and recovery paths: `doctor` / `Stage.diagnose()` report `DEAD_PID` when the claimant probes dead (§13.8), `fail --if-dead-pid` gates on confirmed-dead claimants (§13.31), and `reclaim --kill` re-verifies `pid_token` before each termination signal to reduce pid-reuse risk (§13.25). Those semantics stay owned by their sections; this section freezes only that `start` writes the pair and never reads it back.
+
+#### 13.33.5 Initial `running` STATUS fields
+
+On each successful `start` under the exclusive file lock (`ts = now_iso()`; `same_series = current["stage_id"] == new_id`):
+
+- **Claim and identity:** `stage_id` is set to `new_id`, `stage_name` to the stripped stage, `state` to `"running"` (`STATE_RUNNING`; §13.12), `session_id` / `pid` / `pid_token` / `model` / `variant` to the §13.33.4 values (`model` / `variant` are opaque annotations like `session_id`: stored as supplied or `null`, never validated).
+- **Attempt series:** `attempt` is `current["attempt"] + 1` when retrying the same `stage_id`, else reset to `1` for a new `stage_id` (§3). The first `start` after `init` (where `stage_id` is `null`) always starts at `1`.
+- **Fresh-clock fields:** `started_at`, `heartbeat_at` are set to `ts`; `heartbeat_note` is reset to `null`. `updated_at` is bumped by the standard mutation path (§4 rule 9). `repo_path` is refreshed (`_repo_path`); `git_branch` / `git_head` are the explicit `--git-branch` / `--git-head` overrides when non-`None`, else the best-effort detected repo values (possibly `null` outside a git checkout; §3).
+- **Cleared payloads:** `result`, `error`, and `proof` are explicitly cleared to `null` — a freshly claimed stage never carries a terminal payload or a prior verification receipt (§3, §13.9, §13.10).
+- **Artifacts (conditional):** `artifacts` is cleared to `[]` only on a new `stage_id`; a same-`stage_id` retry keeps the existing entries (§3, §4 rule 2; entry shape owned by §13.7, add-path owned by §13.29).
+- **Notes (preserved):** `notes[]` is preserved untouched across every `start` — same-series retries and new stages alike — maintaining the append-only progress log (§3, §13.28).
+- **Meta (replaced):** `meta` is replaced entirely: `dict(meta) if meta else {}`. Previous meta is cleared; any new repeatable `--meta` entries (each `K=V` with the value kept as a string, or a single raw JSON object string per entry; merged in order, later wins; §6) become the whole object. Bare words, malformed JSON, non-object JSON, and empty keys are `BadArgsError` (exit 2) with no mutation, parsed before the mutation lock via `_parse_meta`.
+- All 23 `STATUS_REQUIRED_KEYS` (§13.2) remain present on disk after every `start`.
+
+#### 13.33.6 Audit event shape
+
+Each successful `start` call appends exactly one `start` event (§5; no new event type is introduced):
+
+- `type` is exactly `"start"` (a member of `EVENT_TYPES`; §13.5) with the standard record keys (`EVENT_RECORD_KEYS`; §13.6). `ts` equals the mutation `updated_at`. `state` is `"running"` and `stage_id` / `stage_name` / `attempt` reflect the post-mutation STATUS (including the bumped or reset attempt).
+- `message` is the stripped stage name passthrough: exactly `stage.strip()` — byte-for-byte, no affixes.
+- `detail` carries exactly `START_DETAIL_KEYS`: `{"stage_id": new_id, "session_id": session_id, "pid": pid, "model": model, "variant": variant}` reflecting the raw call arguments: `stage_id` is the resolved id (explicit or defaulted), while `session_id`, `pid`, `model`, and `variant` are the as-passed values (`null` when omitted — in particular `detail["pid"]` is `null` when `--pid` was omitted even though STATUS records the resolved `os.getpid()` claimant). Concretely, `tuple(detail.keys()) == START_DETAIL_KEYS` and `set(detail.keys()) == set(START_DETAIL_KEYS)`.
+
+Readers MUST tolerate additive unknown keys on the `start` `detail` object without failing (§13.1).
+
+#### 13.33.7 CLI behavior and status mirror
+
+- **CLI output:** `stage-signal start --stage NAME [...]` prints `started <one_line_summary>` (e.g. `started running my-stage (attempt 1)`) to standard output and exits 0 (`EXIT_OK`; mutation commands exit 0 on success regardless of prior state, §7, §13.4). The CLI flag mapping is one-to-one: `--stage` → `stage`, `--stage-id` → `stage_id`, `--session` → `session_id`, `--pid` → `pid`, `--model` → `model`, `--variant` → `variant`, `--git-head` → `git_head`, `--git-branch` → `git_branch`, repeatable `--meta` → `meta` via `_parse_meta`, `--write-status-mirror` → `write_status_mirror` (§6, §13.20).
+- **Status mirror:** a successful `start` transition is mirror-eligible: when mirroring is enabled (`--write-status-mirror` or `$STAGE_SIGNAL_STATUS_MIRROR`), the `.orch/` mirror is rewritten best-effort (§10, §13.14); mirror failures warn on `stderr` and never abort the transition. `STATUS.md` is rewritten best-effort rendering `state: running` (§13.18).
+
+#### 13.33.8 Cross-links
+
+- **§3 (STATUS.json schema):** the claim fields (`stage_id`, `stage_name`, `session_id`, `pid`, `pid_token`, `model`, `variant`), the attempt bump-vs-reset rule, `started_at` / `heartbeat_at` / `heartbeat_note` lifecycle, `artifacts` conditional clear vs `notes` preservation vs `meta` replacement, and `result` / `error` / `proof` clearing.
+- **§4 rule 2 (States & transitions):** normative `start --stage NAME` allowed-from-any-state rule, the attempt/heartbeat/git/meta lifecycle rules, and the `updated_at` bump rule (§4 rule 9); staleness never auto-mutates and never blocks a claim.
+- **§5 (events.jsonl) + §13.5/§13.6:** the `start` event type and required record keys; audit-trail reads via `events`.
+- **§6 (CLI contract):** `stage-signal start --stage NAME [--stage-id ID] [--session ID] [--pid N] [--model M] [--variant V] [--git-head H] [--git-branch B] [--meta K=V|JSON ...] [--write-status-mirror]` usage line; `--meta` merge semantics; mutation-command exit 0 contract.
+- **§13.12 (states freeze):** all five states as legal sources vs the single `running` target.
+- **§13.14 (environment and timing defaults freeze):** `$STAGE_SIGNAL_STATUS_MIRROR` mirror opt-in consumed by `start`; no timing default is changed here.
+- **§13.19 (transition matrix freeze):** the five frozen `(source, "start") -> running` edges.
+- **§13.20 (Stage method surface freeze):** `start(stage, *, stage_id=None, session_id=None, pid=None, model=None, variant=None, git_head=None, git_branch=None, meta=None, write_status_mirror=None) -> dict[str, Any]` signature and CLI equivalence.
+- **§13.25 (reclaim freeze) + §13.8 (warnings):** the recorded `pid` / `pid_token` pair as the consumed identity for `DEAD_PID` advisories, `fail --if-dead-pid` gating, and `reclaim --kill` token re-verification; reclaim internals are owned there, not here.
+- **§13.21 (Top-level public export inventory):** Inclusion of `START_ALLOWED_SOURCES` and `START_DETAIL_KEYS` in `PUBLIC_EXPORTS`.
+
+#### 13.33.9 Additive-only evolution policy
+
+Under `schema_version: 1`, the start claim-running contract is strictly **additive-only** (§13.1):
+
+- The frozen allowed sources (every state), the non-empty-stage validation, the `stage_id`-default / verbatim-explicit rule, the `pid`-as-int-or-`None`-means-self rule, the replace-every-claim `session_id` / `pid` / `pid_token` semantics, the attempt bump-vs-reset rule, the conditional `artifacts` clear vs `notes` preservation vs `meta` replacement, the `result` / `error` / `proof` clearing, the stripped-name message passthrough, and the raw-args `START_DETAIL_KEYS` audit shape MUST NOT be removed, renamed, reworded, or change semantic meaning.
+- No new event type is introduced for claiming: the audit record stays a `start` event (§13.5).
+- New claim fields or audit detail keys MAY be added in minor or patch releases only as additional constants; existing frozen values MUST keep their exact values.
+- Readers MUST tolerate unknown future `start` detail keys and unknown future STATUS claim fields without failing.
