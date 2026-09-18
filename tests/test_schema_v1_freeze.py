@@ -6,6 +6,7 @@ lose keys or branch targets silently.
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import subprocess
@@ -76,11 +77,13 @@ from stage_signal import (
     SUPERVISE_SIGNAL_EXIT_BASE,
     SUPERVISE_SIGNAL_REASON_FORMAT,
     TERMINAL_STATES,
+    WAIT_CHOICES,
     WAIT_JSON_KEYS,
     WAIT_OUTCOME_MET,
     WAIT_OUTCOME_MISMATCH,
     WAIT_OUTCOME_TIMEOUT,
     WAIT_OUTCOMES,
+    WAIT_WANT_NEEDS_RECLAIM,
     WARNING_CODE_DEAD_PID,
     WARNING_CODE_STALE_HEARTBEAT,
     WARNING_CODE_UNPARSEABLE_HEARTBEAT,
@@ -104,6 +107,8 @@ from stage_signal import (
     supervise_adopt_message,
     supervise_signal_exit,
     transition_target,
+    wait_condition_met,
+    want_matches,
     write_status_mirror,
     DEFAULT_STALE_THRESHOLD,
     ENV_DIR,
@@ -3732,7 +3737,7 @@ def test_diagnose_doctor_json_summary_null_on_problems(
 
 
 def test_public_exports_constant_freeze() -> None:
-    """PUBLIC_EXPORTS matches the frozen 103-element tuple in SPEC §13.21."""
+    """PUBLIC_EXPORTS matches the frozen 105-element tuple in SPEC §13.21."""
     expected = (
         "ALLOWED_TRANSITIONS",
         "ARTIFACT_ENTRY_KEYS",
@@ -3809,6 +3814,7 @@ def test_public_exports_constant_freeze() -> None:
         "StageError",
         "StageStore",
         "TERMINAL_STATES",
+        "WAIT_CHOICES",
         "WAIT_DEFAULT_POLL",
         "WAIT_DEFAULT_TIMEOUT",
         "WAIT_JSON_KEYS",
@@ -3816,6 +3822,7 @@ def test_public_exports_constant_freeze() -> None:
         "WAIT_OUTCOME_MET",
         "WAIT_OUTCOME_MISMATCH",
         "WAIT_OUTCOME_TIMEOUT",
+        "WAIT_WANT_NEEDS_RECLAIM",
         "WARNING_CODES",
         "WARNING_CODE_DEAD_PID",
         "WARNING_CODE_STALE_HEARTBEAT",
@@ -3840,7 +3847,7 @@ def test_public_exports_constant_freeze() -> None:
     )
     assert PUBLIC_EXPORTS == expected
     assert isinstance(PUBLIC_EXPORTS, tuple)
-    assert len(PUBLIC_EXPORTS) == 103
+    assert len(PUBLIC_EXPORTS) == 105
     assert PUBLIC_EXPORTS == tuple(sorted(PUBLIC_EXPORTS))
     assert len(PUBLIC_EXPORTS) == len(set(PUBLIC_EXPORTS))
 
@@ -3962,6 +3969,8 @@ def test_public_exports_category_coverage() -> None:
         "WARNING_CODES",
         "WAIT_JSON_KEYS",
         "WAIT_OUTCOMES",
+        "WAIT_CHOICES",
+        "WAIT_WANT_NEEDS_RECLAIM",
         "STATUS_MD_REQUIRED_HEADINGS",
         "STATUS_MD_HEADINGS",
         "PUBLIC_EXPORTS",
@@ -4000,8 +4009,208 @@ def test_public_exports_cross_links() -> None:
         assert exc_name in PUBLIC_EXPORTS
 
 
+# 20. Wait want vocabulary and predicate freeze (SPEC §13.23, issue #141)
 # =============================================================================
-# 20. Supervise child-PID adoption + supervisor exit contract freeze (SPEC §13.24, issue #142)
+
+
+def test_wait_want_constants_freeze() -> None:
+    """WAIT_CHOICES and WAIT_WANT_NEEDS_RECLAIM match SPEC §13.23 exactly."""
+    assert WAIT_CHOICES == ("done", "blocked", "failed", "terminal")
+    assert isinstance(WAIT_CHOICES, tuple)
+    assert len(WAIT_CHOICES) == 4
+    assert all(isinstance(c, str) for c in WAIT_CHOICES)
+    assert len(set(WAIT_CHOICES)) == 4
+
+    assert WAIT_CHOICES[0] == STATE_DONE == "done"
+    assert WAIT_CHOICES[1] == STATE_BLOCKED == "blocked"
+    assert WAIT_CHOICES[2] == STATE_FAILED == "failed"
+    assert WAIT_CHOICES[3] == "terminal"
+
+    # Terminal states partition: all 3 TERMINAL_STATES are choices in WAIT_CHOICES
+    for s in TERMINAL_STATES:
+        assert s in WAIT_CHOICES
+
+    assert WAIT_WANT_NEEDS_RECLAIM == "needs_reclaim"
+    assert isinstance(WAIT_WANT_NEEDS_RECLAIM, str)
+
+
+def test_wait_want_exported_from_top_level() -> None:
+    """WAIT_CHOICES, WAIT_WANT_NEEDS_RECLAIM, want_matches, and wait_condition_met are exported (SPEC §13.23)."""
+    import stage_signal
+
+    for name, expected in (
+        ("WAIT_CHOICES", WAIT_CHOICES),
+        ("WAIT_WANT_NEEDS_RECLAIM", WAIT_WANT_NEEDS_RECLAIM),
+        ("want_matches", want_matches),
+        ("wait_condition_met", wait_condition_met),
+    ):
+        assert hasattr(stage_signal, name), f"stage_signal missing export {name!r}"
+        assert name in stage_signal.__all__, f"{name!r} missing from __all__"
+        assert getattr(stage_signal, name) is expected
+
+
+def test_want_matches_predicate_matrix() -> None:
+    """want_matches(want, state) evaluates exact truth table across all states (SPEC §13.23)."""
+    # 1. want == "terminal": True iff state in TERMINAL_STATES ("done", "blocked", "failed")
+    for state in (STATE_DONE, STATE_BLOCKED, STATE_FAILED):
+        assert want_matches("terminal", state) is True
+
+    for non_term in (STATE_QUEUED, STATE_RUNNING, "unknown_state", "", "none"):
+        assert want_matches("terminal", non_term) is False
+
+    # 2. Exact state wants ("done", "blocked", "failed"): True iff state == want
+    for target in ("done", "blocked", "failed"):
+        for state in STATES:
+            if state == target:
+                assert want_matches(target, state) is True
+            else:
+                assert want_matches(target, state) is False
+
+        # Non-lifecycle strings never match
+        assert want_matches(target, "other") is False
+        assert want_matches(target, "") is False
+
+    # 3. Arbitrary wants (e.g. "running", "queued"): fallback is state == want
+    assert want_matches("running", "running") is True
+    assert want_matches("running", "done") is False
+    assert want_matches("queued", "queued") is True
+    assert want_matches("queued", "running") is False
+
+
+def test_wait_condition_met_predicate_matrix() -> None:
+    """wait_condition_met evaluates status snapshots across want and needs_reclaim (SPEC §13.23)."""
+    # 1. needs_reclaim=False: delegates to want_matches(want, str(status.get("state")))
+    for want in WAIT_CHOICES:
+        for state in STATES:
+            status = {"state": state, "needs_reclaim": False}
+            expected = want_matches(want, state)
+            assert wait_condition_met(status, want=want, needs_reclaim=False) is expected
+
+    # When state is None or missing
+    assert wait_condition_met({}, want="terminal", needs_reclaim=False) is False
+    assert wait_condition_met({"state": None}, want="done", needs_reclaim=False) is False
+
+    # 2. needs_reclaim=True: condition is bool(status.get("needs_reclaim")), ignoring want
+    for want in WAIT_CHOICES:
+        # Reclaim true -> condition met regardless of want
+        assert wait_condition_met(
+            {"state": "running", "needs_reclaim": True},
+            want=want,
+            needs_reclaim=True,
+        ) is True
+
+        # Reclaim false -> condition NOT met regardless of want or state
+        for state in STATES:
+            assert wait_condition_met(
+                {"state": state, "needs_reclaim": False},
+                want=want,
+                needs_reclaim=True,
+            ) is False
+
+        # Missing needs_reclaim key -> False
+        assert wait_condition_met(
+            {"state": "running"},
+            want=want,
+            needs_reclaim=True,
+        ) is False
+
+    # Truthy non-bool values in needs_reclaim evaluate via bool()
+    assert wait_condition_met({"needs_reclaim": 1}, want="terminal", needs_reclaim=True) is True
+    assert wait_condition_met({"needs_reclaim": 0}, want="terminal", needs_reclaim=True) is False
+    assert wait_condition_met({"needs_reclaim": ""}, want="terminal", needs_reclaim=True) is False
+
+
+def test_wait_needs_reclaim_mutual_exclusivity(tmp_path: Path) -> None:
+    """wait --needs-reclaim cannot be combined with non-default --state (SPEC §6, §13.23)."""
+    stage_dir = tmp_path / ".stage-signal"
+    stage = Stage(str(stage_dir))
+    stage.init(project="wait-mutual-excl")
+
+    # 1. Library API: Stage.wait with needs_reclaim=True and want != "terminal" raises BadArgsError (exit 2)
+    for bad_want in ("done", "blocked", "failed", "running", "queued", "custom"):
+        with pytest.raises(BadArgsError, match="wait needs_reclaim=True cannot be combined with a --state want") as exc_info:
+            stage.wait(want=bad_want, needs_reclaim=True)
+        assert exc_info.value.exit_code == EXIT_BAD_ARGS == 2
+
+    # 2. Library API: Invalid want without needs_reclaim raises BadArgsError
+    for invalid_want in ("running", "queued", "bogus", "TERMINAL"):
+        with pytest.raises(BadArgsError, match="invalid wait state") as exc_info:
+            stage.wait(want=invalid_want, needs_reclaim=False)
+        assert exc_info.value.exit_code == EXIT_BAD_ARGS == 2
+
+    # 3. CLI: stage-signal wait --state <non-terminal> --needs-reclaim exits with EXIT_BAD_ARGS (2)
+    for bad_choice in ("done", "blocked", "failed"):
+        code = main(["--dir", str(stage_dir), "wait", "--state", bad_choice, "--needs-reclaim"])
+        assert code == EXIT_BAD_ARGS == 2
+
+
+def test_wait_choices_cli_parser_contract() -> None:
+    """CLI parser wait subcommand choices and defaults match frozen WAIT_CHOICES (SPEC §6, §13.23)."""
+    parser = build_parser()
+    subparsers = [action for action in parser._actions if isinstance(action, argparse._SubParsersAction)]
+    assert len(subparsers) == 1
+    wait_parser = subparsers[0].choices["wait"]
+
+    # Locate --state argument action
+    state_action = [a for a in wait_parser._actions if "--state" in a.option_strings][0]
+    assert state_action.choices == list(WAIT_CHOICES)
+    assert state_action.default == "terminal"
+
+    # Locate --needs-reclaim argument action
+    nr_action = [a for a in wait_parser._actions if "--needs-reclaim" in a.option_strings][0]
+    assert nr_action.default is False
+
+
+def test_wait_json_wanted_token_reporting(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """wait --json emits wanted field matching choice or WAIT_WANT_NEEDS_RECLAIM (SPEC §6, §13.3.3, §13.23)."""
+    stage_dir = tmp_path / ".stage-signal"
+    stage = Stage(str(stage_dir))
+    stage.init(project="wait-token-test")
+    stage.start(stage="step-1")
+    stage.done()
+
+    # 1. State targets emit the requested choice in wanted
+    for choice in ("terminal", "done"):
+        capsys.readouterr()
+        rc = main(["--dir", str(stage_dir), "wait", "--state", choice, "--json"])
+        assert rc == EXIT_OK == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["wanted"] == choice
+        assert payload["outcome"] == WAIT_OUTCOME_MET
+        assert payload["state"] == "done"
+
+    # 2. Reclaim wait on a healthy done stage exits with mismatch (1) and emits WAIT_WANT_NEEDS_RECLAIM in wanted
+    capsys.readouterr()
+    rc = main(["--dir", str(stage_dir), "wait", "--needs-reclaim", "--json"])
+    assert rc == 1  # terminal without reclaim fails closed (done=1 per SPEC §6)
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["wanted"] == WAIT_WANT_NEEDS_RECLAIM == "needs_reclaim"
+    assert payload["outcome"] == WAIT_OUTCOME_MISMATCH
+
+
+def test_wait_want_cross_links() -> None:
+    """Verify wait want vocabulary cross-links to §6, §13.11, §13.12, and §13.16."""
+    # Cross-link §13.12: All terminal states are in WAIT_CHOICES
+    for term_state in TERMINAL_STATES:
+        assert term_state in WAIT_CHOICES
+
+    # Cross-link §13.16: All state targets have frozen observer exit codes
+    for choice in WAIT_CHOICES:
+        if choice != "terminal":
+            assert choice in STATE_EXIT_CODES
+
+    # Cross-link §13.11: Wait outcomes are met, mismatch, timeout
+    assert len(WAIT_OUTCOMES) == 3
+    assert set(WAIT_OUTCOMES) == {"met", "mismatch", "timeout"}
+
+    # Cross-link §6 & §13.21: WAIT_CHOICES and WAIT_WANT_NEEDS_RECLAIM in PUBLIC_EXPORTS
+    assert "WAIT_CHOICES" in PUBLIC_EXPORTS
+    assert "WAIT_WANT_NEEDS_RECLAIM" in PUBLIC_EXPORTS
+    assert "want_matches" in PUBLIC_EXPORTS
+    assert "wait_condition_met" in PUBLIC_EXPORTS
+
+# =============================================================================
+# 21. Supervise child-PID adoption + supervisor exit contract freeze (SPEC §13.24, issue #142)
 # =============================================================================
 
 

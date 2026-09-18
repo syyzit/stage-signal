@@ -41,6 +41,8 @@ from .constants import (
     STATE_QUEUED,
     STATE_RUNNING,
     TERMINAL_STATES,
+    WAIT_CHOICES,
+    WAIT_WANT_NEEDS_RECLAIM,
     DOCTOR_SUMMARY_RECLAIM_NEEDED,
     doctor_summary_ok,
     WARNING_CODE_DEAD_PID,
@@ -58,15 +60,14 @@ from .store import StageStore
 
 __all__ = [
     "Stage",
+    "WAIT_CHOICES",
+    "WAIT_WANT_NEEDS_RECLAIM",
     "state_exit_code",
     "want_matches",
     "wait_condition_met",
     "verify_proof",
     "write_status_mirror",
 ]
-
-WAIT_CHOICES = ("done", "blocked", "failed", "terminal")
-WAIT_WANT_NEEDS_RECLAIM = "needs_reclaim"
 
 
 def want_matches(want: str, state: str) -> bool:
