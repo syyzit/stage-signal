@@ -48,6 +48,7 @@ from stage_signal import (
     SCHEMA_VERSION,
     STATE_BLOCKED,
     STATE_DONE,
+    STATE_EXIT_CODES,
     STATE_FAILED,
     STATE_QUEUED,
     STATE_RUNNING,
@@ -86,7 +87,6 @@ from stage_signal import (
     WAIT_DEFAULT_TIMEOUT,
 )
 from stage_signal.cli import build_parser, main
-from stage_signal.constants import STATE_EXIT_CODES
 from stage_signal.store import validate_status
 
 
@@ -2030,4 +2030,195 @@ def test_cli_subcommands_rejects_unknown_command_in_process(capsys: pytest.Captu
     with pytest.raises(SystemExit) as exc_info:
         build_parser().parse_args(["unknown-subcommand"])
     assert exc_info.value.code == EXIT_BAD_ARGS
+
+
+# =============================================================================
+# 14. State-to-exit-code mapping freeze (SPEC §13.16, issue #126)
+# =============================================================================
+
+
+def test_state_exit_codes_mapping_freeze() -> None:
+    """STATE_EXIT_CODES matches the frozen mapping in SPEC §13.16."""
+    expected_state_exit_codes = {
+        "running": 10,
+        "blocked": 11,
+        "failed": 12,
+        "queued": 13,
+        "done": 0,
+    }
+    assert STATE_EXIT_CODES == expected_state_exit_codes
+    assert set(STATE_EXIT_CODES.keys()) == set(STATES)
+
+    # Verify individual mapped constants and state values
+    assert STATE_EXIT_CODES[STATE_QUEUED] == EXIT_QUEUED == 13
+    assert STATE_EXIT_CODES[STATE_RUNNING] == EXIT_RUNNING == 10
+    assert STATE_EXIT_CODES[STATE_DONE] == EXIT_OK == 0
+    assert STATE_EXIT_CODES[STATE_BLOCKED] == EXIT_BLOCKED == 11
+    assert STATE_EXIT_CODES[STATE_FAILED] == EXIT_FAILED == 12
+
+    for state, code in expected_state_exit_codes.items():
+        assert isinstance(state, str)
+        assert isinstance(code, int)
+        assert state_exit_code(state) == code
+
+
+def test_state_exit_codes_exported_from_top_level() -> None:
+    """STATE_EXIT_CODES is exported from top-level stage_signal package (SPEC §13.16)."""
+    import stage_signal
+
+    assert hasattr(stage_signal, "STATE_EXIT_CODES")
+    assert "STATE_EXIT_CODES" in stage_signal.__all__
+    assert stage_signal.STATE_EXIT_CODES is STATE_EXIT_CODES
+
+
+def test_state_exit_code_unknown_state_error() -> None:
+    """Unknown state passed to state_exit_code raises ValueError without crashing (SPEC §13.16)."""
+    with pytest.raises(ValueError, match="unknown state"):
+        state_exit_code("unknown_state")
+
+    with pytest.raises(ValueError, match="unknown state"):
+        state_exit_code("")
+
+    with pytest.raises(ValueError, match="unknown state"):
+        state_exit_code("TERMINAL")
+
+
+def test_status_cli_exit_codes_smoke(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Smoke test: status CLI exits with STATE_EXIT_CODES for each state (SPEC §6, §7, §13.16)."""
+    stage_dir = tmp_path / ".stage-signal"
+    pid = os.getpid()
+
+    # 1. State: queued (after init) -> EXIT_QUEUED (13)
+    capsys.readouterr()
+    init_rc = main(["--dir", str(stage_dir), "init", "--project", "exit-smoke-test"])
+    assert init_rc == EXIT_OK
+
+    capsys.readouterr()
+    rc_human = main(["--dir", str(stage_dir), "status"])
+    assert rc_human == EXIT_QUEUED
+    assert rc_human == STATE_EXIT_CODES["queued"]
+
+    capsys.readouterr()
+    rc_json = main(["--dir", str(stage_dir), "status", "--json"])
+    assert rc_json == EXIT_QUEUED
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["state"] == "queued"
+
+    # 2. State: running (after start) -> EXIT_RUNNING (10)
+    capsys.readouterr()
+    start_rc = main(["--dir", str(stage_dir), "start", "--stage", "step1", "--pid", str(pid)])
+    assert start_rc == EXIT_OK
+
+    capsys.readouterr()
+    rc_human = main(["--dir", str(stage_dir), "status"])
+    assert rc_human == EXIT_RUNNING
+    assert rc_human == STATE_EXIT_CODES["running"]
+
+    capsys.readouterr()
+    rc_json = main(["--dir", str(stage_dir), "status", "--json"])
+    assert rc_json == EXIT_RUNNING
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["state"] == "running"
+
+    # 3. State: blocked (after blocked) -> EXIT_BLOCKED (11)
+    capsys.readouterr()
+    block_rc = main(["--dir", str(stage_dir), "blocked", "--reason", "waiting on external dep"])
+    assert block_rc == EXIT_OK
+
+    capsys.readouterr()
+    rc_human = main(["--dir", str(stage_dir), "status"])
+    assert rc_human == EXIT_BLOCKED
+    assert rc_human == STATE_EXIT_CODES["blocked"]
+
+    capsys.readouterr()
+    rc_json = main(["--dir", str(stage_dir), "status", "--json"])
+    assert rc_json == EXIT_BLOCKED
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["state"] == "blocked"
+
+    # 4. State: done (after start -> done) -> EXIT_OK (0)
+    capsys.readouterr()
+    start_rc = main(["--dir", str(stage_dir), "start", "--stage", "step2", "--pid", str(pid)])
+    assert start_rc == EXIT_OK
+
+    capsys.readouterr()
+    done_rc = main(["--dir", str(stage_dir), "done", "--summary", "step completed"])
+    assert done_rc == EXIT_OK
+
+    capsys.readouterr()
+    rc_human = main(["--dir", str(stage_dir), "status"])
+    assert rc_human == EXIT_OK
+    assert rc_human == STATE_EXIT_CODES["done"]
+
+    capsys.readouterr()
+    rc_json = main(["--dir", str(stage_dir), "status", "--json"])
+    assert rc_json == EXIT_OK
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["state"] == "done"
+
+    # 5. State: failed (after clear-terminal -> start -> fail) -> EXIT_FAILED (12)
+    capsys.readouterr()
+    clear_rc = main(["--dir", str(stage_dir), "clear-terminal"])
+    assert clear_rc == EXIT_OK
+
+    capsys.readouterr()
+    start_rc = main(["--dir", str(stage_dir), "start", "--stage", "step3", "--pid", str(pid)])
+    assert start_rc == EXIT_OK
+
+    capsys.readouterr()
+    fail_rc = main(["--dir", str(stage_dir), "fail", "--reason", "fatal test failure"])
+    assert fail_rc == EXIT_OK
+
+    capsys.readouterr()
+    rc_human = main(["--dir", str(stage_dir), "status"])
+    assert rc_human == EXIT_FAILED
+    assert rc_human == STATE_EXIT_CODES["failed"]
+
+    capsys.readouterr()
+    rc_json = main(["--dir", str(stage_dir), "status", "--json"])
+    assert rc_json == EXIT_FAILED
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["state"] == "failed"
+
+
+def test_mutation_commands_exit_zero_distinct_from_status_observer(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Mutation commands exit 0 on success, distinct from observer status exits (SPEC §6, §7, §13.16)."""
+    stage_dir = tmp_path / ".stage-signal"
+    pid = os.getpid()
+
+    # init mutates to queued -> mutation exits 0, status exits 13
+    assert main(["--dir", str(stage_dir), "init", "--project", "distinct-test"]) == EXIT_OK
+    assert main(["--dir", str(stage_dir), "status"]) == STATE_EXIT_CODES["queued"]
+
+    # start mutates to running -> mutation exits 0, status exits 10
+    assert main(["--dir", str(stage_dir), "start", "--stage", "s1", "--pid", str(pid)]) == EXIT_OK
+    assert main(["--dir", str(stage_dir), "status"]) == STATE_EXIT_CODES["running"]
+
+    # heartbeat mutates heartbeat_at -> mutation exits 0
+    assert main(["--dir", str(stage_dir), "heartbeat"]) == EXIT_OK
+
+    # note mutates notes -> mutation exits 0
+    assert main(["--dir", str(stage_dir), "note", "working on task"]) == EXIT_OK
+
+    # blocked mutates to blocked -> mutation exits 0, status exits 11
+    assert main(["--dir", str(stage_dir), "blocked", "--reason", "blocked on external"]) == EXIT_OK
+    assert main(["--dir", str(stage_dir), "status"]) == STATE_EXIT_CODES["blocked"]
+
+    # restart and done -> done exits 0, status exits 0
+    assert main(["--dir", str(stage_dir), "start", "--stage", "s2", "--pid", str(pid)]) == EXIT_OK
+    assert main(["--dir", str(stage_dir), "done", "--summary", "all good"]) == EXIT_OK
+    assert main(["--dir", str(stage_dir), "status"]) == STATE_EXIT_CODES["done"]
+
+    # clear-terminal mutates to queued -> clear-terminal exits 0, status exits 13
+    assert main(["--dir", str(stage_dir), "clear-terminal"]) == EXIT_OK
+    assert main(["--dir", str(stage_dir), "status"]) == STATE_EXIT_CODES["queued"]
+
+    # restart and fail -> fail exits 0, status exits 12
+    assert main(["--dir", str(stage_dir), "start", "--stage", "s3", "--pid", str(pid)]) == EXIT_OK
+    assert main(["--dir", str(stage_dir), "fail", "--reason", "bad state"]) == EXIT_OK
+    assert main(["--dir", str(stage_dir), "status"]) == STATE_EXIT_CODES["failed"]
 
