@@ -205,7 +205,7 @@ WAIT_OUTCOMES = (
 
 
 def state_exit_code(state: str) -> int:
-    """Map a stage state to its observer exit code (SPEC §7)."""
+    """Map a stage state to its observer exit code (SPEC §6, §7, §13.16)."""
     try:
         return STATE_EXIT_CODES[state]
     except KeyError:

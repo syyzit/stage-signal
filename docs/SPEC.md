@@ -375,7 +375,7 @@ stage-signal supervise [--every SEC] [--dir DIR] [--summary SUMMARY] [--reason R
   the default 300-second threshold); `false` otherwise, including healthy
   running and non-running states. `status` warnings remain advisory only and
   the exit code always reflects state (§7).
-  Its exit code always reflects state (§7), so orchestrators can
+  Its exit code always reflects state (§7, §13.16), so orchestrators can
   `stage-signal status` / `wait` in shell `if` directly.
 - `events` prints recent `events.jsonl` records for orchestrator audit
   (do not scrape the file). Human default is chronological, newest last.
@@ -476,7 +476,7 @@ stage-signal supervise [--every SEC] [--dir DIR] [--summary SUMMARY] [--reason R
 | 15 | Not initialized (missing dir/STATUS) |
 
 `done`/`blocked`/`failed` terminal commands exit 0 on success (they *perform*
-the transition); the 10–13 codes are for *observing* (`status`/`wait`) only (and exit 10 for `doctor --exit-reclaim` when reclaim is needed).
+the transition); the 10–13 codes are for *observing* (`status`/`wait`) only (and exit 10 for `doctor --exit-reclaim` when reclaim is needed). The canonical state-to-exit-code mapping is frozen in §13.16 (`STATE_EXIT_CODES`).
 `supervise` returns the child process exit code (or `128 + SIGNUM` on signal termination, 127 when not found, 126 on permission denied; standard error exit codes 2, 3, 15 apply on setup/precondition failures).
 
 ## 8. Concurrency & atomicity
@@ -656,6 +656,8 @@ The CLI exit codes are locked as part of the observer and runner contract:
 | 13 | `EXIT_QUEUED` | Observing state `queued` |
 | 14 | `EXIT_WAIT_TIMEOUT` | Wait timeout elapsed |
 | 15 | `EXIT_NOT_INITIALIZED` | Stage directory or STATUS.json missing |
+
+The mapping from lifecycle states to observer exit codes (`queued` → 13, `running` → 10, `done` → 0, `blocked` → 11, `failed` → 12) is frozen in §13.16 (`STATE_EXIT_CODES`).
 
 ### 13.5 Event types freeze (`EVENT_TYPES`)
 The canonical event types recorded in `events.jsonl` are frozen:
@@ -963,3 +965,40 @@ Under `schema_version: 1`, the CLI subcommand inventory is strictly **additive-o
 - Orchestrators and external automation may safely rely on the presence and stability of these 15 subcommands.
 
 Detailed command syntax, argument semantics, and behavioral rules remain defined in §6; exit codes remain defined in §7.
+### 13.16 State-to-exit-code mapping freeze (`STATE_EXIT_CODES`)
+
+The canonical mapping from stage lifecycle state string to observer CLI exit code (used by `status` and wait outcome mismatches; §6, §7, §13.4) is frozen under `schema_version: 1`:
+
+| State | Constant Name | Exit Code Constant | Exit Code | Meaning |
+|-------|---------------|-------------------|-----------|---------|
+| `queued` | `STATE_QUEUED` | `EXIT_QUEUED` | 13 | Stage is queued / awaiting execution (§4, §13.12). |
+| `running` | `STATE_RUNNING` | `EXIT_RUNNING` | 10 | Stage is running / actively executing (§4, §13.12). |
+| `done` | `STATE_DONE` | `EXIT_OK` | 0 | Stage completed successfully (§4, §13.12). |
+| `blocked` | `STATE_BLOCKED` | `EXIT_BLOCKED` | 11 | Stage paused awaiting input or external resolution (§4, §13.12). |
+| `failed` | `STATE_FAILED` | `EXIT_FAILED` | 12 | Stage failed or aborted (§4, §13.12). |
+
+The single source of truth for this mapping is:
+
+```python
+STATE_EXIT_CODES = {
+    STATE_RUNNING: EXIT_RUNNING,   # 10
+    STATE_BLOCKED: EXIT_BLOCKED,   # 11
+    STATE_FAILED: EXIT_FAILED,     # 12
+    STATE_QUEUED: EXIT_QUEUED,     # 13
+    STATE_DONE: EXIT_OK,           # 0
+}
+```
+
+defined in `stage_signal.constants` and exported from `stage_signal`. The helper function `state_exit_code(state: str) -> int` maps any valid state string to its exit code using `STATE_EXIT_CODES`.
+
+#### Distinction from mutation command exits
+
+This mapping is strictly for **observer** commands (such as `stage-signal status`, and wait mismatch observation per §6 and §7). Mutation commands (`init`, `start`, `heartbeat`, `note`, `artifact`, `done`, `blocked`, `fail`, `reclaim`, `clear-terminal`) perform state transitions or state record updates; they exit `0` (`EXIT_OK`) upon successful completion of their operation, regardless of the target state reached (for instance, `stage-signal done`, `stage-signal blocked`, and `stage-signal fail` all exit `0` when their respective transitions succeed). Mutation commands exit non-zero only on operational or validation failure (such as `EXIT_ILLEGAL_TRANSITION` (3), `EXIT_BAD_ARGS` (2), or `EXIT_ERROR` (1) per §13.4).
+
+#### Additive-only evolution policy
+
+Under `schema_version: 1`, the `STATE_EXIT_CODES` mapping is strictly **additive-only** (§13.1):
+- Existing state-to-exit-code mappings (`queued` → 13, `running` → 10, `done` → 0, `blocked` → 11, `failed` → 12) MUST NOT be removed, renamed, or assigned different exit codes.
+- Any future lifecycle state introduced under schema version 1 MUST define its assigned observer exit code.
+- Readers and observers MUST NOT crash on unknown future states. Behavior for unmapped or unknown states is implementation-defined (for example, raising `ValueError` in the Python lookup helper or emitting a non-zero exit in the CLI), but must never remove or mutate existing mappings.
+
