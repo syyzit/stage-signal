@@ -8981,4 +8981,306 @@ def test_wait_read_cross_links_freeze() -> None:
     assert len(PUBLIC_EXPORTS) == 134
 
 
+# §13.39: Optional `.orch` mirror write contract freeze
+# ---------------------------------------------------------------------------
+
+
+def test_mirror_tristate_opt_in_freeze(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Tri-state mirror opt-in: explicit True/False win; None falls back to env set (SPEC §13.39.2).
+
+    Synchronous test with zero sleeps/threads.
+    """
+    from stage_signal.stage import _status_mirror_enabled
+
+    monkeypatch.delenv(ENV_STATUS_MIRROR, raising=False)
+    # Unset env: None means disabled.
+    assert _status_mirror_enabled(None) is False
+    # Explicit values ignore the environment entirely.
+    monkeypatch.setenv(ENV_STATUS_MIRROR, "1")
+    assert _status_mirror_enabled(True) is True
+    assert _status_mirror_enabled(False) is False
+    monkeypatch.setenv(ENV_STATUS_MIRROR, "0")
+    assert _status_mirror_enabled(True) is True
+    assert _status_mirror_enabled(False) is False
+
+    # Env truthy set is exactly {"1", "true", "yes", "on"} after strip().lower().
+    for truthy in ("1", "true", "TRUE", " True ", "yes", "YES", "on", "ON", "\tYes\n"):
+        monkeypatch.setenv(ENV_STATUS_MIRROR, truthy)
+        assert _status_mirror_enabled(None) is True, f"env {truthy!r} must enable the mirror"
+    for falsy in ("", "0", "false", "FALSE", "no", "off", "2", "banana"):
+        monkeypatch.setenv(ENV_STATUS_MIRROR, falsy)
+        assert _status_mirror_enabled(None) is False, f"env {falsy!r} must not enable the mirror"
+    monkeypatch.delenv(ENV_STATUS_MIRROR, raising=False)
+    assert _status_mirror_enabled(None) is False
+
+
+def test_mirror_honoring_commands_cli_flags_freeze() -> None:
+    """Only start/done/blocked/fail/reclaim/supervise accept --write-status-mirror (SPEC §13.39.2).
+
+    Synchronous test with zero sleeps/threads.
+    """
+    import inspect
+
+    import stage_signal.stage as stage_mod
+
+    parser = build_parser()
+
+    honoring = ("start", "done", "blocked", "fail", "reclaim", "supervise")
+    non_honoring = (
+        "init",
+        "heartbeat",
+        "note",
+        "artifact",
+        "status",
+        "events",
+        "wait",
+        "clear-terminal",
+        "doctor",
+    )
+    base_args: dict[str, list[str]] = {
+        "start": ["--stage", "x"],
+        "done": [],
+        "blocked": ["--reason", "r"],
+        "fail": ["--reason", "r"],
+        "reclaim": ["--reason", "r"],
+        "supervise": ["--", "true"],
+        "init": [],
+        "heartbeat": [],
+        "note": ["text"],
+        "artifact": ["path"],
+        "status": [],
+        "events": [],
+        "wait": [],
+        "clear-terminal": [],
+        "doctor": [],
+    }
+    # NB: supervise takes REMAINDER CMD after `--`, so its flag must precede `--`.
+    flagged_args: dict[str, list[str]] = {
+        cmd: (["--write-status-mirror"] if cmd == "supervise" else []) + base_args[cmd]
+        + ([] if cmd == "supervise" else ["--write-status-mirror"])
+        for cmd in honoring
+    }
+    for cmd in honoring:
+        ns = parser.parse_args([cmd] + base_args[cmd])
+        assert getattr(ns, "write_status_mirror") is None, f"{cmd} flag must default to None"
+        ns = parser.parse_args([cmd] + flagged_args[cmd])
+        assert getattr(ns, "write_status_mirror") is True, f"{cmd} flag must parse to True"
+    for cmd in non_honoring:
+        ns = parser.parse_args([cmd] + base_args[cmd])
+        assert not hasattr(ns, "write_status_mirror"), f"{cmd} must not accept --write-status-mirror"
+
+    # Library surface: the same six Stage methods take write_status_mirror=None;
+    # every other public method takes no such parameter.
+    for method in ("start", "done", "blocked", "fail", "reclaim", "supervise"):
+        sig = inspect.signature(getattr(stage_mod.Stage, method))
+        assert "write_status_mirror" in sig.parameters, f"Stage.{method} must take write_status_mirror"
+        assert sig.parameters["write_status_mirror"].default is None
+    for method in ("init", "heartbeat", "note", "artifact", "status", "events", "wait",
+                   "clear_terminal", "diagnose"):
+        sig = inspect.signature(getattr(stage_mod.Stage, method))
+        assert "write_status_mirror" not in sig.parameters, f"Stage.{method} must not take write_status_mirror"
+
+
+def test_mirror_content_repo_root_and_done_rule_freeze(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Minimal .orch/STATUS.md content, repo-root resolution, DONE-on-done-only (SPEC §13.39.3).
+
+    Synchronous test with zero sleeps/threads.
+    """
+    assert DEFAULT_MIRROR_DIRNAME == ".orch"
+    assert ENV_STATUS_MIRROR == "STAGE_SIGNAL_STATUS_MIRROR"
+    assert ENV_STATUS_MIRROR in ENV_VARS
+
+    stage_dir = tmp_path / ".stage-signal"
+    stage_dir.mkdir()
+    updated = "2026-01-01T00:00:00+00:00"
+    running = {
+        "state": STATE_RUNNING,
+        "stage_name": "m",
+        "stage_id": "m",
+        "project": "p",
+        "updated_at": updated,
+    }
+
+    # Default root: <repo>/.stage-signal -> <repo>.
+    out = write_status_mirror(stage_dir, dict(running))
+    assert out == tmp_path / ".orch" / "STATUS.md"
+    assert out.is_file()
+    assert out.read_text(encoding="utf-8") == (
+        "# stage-signal status mirror\n"
+        f"state: {STATE_RUNNING}\n"
+        "stage: m\n"
+        "stage_id: m\n"
+        "project: p\n"
+        f"updated: {updated}\n"
+        f"source: stage-signal {stage_dir}\n"
+    )
+    # Non-done mirrors never touch DONE.
+    assert not (tmp_path / ".orch" / "DONE").exists()
+    for state in (STATE_QUEUED, STATE_BLOCKED, STATE_FAILED):
+        snapshot = dict(running, state=state)
+        out = write_status_mirror(stage_dir, snapshot)
+        assert out == tmp_path / ".orch" / "STATUS.md"
+        assert f"state: {state}\n" in out.read_text(encoding="utf-8")
+        assert not (tmp_path / ".orch" / "DONE").exists()
+
+    # DONE is written if and only if state == done.
+    out = write_status_mirror(stage_dir, dict(running, state=STATE_DONE))
+    assert out == tmp_path / ".orch" / "STATUS.md"
+    done_file = tmp_path / ".orch" / "DONE"
+    assert done_file.is_file()
+    assert done_file.read_text(encoding="utf-8") == f"done: m {updated}\n"
+
+    # Explicit repo_root wins (library-only; CLI/Stage never pass it).
+    custom = tmp_path / "custom-root"
+    out = write_status_mirror(stage_dir, dict(running), repo_root=custom)
+    assert out == custom / ".orch" / "STATUS.md"
+    assert out.is_file()
+
+    # Non-.stage-signal dir names fall back to cwd.
+    other_dir = tmp_path / "custom-dir"
+    other_dir.mkdir()
+    monkeypatch.chdir(tmp_path)
+    out = write_status_mirror(other_dir, dict(running))
+    assert out == tmp_path / ".orch" / "STATUS.md"
+
+
+def test_mirror_best_effort_never_raises_freeze(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Mirror failures return None / warn on stderr but never fail the command (SPEC §13.39.5).
+
+    Synchronous test with zero sleeps/threads.
+    """
+    import stage_signal.stage as stmod
+
+    stage_dir = tmp_path / ".stage-signal"
+    stage_dir.mkdir()
+    snapshot = {
+        "state": STATE_RUNNING,
+        "stage_name": "m",
+        "stage_id": "m",
+        "project": "p",
+        "updated_at": "2026-01-01T00:00:00+00:00",
+    }
+
+    # Filesystem failure inside the writer yields None instead of raising.
+    monkeypatch.setattr(Path, "mkdir", lambda *a, **k: (_ for _ in ()).throw(OSError("no disk")))
+    assert write_status_mirror(stage_dir, dict(snapshot)) is None
+    monkeypatch.undo()
+
+    # A None return at the mutation layer warns on stderr; the transition still lands exit 0.
+    monkeypatch.setattr(stmod, "write_status_mirror", lambda *a, **k: None)
+    monkeypatch.delenv("STAGE_SIGNAL_STATUS_MIRROR", raising=False)
+    stage = Stage(str(stage_dir))
+    stage.init(project="mirror-best-effort-freeze")
+    capsys.readouterr()
+    assert main(["--dir", str(stage_dir), "start", "--stage", "m", "--write-status-mirror"]) == EXIT_OK
+    err = capsys.readouterr().err
+    assert "mirror failed" in err
+    assert Stage(str(stage_dir)).status()["state"] == STATE_RUNNING
+
+
+def test_mirror_non_mirroring_commands_never_write_freeze(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """heartbeat/note/artifact/clear-terminal/observers never write .orch even with env=1 (SPEC §13.39.2).
+
+    Synchronous test with zero sleeps/threads.
+    """
+    monkeypatch.delenv("STAGE_SIGNAL_STATUS_MIRROR", raising=False)
+    stage_dir = tmp_path / ".stage-signal"
+    stage = Stage(str(stage_dir))
+    stage.init(project="mirror-non-mirror-freeze")
+    stage.start(stage="m", pid=os.getpid())
+    assert not (tmp_path / ".orch").exists()
+
+    # Progress + observer commands under env opt-in still write nothing.
+    monkeypatch.setenv("STAGE_SIGNAL_STATUS_MIRROR", "1")
+    stage.heartbeat(note="still alive")
+    stage.note("checkpoint")
+    stage.artifact("dist/app.whl", label="wheel")
+    assert stage.status()["state"] == STATE_RUNNING
+    assert stage.events() != []
+    assert stage.diagnose()["ok"] is True
+    assert main(["--dir", str(stage_dir), "status"]) == 10
+    assert main(["--dir", str(stage_dir), "events"]) == 0
+    assert main(["--dir", str(stage_dir), "doctor"]) == 0
+    assert not (tmp_path / ".orch").exists()
+
+    # Explicit library False disables even with the env set.
+    stage.blocked("waiting on reviewer", write_status_mirror=False)
+    assert Stage(str(stage_dir)).status()["state"] == STATE_BLOCKED
+    assert not (tmp_path / ".orch").exists()
+
+    # clear-terminal from the blocked state writes nothing either.
+    stage.clear_terminal()
+    assert Stage(str(stage_dir)).status()["state"] == STATE_QUEUED
+    assert not (tmp_path / ".orch").exists()
+
+
+def test_mirror_reclaim_mirrors_failed_only_freeze(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """reclaim mirrors the intermediate failed snapshot once; the clear writes no second mirror (SPEC §13.39.4).
+
+    Synchronous test with zero sleeps/threads (liveness is mocked, staleness unused).
+    """
+    import stage_signal.stage as stage_mod
+
+    monkeypatch.delenv("STAGE_SIGNAL_STATUS_MIRROR", raising=False)
+    monkeypatch.setattr(stage_mod, "_is_pid_alive", lambda pid: False)
+    stage_dir = tmp_path / ".stage-signal"
+    stage = Stage(str(stage_dir))
+    stage.init(project="mirror-reclaim-freeze")
+    stage.start(stage="reclaim-step", pid=os.getpid())
+
+    cleared = stage.reclaim("worker crashed", write_status_mirror=True)
+    assert cleared["state"] == STATE_QUEUED
+    mirror = tmp_path / ".orch" / "STATUS.md"
+    assert mirror.is_file()
+    # The single mirror write captured the failed snapshot, not the cleared queued one.
+    assert "state: failed\n" in mirror.read_text(encoding="utf-8")
+    assert not (tmp_path / ".orch" / "DONE").exists()
+
+    # --keep-failed leaves state=failed and the mirror agrees with disk.
+    stage.start(stage="reclaim-keep", pid=os.getpid())
+    kept = stage.reclaim("worker crashed again", keep_failed=True, write_status_mirror=True)
+    assert kept["state"] == STATE_FAILED
+    assert "state: failed\n" in mirror.read_text(encoding="utf-8")
+    assert not (tmp_path / ".orch" / "DONE").exists()
+
+    # done via the mirror path touches DONE; a later non-done mirror never removes it.
+    stage.start(stage="reclaim-done", pid=os.getpid())
+    stage.done(summary="recovered", write_status_mirror=True)
+    assert (tmp_path / ".orch" / "DONE").is_file()
+    stage.start(stage="reclaim-again", pid=os.getpid(), write_status_mirror=True)
+    assert "state: running\n" in mirror.read_text(encoding="utf-8")
+    assert (tmp_path / ".orch" / "DONE").is_file()
+
+
+def test_mirror_cross_links_freeze() -> None:
+    """Mirror freeze reuses frozen method-surface and export symbols; adds no export (SPEC §13.39.6)."""
+    import stage_signal
+
+    for method in ("start", "done", "blocked", "fail", "reclaim", "supervise"):
+        assert method in STAGE_PUBLIC_METHODS, f"{method!r} missing from STAGE_PUBLIC_METHODS"
+        assert callable(getattr(Stage, method))
+
+    for name in (
+        "write_status_mirror",
+        "DEFAULT_MIRROR_DIRNAME",
+        "ENV_STATUS_MIRROR",
+        "ENV_VARS",
+    ):
+        assert hasattr(stage_signal, name), f"stage_signal missing {name!r}"
+        assert name in stage_signal.__all__, f"{name!r} not in stage_signal.__all__"
+        assert name in PUBLIC_EXPORTS, f"{name!r} not in PUBLIC_EXPORTS"
+
+    # §13.39 adds no export: the inventory stays at the 134 frozen symbols.
+    assert len(PUBLIC_EXPORTS) == 134
+
+
+
+
+
 
