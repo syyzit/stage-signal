@@ -56,6 +56,8 @@ from stage_signal import (
     HEARTBEAT_DETAIL_KEYS,
     LOCK_FILENAME,
     LOCKS_DIRNAME,
+    NOTE_ALLOWED_SOURCES,
+    NOTE_DETAIL_KEYS,
     NOTE_ENTRY_KEYS,
     PROOF_KEYS,
     PROOF_VERIFIED_VALUES,
@@ -3751,7 +3753,7 @@ def test_diagnose_doctor_json_summary_null_on_problems(
 
 
 def test_public_exports_constant_freeze() -> None:
-    """PUBLIC_EXPORTS matches the frozen 119-element tuple in SPEC §13.21."""
+    """PUBLIC_EXPORTS matches the frozen 121-element tuple in SPEC §13.21."""
     expected = (
         "ALLOWED_TRANSITIONS",
         "ARTIFACT_ALLOWED_SOURCES",
@@ -3802,6 +3804,8 @@ def test_public_exports_constant_freeze() -> None:
         "LOCKS_DIRNAME",
         "LOCK_FILENAME",
         "MAX_NOTES",
+        "NOTE_ALLOWED_SOURCES",
+        "NOTE_DETAIL_KEYS",
         "NOTE_ENTRY_KEYS",
         "NotInitialized",
         "PROOF_KEYS",
@@ -3875,7 +3879,7 @@ def test_public_exports_constant_freeze() -> None:
     )
     assert PUBLIC_EXPORTS == expected
     assert isinstance(PUBLIC_EXPORTS, tuple)
-    assert len(PUBLIC_EXPORTS) == 119
+    assert len(PUBLIC_EXPORTS) == 121
     assert PUBLIC_EXPORTS == tuple(sorted(PUBLIC_EXPORTS))
     assert len(PUBLIC_EXPORTS) == len(set(PUBLIC_EXPORTS))
 
@@ -5415,3 +5419,310 @@ def test_artifact_preserved_across_heartbeat_freeze(tmp_path: Path) -> None:
     after = stage.heartbeat(note="still alive")
     assert after["artifacts"] == before
     assert after["state"] == STATE_RUNNING
+
+
+
+# =============================================================================
+# 25. Note progress appending and MAX_NOTES cap contract freeze (SPEC §13.28, issue #151)
+# =============================================================================
+
+
+def test_note_constants_freeze() -> None:
+    """Note frozen constants match the exact values in SPEC §13.28.1."""
+    assert NOTE_ALLOWED_SOURCES == ("running",)
+    assert isinstance(NOTE_ALLOWED_SOURCES, tuple)
+    assert len(NOTE_ALLOWED_SOURCES) == 1
+    assert STATE_RUNNING in NOTE_ALLOWED_SOURCES
+    for terminal in TERMINAL_STATES:
+        assert terminal not in NOTE_ALLOWED_SOURCES
+    assert STATE_QUEUED not in NOTE_ALLOWED_SOURCES
+
+    assert NOTE_DETAIL_KEYS == ()
+    assert isinstance(NOTE_DETAIL_KEYS, tuple)
+    assert len(NOTE_DETAIL_KEYS) == 0
+
+    assert NOTE_ENTRY_KEYS == ("text", "added_at")
+    assert MAX_NOTES == 200
+
+    # Allowed sources agree with the frozen transition matrix (SPEC §13.19)
+    assert tuple(allowed_source_states("note")) == NOTE_ALLOWED_SOURCES
+    assert is_transition_allowed(STATE_RUNNING, "note") is True
+    assert transition_target(STATE_RUNNING, "note") == STATE_RUNNING
+
+    for disallowed in (STATE_QUEUED, STATE_DONE, STATE_BLOCKED, STATE_FAILED):
+        assert is_transition_allowed(disallowed, "note") is False
+        with pytest.raises(ValueError):
+            transition_target(disallowed, "note")
+
+
+def test_note_constants_exported_from_top_level() -> None:
+    """Note freeze constants are exported from top-level stage_signal (SPEC §13.28)."""
+    import stage_signal
+
+    for name, expected in (
+        ("NOTE_ALLOWED_SOURCES", NOTE_ALLOWED_SOURCES),
+        ("NOTE_DETAIL_KEYS", NOTE_DETAIL_KEYS),
+        ("NOTE_ENTRY_KEYS", NOTE_ENTRY_KEYS),
+        ("MAX_NOTES", MAX_NOTES),
+    ):
+        assert hasattr(stage_signal, name), f"stage_signal missing {name!r}"
+        assert name in stage_signal.__all__, f"{name!r} not in stage_signal.__all__"
+        assert getattr(stage_signal, name) is expected
+
+
+def test_note_non_running_guard_semantics(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Note succeeds only from running; uninitialized and non-running refuse (SPEC §13.28.2).
+
+    Synchronous state-machine tests with zero sleeps/threads.
+    """
+    from stage_signal.cli import main
+
+    stage_dir = tmp_path / ".stage-signal"
+    stage = Stage(str(stage_dir))
+
+    # 1. Uninitialized: exit 15 / NotInitialized
+    with pytest.raises(NotInitialized):
+        stage.note("uninit probe")
+    assert main(["--dir", str(stage_dir), "note", "uninit probe"]) == EXIT_NOT_INITIALIZED
+    capsys.readouterr()
+
+    # 2. Queued: exit 3 / IllegalTransition
+    stage.init(project="note-guard-test")
+    with pytest.raises(IllegalTransition):
+        stage.note("queued probe")
+    assert main(["--dir", str(stage_dir), "note", "queued probe"]) == EXIT_ILLEGAL_TRANSITION
+    capsys.readouterr()
+    assert stage.status()["notes"] == []
+
+    # 3. Running: succeeds
+    stage.start(stage="guard-running", pid=os.getpid())
+    st = stage.note("valid running note")
+    assert len(st["notes"]) == 1
+    assert st["notes"][0]["text"] == "valid running note"
+
+    # 4. Terminal done: exit 3 / IllegalTransition
+    stage.done(summary="finished step")
+    with pytest.raises(IllegalTransition):
+        stage.note("done probe")
+    assert main(["--dir", str(stage_dir), "note", "done probe"]) == EXIT_ILLEGAL_TRANSITION
+    capsys.readouterr()
+    assert len(stage.status()["notes"]) == 1
+
+    # 5. Terminal blocked: exit 3 / IllegalTransition
+    stage.start(stage="guard-blocked", pid=os.getpid())
+    stage.blocked(reason="wait for external")
+    with pytest.raises(IllegalTransition):
+        stage.note("blocked probe")
+    assert main(["--dir", str(stage_dir), "note", "blocked probe"]) == EXIT_ILLEGAL_TRANSITION
+    capsys.readouterr()
+
+    # 6. Terminal failed: exit 3 / IllegalTransition
+    stage.start(stage="guard-failed", pid=os.getpid())
+    stage.fail(reason="process crashed")
+    with pytest.raises(IllegalTransition):
+        stage.note("failed probe")
+    assert main(["--dir", str(stage_dir), "note", "failed probe"]) == EXIT_ILLEGAL_TRANSITION
+    capsys.readouterr()
+
+    # Verify on-disk status notes count remains 1 from the single successful call
+    raw = json.loads((stage_dir / STATUS_FILENAME).read_text())
+    assert len(raw["notes"]) == 1
+    assert raw["notes"][0]["text"] == "valid running note"
+
+
+def test_note_input_validation_and_whitespace_semantics(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Note validates non-empty text (exit 2) and preserves valid whitespace verbatim (SPEC §13.28.3).
+
+    Synchronous tests with zero sleeps/threads.
+    """
+    from stage_signal.cli import main
+
+    stage_dir = tmp_path / ".stage-signal"
+    stage = Stage(str(stage_dir))
+    stage.init(project="note-validation-test")
+    stage.start(stage="val-stage", pid=os.getpid())
+
+    # Empty text raises BadArgsError (CLI exit 2)
+    with pytest.raises(BadArgsError, match="note requires non-empty TEXT"):
+        stage.note("")
+    assert main(["--dir", str(stage_dir), "note", ""]) == EXIT_BAD_ARGS
+    capsys.readouterr()
+
+    # Whitespace-only strings raise BadArgsError (CLI exit 2)
+    with pytest.raises(BadArgsError, match="note requires non-empty TEXT"):
+        stage.note("   ")
+    assert main(["--dir", str(stage_dir), "note", "   "]) == EXIT_BAD_ARGS
+    capsys.readouterr()
+
+    with pytest.raises(BadArgsError, match="note requires non-empty TEXT"):
+        stage.note("\t \n \r")
+    assert main(["--dir", str(stage_dir), "note", "\t \n \r"]) == EXIT_BAD_ARGS
+    capsys.readouterr()
+
+    # Missing positional argument in CLI raises SystemExit 2 (argparse)
+    with pytest.raises(SystemExit) as exc_info:
+        main(["--dir", str(stage_dir), "note"])
+    assert exc_info.value.code == EXIT_BAD_ARGS
+    capsys.readouterr()
+
+    # Non-empty string with leading/trailing spaces preserves whitespace verbatim
+    spaced_text = "   leading and trailing spaces kept   "
+    st = stage.note(spaced_text)
+    assert st["notes"][-1]["text"] == spaced_text
+    events = stage.events()
+    assert events[-1]["message"] == spaced_text
+
+    # Multi-line text preserves embedded newlines unchanged
+    multiline_text = "first line\nsecond line\nthird line"
+    st = stage.note(multiline_text)
+    assert st["notes"][-1]["text"] == multiline_text
+    events = stage.events()
+    assert events[-1]["message"] == multiline_text
+
+    # Successful CLI execution prints standard "noted <one_line>" and exits 0
+    capsys.readouterr()
+    assert main(["--dir", str(stage_dir), "note", "cli execution success"]) == EXIT_OK
+    cli_out = capsys.readouterr().out
+    assert cli_out.strip() == "noted running val-stage (attempt 1)"
+
+
+def test_note_append_and_max_notes_fifo_cap(tmp_path: Path) -> None:
+    """Notes append {"text","added_at"} per NOTE_ENTRY_KEYS and FIFO-truncate at MAX_NOTES (SPEC §13.28.4).
+
+    Synchronous tests with zero sleeps/threads.
+    """
+    stage_dir = tmp_path / ".stage-signal"
+    stage = Stage(str(stage_dir))
+    stage.init(project="note-cap-test")
+    stage.start(stage="cap-stage", pid=os.getpid())
+
+    # Check empty initial notes list
+    assert stage.status()["notes"] == []
+
+    # 1. Append first note: exactly NOTE_ENTRY_KEYS
+    st = stage.note("entry-000")
+    assert len(st["notes"]) == 1
+    assert tuple(st["notes"][0].keys()) == NOTE_ENTRY_KEYS
+    assert st["notes"][0]["text"] == "entry-000"
+    # ISO-8601 validation
+    ts = datetime.fromisoformat(st["notes"][0]["added_at"])
+    assert ts.tzinfo is not None
+
+
+    # 2. Append up to MAX_NOTES (200 items)
+    for i in range(1, MAX_NOTES):
+        stage.note(f"entry-{i:03d}")
+
+    st = stage.status()
+    assert len(st["notes"]) == MAX_NOTES
+    assert st["notes"][0]["text"] == "entry-000"
+    assert st["notes"][-1]["text"] == f"entry-{MAX_NOTES - 1:03d}"
+
+    # 3. Append 201st note: oldest entry (entry-000) dropped in FIFO order
+    st = stage.note("overflow-200")
+    assert len(st["notes"]) == MAX_NOTES
+    assert st["notes"][0]["text"] == "entry-001"
+    assert st["notes"][-1]["text"] == "overflow-200"
+
+    # 4. Append 50 more notes: verify continuous FIFO ring-buffer truncation
+    for i in range(201, 251):
+        stage.note(f"overflow-{i:03d}")
+
+    st = stage.status()
+    assert len(st["notes"]) == MAX_NOTES
+    # 51 total overflows added; entries 0 to 50 were dropped; entry-051 is now first
+    assert st["notes"][0]["text"] == "entry-051"
+    assert st["notes"][-1]["text"] == "overflow-250"
+
+    # 5. Verify on-disk STATUS.json matches in-memory status exactly
+    raw = json.loads((stage_dir / STATUS_FILENAME).read_text())
+    assert len(raw["notes"]) == MAX_NOTES
+    assert raw["notes"][0]["text"] == "entry-051"
+    assert raw["notes"][-1]["text"] == "overflow-250"
+    for item in raw["notes"]:
+        assert tuple(item.keys()) == NOTE_ENTRY_KEYS
+        assert isinstance(item["text"], str)
+        assert isinstance(item["added_at"], str)
+
+
+def test_note_audit_event_shape(tmp_path: Path) -> None:
+    """Each note appends one note event with verbatim message + empty detail (SPEC §13.28.5).
+
+    Synchronous tests with zero sleeps/threads.
+    """
+    stage_dir = tmp_path / ".stage-signal"
+    stage = Stage(str(stage_dir))
+    stage.init(project="note-audit-test")
+    stage.start(stage="audit-stage", pid=os.getpid())
+
+    initial_event_count = len(stage.events())
+
+    note_text = "checkpoint reached: data parsed"
+    st = stage.note(note_text)
+    events = stage.events()
+    assert len(events) == initial_event_count + 1
+
+    last_event = events[-1]
+    assert last_event["type"] == "note"
+    assert last_event["stage_id"] == "audit-stage"
+    assert last_event["stage_name"] == "audit-stage"
+    assert last_event["state"] == STATE_RUNNING
+    assert last_event["attempt"] == 1
+    assert last_event["message"] == note_text
+    assert last_event["detail"] == {}
+    assert tuple(last_event["detail"].keys()) == NOTE_DETAIL_KEYS
+    assert last_event["ts"] == st["updated_at"]
+    for required_key in EVENT_RECORD_KEYS:
+        assert required_key in last_event
+
+
+def test_note_lifecycle_preservation(tmp_path: Path) -> None:
+    """Notes are preserved across clear-terminal (idle & keep-stage) and start (SPEC §13.28.4).
+
+    Synchronous tests with zero sleeps/threads.
+    """
+    stage_dir = tmp_path / ".stage-signal"
+    stage = Stage(str(stage_dir))
+    stage.init(project="note-lifecycle-test")
+    stage.start(stage="step-1", pid=os.getpid())
+    stage.note("step-1 note 1")
+    stage.note("step-1 note 2")
+    stage.done(summary="step-1 complete")
+
+    assert len(stage.status()["notes"]) == 2
+
+    # 1. Clear-terminal default (idle reset): notes array is preserved
+    stage.clear_terminal()
+    st_idle = stage.status()
+    assert st_idle["state"] == STATE_QUEUED
+    assert st_idle["stage_id"] is None
+    assert len(st_idle["notes"]) == 2
+    assert st_idle["notes"][0]["text"] == "step-1 note 1"
+    assert st_idle["notes"][1]["text"] == "step-1 note 2"
+
+    # 2. Start new stage: notes array is preserved across start
+    stage.start(stage="step-2", pid=os.getpid())
+    st_start = stage.status()
+    assert st_start["state"] == STATE_RUNNING
+    assert st_start["stage_id"] == "step-2"
+    assert len(st_start["notes"]) == 2
+
+    stage.note("step-2 note 1")
+    assert len(stage.status()["notes"]) == 3
+    stage.fail(reason="step-2 failure")
+
+    # 3. Clear-terminal with --keep-stage: notes array is preserved
+    stage.clear_terminal(keep_stage=True)
+    st_keep = stage.status()
+    assert st_keep["state"] == STATE_QUEUED
+    assert st_keep["stage_id"] == "step-2"
+    assert len(st_keep["notes"]) == 3
+    assert [n["text"] for n in st_keep["notes"]] == [
+        "step-1 note 1",
+        "step-1 note 2",
+        "step-2 note 1",
+    ]

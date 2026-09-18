@@ -1387,7 +1387,7 @@ External orchestrators, Python embedders, typing tools, and harnesses interact w
 
 #### 13.21.1 Canonical export inventory
 
-`stage_signal` exports exactly 119 public symbols matching `stage_signal.__all__`. These symbols are structured into four canonical categories:
+`stage_signal` exports exactly 121 public symbols matching `stage_signal.__all__`. These symbols are structured into four canonical categories:
 
 ##### 1. Classes (§11, §13.20)
 - `Stage`: The primary high-level lifecycle orchestrator, embedding context manager, and transition driver (§11, §13.20).
@@ -1428,7 +1428,7 @@ All six structured exceptions inherit from `StageError` and carry a normative `.
 - **Inventories:**
   - `CLI_SUBCOMMANDS`: 15 frozen CLI subcommands (§13.15).
   - `STAGE_PUBLIC_METHODS`: 15 frozen `Stage` public instance methods (§13.20).
-  - `PUBLIC_EXPORTS`: 119 frozen public symbols exported from top-level package namespace (§13.21).
+  - `PUBLIC_EXPORTS`: 121 frozen public symbols exported from top-level package namespace (§13.21).
 - **Exit codes:**
   - `EXIT_CODES`: Tuple of all 10 standard exit codes (§7, §13.4).
   - Individual exit codes: `EXIT_OK` (0), `EXIT_ERROR` (1), `EXIT_BAD_ARGS` (2), `EXIT_ILLEGAL_TRANSITION` (3), `EXIT_RUNNING` (10), `EXIT_BLOCKED` (11), `EXIT_FAILED` (12), `EXIT_QUEUED` (13), `EXIT_WAIT_TIMEOUT` (14), `EXIT_NOT_INITIALIZED` (15) (§7, §13.4).
@@ -1489,6 +1489,9 @@ All six structured exceptions inherit from `StageError` and carry a normative `.
 - **Artifact add:**
   - `ARTIFACT_ALLOWED_SOURCES`: Legal source states (`"running"` only; §4 rule 4, §13.29).
   - `ARTIFACT_DETAIL_KEYS`: Audit detail keys (`"path"`, `"label"`; §5, §13.29).
+- **Note progress appending:**
+  - `NOTE_ALLOWED_SOURCES`: Legal source states (`"running"` only; §4, §13.28).
+  - `NOTE_DETAIL_KEYS`: Audit detail keys (empty — note carries no detail extras; §5, §13.28).
 - **Clear-terminal reset and audit:**
   - `CLEAR_TERMINAL_ALLOWED_SOURCES`: Legal source states (`"done"`, `"blocked"`, `"failed"`, `"queued"`; §4, §13.26).
   - `CLEAR_TERMINAL_IDLE_RESET_FIELDS`: Ten identity/claim fields reset to idle by default (§4, §13.26).
@@ -1552,6 +1555,8 @@ PUBLIC_EXPORTS: tuple[str, ...] = (
     "LOCKS_DIRNAME",
     "LOCK_FILENAME",
     "MAX_NOTES",
+    "NOTE_ALLOWED_SOURCES",
+    "NOTE_DETAIL_KEYS",
     "NOTE_ENTRY_KEYS",
     "NotInitialized",
     "PROOF_KEYS",
@@ -1644,7 +1649,7 @@ Under `schema_version: 1`, the top-level public export inventory is strictly **a
 - Existing symbols in `PUBLIC_EXPORTS` MUST NOT be removed, renamed, or relocated.
 - Existing symbol types, semantics, and contracts MUST NOT undergo breaking changes.
 - Future minor or patch releases under schema version 1 MAY add new classes, helper functions, or frozen constants to `stage_signal`, expanding `PUBLIC_EXPORTS` and `__all__`.
-- External orchestrators, embedders, and typing definitions can safely rely on the uninterrupted presence of all 119 public exports throughout the entire lifecycle of `schema_version: 1`.
+- External orchestrators, embedders, and typing definitions can safely rely on the uninterrupted presence of all 121 public exports throughout the entire lifecycle of `schema_version: 1`.
 
 ### 13.22 Doctor human summary strings freeze (`DOCTOR_SUMMARY_RECLAIM_NEEDED`, `DOCTOR_SUMMARY_OK_FORMAT`)
 
@@ -2156,6 +2161,100 @@ Under `schema_version: 1`, the heartbeat liveness contract is strictly **additiv
 - New heartbeat detail keys or note modes MAY be added in minor or patch releases only as additional constants; existing frozen values MUST keep their exact values.
 - Readers MUST tolerate unknown future `heartbeat` detail keys and unknown future note strings without failing.
 
+### 13.28 Note progress appending and MAX_NOTES cap contract freeze (`NOTE_ALLOWED_SOURCES`, `NOTE_DETAIL_KEYS`)
+
+`Stage.note` / `stage-signal note TEXT` (§3, §4 rule 4, §6, §13.20) appends a free-form chronological progress entry to the `notes` list in `STATUS.json` and emits a corresponding audit event without changing lifecycle state. Under `schema_version: 1`, the allowed source state, the non-empty text validation semantics, the entry dictionary shape adhering to `NOTE_ENTRY_KEYS` (§13.7), the FIFO truncation rule capped at `MAX_NOTES` (§13.14), the `note` audit event shape, and lifecycle preservation across resets are frozen so orchestrators can reliably record and inspect step progress without data loss or schema ambiguity. The `note` event type itself is frozen in §13.5 and the record keys in §13.6; the allowed edge is frozen in §13.19.
+
+#### 13.28.1 Frozen constants and exact values
+
+The single sources of truth are defined in `stage_signal.constants` and exported from `stage_signal` and `__all__`:
+
+```python
+NOTE_ALLOWED_SOURCES = ("running",)
+
+NOTE_DETAIL_KEYS: tuple[str, ...] = ()
+```
+
+`NOTE_ALLOWED_SOURCES` lists the sole legal source state; it MUST equal `allowed_source_states("note")` (§13.19). `NOTE_DETAIL_KEYS` is intentionally empty: a direct note audit record carries no detail extras (`detail == {}`, §13.28.5). Entry keys appended to `notes[]` are frozen by `NOTE_ENTRY_KEYS = ("text", "added_at")` (§13.7), and the maximum retained entry count is frozen by `MAX_NOTES = 200` (§3, §13.14).
+
+#### 13.28.2 Allowed source and the non-running guard
+
+`note` is permitted only when `state == "running"` (§4 rule 4, §13.12, §13.19). The target state is always `running` (no lifecycle transition):
+
+| Precondition failure | Library | CLI exit |
+|----------------------|---------|----------|
+| Stage not initialized (missing dir/STATUS) | `NotInitialized` | 15 (`EXIT_NOT_INITIALIZED`; §7, §13.4, §13.17) |
+| Current state is `queued`, `done`, `blocked`, or `failed` | `IllegalTransition` | 3 (`EXIT_ILLEGAL_TRANSITION`; §7, §13.4, §13.17) |
+| Missing, empty, or whitespace-only `TEXT` argument | `BadArgsError` | 2 (`EXIT_BAD_ARGS`; §7, §13.4, §13.17) |
+
+From any non-running state, `note` is strictly illegal and MUST raise `IllegalTransition` (exit 3) with no mutation of STATUS, events, or mirrors. No child process, signal, or mirror side effect occurs on precondition failure.
+
+#### 13.28.3 Input validation and whitespace semantics
+
+From the exact implementation in `Stage.note` (`src/stage_signal/stage.py`):
+
+- **Validation:** `if not text or not text.strip(): raise BadArgsError("note requires non-empty TEXT")`.
+  - Passing `None` or an empty string `""` raises `BadArgsError("note requires non-empty TEXT")`.
+  - Passing a whitespace-only string (spaces, tabs, newlines) raises `BadArgsError("note requires non-empty TEXT")`.
+  - In the CLI, invoking `stage-signal note` without the required `text` positional argument causes `argparse` to fail with exit 2 (`EXIT_BAD_ARGS`). Invoking `stage-signal note ""` or `stage-signal note "  "` passes the invalid string to `Stage.note`, which raises `BadArgsError` caught by the CLI entrypoint to exit 2 (`EXIT_BAD_ARGS`).
+- **Whitespace preservation:** For any valid non-empty string, whitespace is **preserved verbatim** byte-for-byte:
+  - Leading and trailing spaces or tabs (e.g. `"  step 1: compile done  "`) are not stripped and are stored exactly as passed in `notes[].text` and event `message`.
+  - Multi-line text (e.g. `"tests passed:\n- unit: ok\n- e2e: ok"`) preserves embedded newlines unchanged.
+- **CLI stdout:** On success, `stage-signal note TEXT` prints `noted <one_line_summary>` (e.g. `noted running my-stage (attempt 1)`) to standard output and exits 0 (`EXIT_OK`).
+
+#### 13.28.4 Notes list mutation, FIFO cap at MAX_NOTES, and lifecycle preservation
+
+On each successful `note` invocation under exclusive file lock:
+
+- **Entry creation:** A new dictionary is constructed containing exactly the keys in `NOTE_ENTRY_KEYS` (`{"text": text, "added_at": now_iso()}`; §13.7), where `added_at` is the current UTC ISO-8601 timestamp.
+- **Append & FIFO truncation:** The entry is appended to the existing `notes` list (or a fresh list if previously null/empty). If the resulting list exceeds `MAX_NOTES` (200), it is sliced to `notes[-MAX_NOTES:]`:
+  - Exactly the oldest entries are dropped (FIFO ring-buffer behavior).
+  - The length of `notes` never exceeds `MAX_NOTES` (200).
+- **STATUS updates:**
+  - `updated_at` is bumped to the current ISO-8601 timestamp (`now_iso()`; §4 rule 9).
+  - `notes` is replaced with the updated, capped list.
+  - All other STATUS fields (`stage_id`, `stage_name`, `state`, `attempt`, `session_id`, `pid`, `pid_token`, `model`, `variant`, `repo_path`, `git_branch`, `git_head`, `started_at`, `heartbeat_at`, `heartbeat_note`, `result`, `error`, `artifacts`, `proof`, `meta`) are preserved unchanged.
+- **Mirror policy:** Calling `note` does not trigger repository status mirror writes to `.orch` (`write_status_mirror` is restricted to state transitions `start`, `done`, `blocked`, and `failed`; §10).
+- **STATUS.md:** `store.write_status_md` is called, but as frozen in §13.18, `notes[]` is omitted from `STATUS.md` human mirror renderings.
+- **Lifecycle preservation:**
+  - Initialized to an empty list `[]` on `init` (§4 rule 1).
+  - Preserved across `start` calls (§4 rule 2) for both retries (same `stage_id`) and new stages (new `stage_id`), maintaining an append-only progress log across stage boundaries within the stage directory.
+  - Preserved across `clear-terminal` resets (§13.26), both in default idle reset mode and with `--keep-stage`.
+
+#### 13.28.5 Audit event shape
+
+Each successful `note` call appends exactly one `note` event to `events.jsonl` (§5; no new event type is introduced):
+
+- `type` is exactly `"note"` (a member of `EVENT_TYPES`; §13.5) with the standard record keys (`EVENT_RECORD_KEYS`; §13.6).
+- `ts` is the ISO-8601 timestamp matching the mutation `updated_at`.
+- `state` is `"running"`.
+- `stage_id`, `stage_name`, and `attempt` reflect the active stage.
+- `message` is the exact verbatim note text: byte-for-byte identical to the input `text` and `notes[].text`, with no affixes or truncation.
+- `detail` is exactly `{}`: `set(detail.keys()) == set(NOTE_DETAIL_KEYS)` (empty).
+
+Readers MUST tolerate additive unknown keys on the `note` `detail` object without failing (§13.1).
+
+#### 13.28.6 Cross-links
+
+- **§3 (STATUS.json contract):** `notes` field definition (list of `{"text": str, "added_at": ISO8601}` objects; capped at 200 entries, oldest dropped; preserved across `start`).
+- **§4 rule 4 (States & transitions):** normative `note TEXT` allowed-only-from-`running` rule, and the `updated_at` bump rule (§4 rule 9).
+- **§5 (events.jsonl) + §13.5/§13.6:** the `note` event type and required record keys; audit-trail reads via `events`.
+- **§6 (CLI contract):** `stage-signal note TEXT` usage line; mutation command exit 0 contract.
+- **§13.7 (Artifact and note entry keys freeze):** `NOTE_ENTRY_KEYS = ("text", "added_at")` required keys.
+- **§13.12 (States freeze):** `running` as the sole non-terminal live state vs `queued` and terminal `done`/`blocked`/`failed`.
+- **§13.14 (Environment and timing defaults freeze):** `MAX_NOTES = 200` numeric default.
+- **§13.19 (Transition matrix freeze):** the single frozen `(running, "note") -> running` edge and the non-running guard.
+- **§13.20 (Stage method surface freeze):** `note(text: str) -> dict[str, Any]` signature and CLI equivalence.
+
+#### 13.28.7 Additive-only evolution policy
+
+Under `schema_version: 1`, the note progress contract is strictly **additive-only** (§13.1):
+
+- The frozen allowed source, the non-empty text validation, the `{"text", "added_at"}` entry keys, the `MAX_NOTES` FIFO cap, the `message`-passthrough / empty-`detail` audit shape, and lifecycle preservation MUST NOT be removed, renamed, reworded, or change semantic meaning.
+- No new event type is introduced for progress notes: the audit record stays a `note` event (§13.5).
+- New note entry keys, detail keys, or parameters MAY be added in minor or patch releases only as additional constants; existing frozen values MUST keep their exact values.
+- Readers MUST tolerate unknown future note entry keys and unknown future detail keys without failing.
+
 ### 13.29 Artifact add contract freeze (`ARTIFACT_ALLOWED_SOURCES`, `ARTIFACT_DETAIL_KEYS`)
 
 `Stage.artifact` / `stage-signal artifact PATH [--label LABEL]` (§4 rule 4, §6, §13.20) records an artifact path in `STATUS.json` without changing lifecycle state. Under `schema_version: 1`, the allowed source, the path/label validation, the omit-vs-set label rule, the appended entry shape, and the `artifact` audit event shape are frozen so orchestrators can attach build outputs and branch on recorded paths without scraping human text. The `artifact` event type itself is frozen in §13.5 and the record keys in §13.6; the allowed edge is frozen in §13.19. (§13.28 is reserved for the `note` contract, owned separately.)
@@ -2241,4 +2340,3 @@ Under `schema_version: 1`, the artifact add contract is strictly **additive-only
 - No new event type is introduced for artifact recording: the audit record stays an `artifact` event (§13.5).
 - New artifact detail keys or label modes MAY be added in minor or patch releases only as additional constants; existing frozen values MUST keep their exact values.
 - Readers MUST tolerate unknown future `artifact` detail keys and unknown future entry keys without failing.
-
