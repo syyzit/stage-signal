@@ -23,6 +23,9 @@ from .constants import (
     CLEAR_TERMINAL_MESSAGE_KEEP_STAGE,
     DEFAULT_MIRROR_DIRNAME,
     DEFAULT_STALE_THRESHOLD,
+    RECLAIM_ALLOWED_SOURCES,
+    RECLAIM_CLEAR_TERMINAL_DETAIL_KEYS,
+    RECLAIM_FAILED_DETAIL_KEYS,
     SUPERVISE_DEFAULT_EVERY,
     SUPERVISE_DONE_SUMMARY_FORMAT,
     SUPERVISE_EXIT_NOT_FOUND,
@@ -642,7 +645,10 @@ class Stage:
                     "state": failed.get("state"),
                     "attempt": failed.get("attempt"),
                     "message": reason,
-                    "detail": {"reclaim": True, "keep_failed": keep_failed},
+                    "detail": {
+                        RECLAIM_FAILED_DETAIL_KEYS[0]: True,
+                        RECLAIM_FAILED_DETAIL_KEYS[1]: keep_failed,
+                    },
                 }
             )
             store.write_status_md(failed)
@@ -682,8 +688,11 @@ class Stage:
                     "stage_name": cleared.get("stage_name"),
                     "state": cleared.get("state"),
                     "attempt": cleared.get("attempt"),
-                    "message": "cleared to idle queued",
-                    "detail": {"keep_stage": False, "reclaim": True},
+                    "message": CLEAR_TERMINAL_MESSAGE_IDLE,
+                    "detail": {
+                        RECLAIM_CLEAR_TERMINAL_DETAIL_KEYS[0]: False,
+                        RECLAIM_CLEAR_TERMINAL_DETAIL_KEYS[1]: True,
+                    },
                 }
             )
             store.write_status_md(cleared)

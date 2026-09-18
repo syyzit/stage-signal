@@ -150,6 +150,22 @@ def supervise_signal_exit(signum: int) -> int:
     """Map a terminating signal number to the supervise exit code 128 + SIGNUM (SPEC §13.24)."""
     return SUPERVISE_SIGNAL_EXIT_BASE + int(signum)
 
+
+# Frozen reclaim fail-and-clear contract (SPEC §13.25)
+RECLAIM_ALLOWED_SOURCES = (
+    "running",
+)
+
+RECLAIM_FAILED_DETAIL_KEYS = (
+    "reclaim",
+    "keep_failed",
+)
+
+RECLAIM_CLEAR_TERMINAL_DETAIL_KEYS = (
+    "keep_stage",
+    "reclaim",
+)
+
 # Frozen clear-terminal reset + audit contract (SPEC §13.26)
 CLEAR_TERMINAL_ALLOWED_SOURCES = (
     "done",
@@ -471,6 +487,9 @@ PUBLIC_EXPORTS: tuple[str, ...] = (
     "PROOF_REQUIRED_KEYS",
     "PROOF_VERIFIED_VALUES",
     "PUBLIC_EXPORTS",
+    "RECLAIM_ALLOWED_SOURCES",
+    "RECLAIM_CLEAR_TERMINAL_DETAIL_KEYS",
+    "RECLAIM_FAILED_DETAIL_KEYS",
     "RESULT_KEYS",
     "SCHEMA_VERSION",
     "STAGE_PUBLIC_METHODS",

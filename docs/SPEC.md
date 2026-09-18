@@ -1387,7 +1387,7 @@ External orchestrators, Python embedders, typing tools, and harnesses interact w
 
 #### 13.21.1 Canonical export inventory
 
-`stage_signal` exports exactly 114 public symbols matching `stage_signal.__all__`. These symbols are structured into four canonical categories:
+`stage_signal` exports exactly 117 public symbols matching `stage_signal.__all__`. These symbols are structured into four canonical categories:
 
 ##### 1. Classes (§11, §13.20)
 - `Stage`: The primary high-level lifecycle orchestrator, embedding context manager, and transition driver (§11, §13.20).
@@ -1428,7 +1428,7 @@ All six structured exceptions inherit from `StageError` and carry a normative `.
 - **Inventories:**
   - `CLI_SUBCOMMANDS`: 15 frozen CLI subcommands (§13.15).
   - `STAGE_PUBLIC_METHODS`: 15 frozen `Stage` public instance methods (§13.20).
-  - `PUBLIC_EXPORTS`: 114 frozen public symbols exported from top-level package namespace (§13.21).
+  - `PUBLIC_EXPORTS`: 117 frozen public symbols exported from top-level package namespace (§13.21).
 - **Exit codes:**
   - `EXIT_CODES`: Tuple of all 10 standard exit codes (§7, §13.4).
   - Individual exit codes: `EXIT_OK` (0), `EXIT_ERROR` (1), `EXIT_BAD_ARGS` (2), `EXIT_ILLEGAL_TRANSITION` (3), `EXIT_RUNNING` (10), `EXIT_BLOCKED` (11), `EXIT_FAILED` (12), `EXIT_QUEUED` (13), `EXIT_WAIT_TIMEOUT` (14), `EXIT_NOT_INITIALIZED` (15) (§7, §13.4).
@@ -1479,6 +1479,10 @@ All six structured exceptions inherit from `StageError` and carry a normative `.
   - `SUPERVISE_ADOPT_MESSAGE_FORMAT` (`"adopted child pid {pid}"`) and helper `supervise_adopt_message(pid)`; `SUPERVISE_ADOPT_DETAIL_KEYS` (`previous_pid`, `pid`, `pid_token`; §13.24).
   - Default terminal templates: `SUPERVISE_DONE_SUMMARY_FORMAT` (`"command succeeded (exit 0): {cmd}"`), `SUPERVISE_FAIL_REASON_FORMAT` (`"command failed with exit code {code}: {cmd}"`), `SUPERVISE_SIGNAL_REASON_FORMAT` (`"command terminated by {signame}: {cmd}"`; §13.24).
   - Exit mapping: `SUPERVISE_SIGNAL_EXIT_BASE` (128) and helper `supervise_signal_exit(signum)`; spawn failures `SUPERVISE_EXIT_NOT_FOUND` (127) and `SUPERVISE_EXIT_PERMISSION_DENIED` (126; §7, §13.24).
+- **Reclaim fail-and-clear:**
+  - `RECLAIM_ALLOWED_SOURCES`: Legal source state (`"running"`; §4 rule 7, §13.25).
+  - `RECLAIM_FAILED_DETAIL_KEYS`: Detail keys on reclaim-emitted `failed` event (`"reclaim"`, `"keep_failed"`; §4 rule 7, §5, §13.25).
+  - `RECLAIM_CLEAR_TERMINAL_DETAIL_KEYS`: Detail keys on reclaim-emitted `clear_terminal` event (`"keep_stage"`, `"reclaim"`; §4 rule 7, §5, §13.25).
 - **Heartbeat liveness:**
   - `HEARTBEAT_ALLOWED_SOURCES`: Legal source states (`"running"` only; §4, §13.27).
   - `HEARTBEAT_DETAIL_KEYS`: Audit detail keys (empty — heartbeat carries no detail extras; §5, §13.27).
@@ -1549,6 +1553,9 @@ PUBLIC_EXPORTS: tuple[str, ...] = (
     "PROOF_REQUIRED_KEYS",
     "PROOF_VERIFIED_VALUES",
     "PUBLIC_EXPORTS",
+    "RECLAIM_ALLOWED_SOURCES",
+    "RECLAIM_CLEAR_TERMINAL_DETAIL_KEYS",
+    "RECLAIM_FAILED_DETAIL_KEYS",
     "RESULT_KEYS",
     "SCHEMA_VERSION",
     "STAGE_PUBLIC_METHODS",
@@ -1632,7 +1639,7 @@ Under `schema_version: 1`, the top-level public export inventory is strictly **a
 - Existing symbols in `PUBLIC_EXPORTS` MUST NOT be removed, renamed, or relocated.
 - Existing symbol types, semantics, and contracts MUST NOT undergo breaking changes.
 - Future minor or patch releases under schema version 1 MAY add new classes, helper functions, or frozen constants to `stage_signal`, expanding `PUBLIC_EXPORTS` and `__all__`.
-- External orchestrators, embedders, and typing definitions can safely rely on the uninterrupted presence of all 114 public exports throughout the entire lifecycle of `schema_version: 1`.
+- External orchestrators, embedders, and typing definitions can safely rely on the uninterrupted presence of all 117 public exports throughout the entire lifecycle of `schema_version: 1`.
 
 ### 13.22 Doctor human summary strings freeze (`DOCTOR_SUMMARY_RECLAIM_NEEDED`, `DOCTOR_SUMMARY_OK_FORMAT`)
 
@@ -1821,9 +1828,141 @@ Under `schema_version: 1`, the supervise adoption and exit contract is strictly 
 - New adoption detail keys or terminal templates MAY be added in minor or patch releases only as additional constants; existing frozen values MUST keep their exact values.
 - Readers MUST tolerate unknown future adoption detail keys and unknown future summary/reason strings without failing.
 
-### 13.25 Reclaim fail-and-clear contract freeze (reserved)
+### 13.25 Reclaim fail-and-clear contract freeze (`RECLAIM_ALLOWED_SOURCES`, `RECLAIM_FAILED_DETAIL_KEYS`, `RECLAIM_CLEAR_TERMINAL_DETAIL_KEYS`)
 
-Reserved for the `reclaim --reason TEXT [--keep-failed] [--kill]` / `Stage.reclaim()` freeze (issue #145). The reclaim-emitted `clear_terminal` event shape (`detail: {"keep_stage": false, "reclaim": true}`) is owned by that section, not by §13.26.
+`Stage.reclaim` / `stage-signal reclaim --reason TEXT [--keep-failed] [--kill]` (§4 rule 7, §6, §13.20) performs a one-shot recovery of a broken or stale `running` stage when `needs_reclaim` is true. Under `schema_version: 1`, the allowed source state, the precondition guard, the atomic fail-and-clear sequence under exclusive lock, the `--keep-failed` identity preservation, the `--kill` best-effort process termination and token re-verification, and the exact event shapes (`failed` and `clear_terminal`) are frozen so orchestrators can reliably reclaim stuck stages without scraping human text or risking partial state mutations. The transition edges are frozen in §13.19 and method signature in §13.20.
+
+#### 13.25.1 Frozen constants and exact values
+
+The single sources of truth are defined in `stage_signal.constants` and exported from `stage_signal` and `__all__`:
+
+```python
+RECLAIM_ALLOWED_SOURCES = (
+    "running",
+)
+
+RECLAIM_FAILED_DETAIL_KEYS = (
+    "reclaim",
+    "keep_failed",
+)
+
+RECLAIM_CLEAR_TERMINAL_DETAIL_KEYS = (
+    "keep_stage",
+    "reclaim",
+)
+```
+
+- `RECLAIM_ALLOWED_SOURCES`: exactly `("running",)`. Reclaim is legal only from the `running` state (§13.12). It equals `set(allowed_source_states("reclaim"))` and `set(allowed_source_states("reclaim --keep-failed"))` from `ALLOWED_TRANSITIONS` (§13.19).
+- `RECLAIM_FAILED_DETAIL_KEYS`: exactly `("reclaim", "keep_failed")`. Detail keys on the `failed` event record appended by reclaim.
+- `RECLAIM_CLEAR_TERMINAL_DETAIL_KEYS`: exactly `("keep_stage", "reclaim")`. Detail keys on the `clear_terminal` event record appended as the second step of default reclaim.
+
+#### 13.25.2 Preconditions and the `needs_reclaim` guard
+
+Reclaim is protected by a strict prerequisite guard evaluated under the exclusive filesystem lock (`locks/stage.lock`, §8):
+
+1. The stage must be initialized (`STATUS.json` present and readable; §2). If not initialized, raise `NotInitialized` (CLI exit 15).
+2. The reason must be non-empty (`reason.strip()` must not be empty). If missing or whitespace-only, raise `BadArgsError` (CLI exit 2).
+3. The stage must satisfy `needs_reclaim == True` under identical detection as `doctor` (§6, §13.8), `status --json` (§13.3.1), `Stage.diagnose()`, and `wait --needs-reclaim` (§13.23):
+   - Current state must be `running` (`STATE_RUNNING`, §13.12). Reclaim from non-running states (`queued`, `done`, `blocked`, `failed`) is strictly illegal.
+   - At least one of `DEAD_PID` or `STALE_HEARTBEAT` warnings (§13.8) must apply:
+     - `DEAD_PID`: the claiming PID is a valid positive integer and `_is_pid_alive(pid)` is `False`.
+     - `STALE_HEARTBEAT`: elapsed time since `heartbeat_at` exceeds the threshold (default `DEFAULT_STALE_THRESHOLD` = 300s, §13.14) or no heartbeat is recorded.
+
+| Precondition failure | Library exception | CLI exit code |
+|---|---|---|
+| Stage not initialized (missing dir or `STATUS.json`) | `NotInitialized` | 15 (`EXIT_NOT_INITIALIZED`; §7, §13.4, §13.17) |
+| Missing or empty `--reason` | `BadArgsError` | 2 (`EXIT_BAD_ARGS`; §7, §13.4, §13.17) |
+| `needs_reclaim` is false (healthy `running`, or non-running: `queued`, `done`, `blocked`, `failed`) | `IllegalTransition` | 3 (`EXIT_ILLEGAL_TRANSITION`; §7, §13.4, §13.17, §13.19) |
+
+When `needs_reclaim` is false, `Stage.reclaim()` MUST raise `IllegalTransition` and CLI MUST exit 3. Crucially, **no mutation** occurs to `STATUS.json`, `STATUS.md`, `events.jsonl`, or mirrors, and **no termination signals** are sent (even if `--kill` was passed).
+
+#### 13.25.3 Execution sequence and atomic exclusive lock
+
+The entire reclaim operation executes under a single exclusive filesystem lock (`StageStore.locked(exclusive=True)`, §8):
+
+1. Exclusive lock acquired.
+2. Read current status; evaluate `needs_reclaim`. If false, raise `IllegalTransition` without mutation.
+3. If `--kill` is enabled (`kill=True`), best-effort terminate the recorded PID (§13.25.5).
+4. **Step 1 (fail transition):**
+   - Mutate status in-memory: `state` becomes `"failed"`, `error` becomes `{"reason": reason, "kind": "failed", "finished_at": <iso>}` (§13.9), `result` becomes `null`, `updated_at` bumped.
+   - Write `STATUS.json`.
+   - Append `failed` event to `events.jsonl` with `detail: {"reclaim": True, "keep_failed": keep_failed}` (§13.25.6).
+   - Write `STATUS.md` mirror and status mirror (`.orch/STATUS.md`, §10) if enabled.
+5. **Step 2 (clear to idle queued, unless `--keep-failed`):**
+   - If `keep_failed=True`: sequence terminates here; return `failed` status payload with `heartbeat_age_seconds` (§13.25.4).
+   - If `keep_failed=False` (default): immediately reset to idle queued under the same lock:
+     - `state` becomes `"queued"`.
+     - Identity and claim fields in `CLEAR_TERMINAL_IDLE_RESET_FIELDS` (§13.26) are reset to `null` (`stage_id`, `stage_name`, `session_id`, `pid`, `pid_token`, `started_at`, `heartbeat_at`, `heartbeat_note`), `artifacts` to `[]`, `meta` to `{}`.
+     - Payload fields in `CLEAR_TERMINAL_ALWAYS_CLEARED_FIELDS` are set to `null` (`result`, `error`, `proof`).
+     - `updated_at` bumped.
+     - Write `STATUS.json`.
+     - Append `clear_terminal` event to `events.jsonl` with `message: "cleared to idle queued"` and `detail: {"keep_stage": False, "reclaim": True}` (§13.25.6).
+     - Write `STATUS.md` mirror.
+     - Return idle `queued` status payload with `heartbeat_age_seconds`.
+6. Exclusive lock released.
+
+Orchestrators observing the events log see the uninterrupted audit trail: `failed` followed immediately by `clear_terminal`.
+
+#### 13.25.4 `--keep-failed` stage identity preservation
+
+When `--keep-failed` is passed (`Stage.reclaim(..., keep_failed=True)`):
+
+- The sequence halts after Step 1 (`failed`).
+- Stage state remains `"failed"`.
+- Stage identity is preserved: `stage_id`, `stage_name`, `session_id`, `pid`, `pid_token`, `started_at`, `heartbeat_at`, `heartbeat_note`, `artifacts`, and `meta` all retain their pre-reclaim values (§4 rule 7, rule 8).
+- Exactly ONE event (`failed`) is appended to `events.jsonl`.
+- This enables watchdog/triage inspection of the dead/stale attempt before explicit reset via `clear-terminal` (§13.26).
+
+#### 13.25.5 `--kill` process termination semantics
+
+`--kill` (`kill=True`) defaults to `False`. When enabled:
+
+- Signals are dispatched **after** the `needs_reclaim` guard passes and **before** the state transitions to `failed`. If the guard fails, no signals are ever sent.
+- Targets only the recorded positive integer `pid` (not booleans, strings, or <= 0).
+- If the PID is dead, missing, or unknown liveness, signal dispatch is skipped and reclaim proceeds.
+- **Process identity verification (`pid_token`, §4 rule 7):** When a non-null `pid_token` is recorded in status, the process-start identity is re-read and verified against `pid_token` before **each** signal (`SIGTERM` and subsequent `SIGKILL`). If identity differs or cannot be read (indicating PID recycling), the signal is skipped and a warning is written to stderr.
+- **Signal progression:** Send `SIGTERM`, wait up to 1.0s polling liveness every 50ms, then send `SIGKILL` only if still alive. On Windows, `SIGTERM` terminates; escalation falls back to `SIGTERM` with identity verification.
+- **Resilience:** Any signal or OS error (e.g. `PermissionError`) emits a warning to stderr and MUST NOT abort reclaim. The fail-and-clear transition proceeds unconditionally.
+- Concurrency guarantee: Guard, liveness probe, token verification, signaling, wait, and state transitions all execute under the single exclusive lock.
+
+#### 13.25.6 Audit event shapes
+
+A default `reclaim` emits two audit events in atomic sequence; `--keep-failed` emits only the first:
+
+1. `failed` event:
+   - `type`: `"failed"` (`EVENT_TYPES`, §13.5).
+   - `state`: `"failed"`.
+   - `message`: caller-provided `reason` string.
+   - `detail`: carries exactly `RECLAIM_FAILED_DETAIL_KEYS`: `{"reclaim": True, "keep_failed": bool}`.
+2. `clear_terminal` event (absent when `--keep-failed`):
+   - `type`: `"clear_terminal"` (`EVENT_TYPES`, §13.5).
+   - `state`: `"queued"`.
+   - `stage_id`: `null`, `stage_name`: `null`.
+   - `message`: exactly `CLEAR_TERMINAL_MESSAGE_IDLE` (`"cleared to idle queued"`, §13.26).
+   - `detail`: carries exactly `RECLAIM_CLEAR_TERMINAL_DETAIL_KEYS`: `{"keep_stage": False, "reclaim": True}`.
+
+Readers MUST tolerate unknown future additive keys on `detail` objects without failing (§13.1).
+
+#### 13.25.7 Cross-links
+
+- **§4 (States & transitions, rule 7 & rule 8, Idle vs Queued):** normative transition rules, single-lock execution, `--kill` process termination and token verification.
+- **§5 (events.jsonl) + §13.5/§13.6:** audit events sequence (`failed` then `clear_terminal`).
+- **§6 (CLI contract):** `stage-signal reclaim --reason TEXT [--keep-failed] [--kill] [--write-status-mirror]`.
+- **§13.8 (Doctor warnings):** `DEAD_PID` and `STALE_HEARTBEAT` triggers for `needs_reclaim`.
+- **§13.12 (States freeze):** `running` source state vs `failed` and `queued` target states.
+- **§13.17 (Exceptions freeze):** `IllegalTransition` (exit 3), `BadArgsError` (exit 2), `NotInitialized` (exit 15).
+- **§13.19 (Transition matrix freeze):** `(running, "reclaim") -> queued`, `(running, "reclaim --keep-failed") -> failed`.
+- **§13.20 (Stage method surface):** `Stage.reclaim(reason, *, keep_failed=False, kill=False, write_status_mirror=None) -> dict[str, Any]`.
+- **§13.26 (Clear-terminal freeze):** `CLEAR_TERMINAL_MESSAGE_IDLE`, `CLEAR_TERMINAL_IDLE_RESET_FIELDS`.
+
+#### 13.25.8 Additive-only evolution policy
+
+Under `schema_version: 1`, the reclaim fail-and-clear contract is strictly **additive-only** (§13.1):
+
+- The frozen allowed source, detail key tuples, transition sequence, and error exit codes MUST NOT be removed, renamed, or change semantic meaning.
+- No new event type is introduced: reclaim emits existing `failed` and `clear_terminal` event types (§13.5).
+- New detail keys or flags MAY be added in minor or patch releases only as additional constants; existing frozen values MUST keep their exact values.
+- Readers MUST tolerate unknown future detail keys on both events without failing.
 
 ### 13.26 Clear-terminal reset and audit contract freeze (`CLEAR_TERMINAL_ALLOWED_SOURCES`, `CLEAR_TERMINAL_IDLE_RESET_FIELDS`, `CLEAR_TERMINAL_KEEP_STAGE_PRESERVED_FIELDS`, `CLEAR_TERMINAL_ALWAYS_CLEARED_FIELDS`, `CLEAR_TERMINAL_DETAIL_KEYS`, `CLEAR_TERMINAL_MESSAGE_IDLE`, `CLEAR_TERMINAL_MESSAGE_KEEP_STAGE`)
 
