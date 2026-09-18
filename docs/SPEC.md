@@ -1387,7 +1387,7 @@ External orchestrators, Python embedders, typing tools, and harnesses interact w
 
 #### 13.21.1 Canonical export inventory
 
-`stage_signal` exports exactly 117 public symbols matching `stage_signal.__all__`. These symbols are structured into four canonical categories:
+`stage_signal` exports exactly 119 public symbols matching `stage_signal.__all__`. These symbols are structured into four canonical categories:
 
 ##### 1. Classes (§11, §13.20)
 - `Stage`: The primary high-level lifecycle orchestrator, embedding context manager, and transition driver (§11, §13.20).
@@ -1428,7 +1428,7 @@ All six structured exceptions inherit from `StageError` and carry a normative `.
 - **Inventories:**
   - `CLI_SUBCOMMANDS`: 15 frozen CLI subcommands (§13.15).
   - `STAGE_PUBLIC_METHODS`: 15 frozen `Stage` public instance methods (§13.20).
-  - `PUBLIC_EXPORTS`: 117 frozen public symbols exported from top-level package namespace (§13.21).
+  - `PUBLIC_EXPORTS`: 119 frozen public symbols exported from top-level package namespace (§13.21).
 - **Exit codes:**
   - `EXIT_CODES`: Tuple of all 10 standard exit codes (§7, §13.4).
   - Individual exit codes: `EXIT_OK` (0), `EXIT_ERROR` (1), `EXIT_BAD_ARGS` (2), `EXIT_ILLEGAL_TRANSITION` (3), `EXIT_RUNNING` (10), `EXIT_BLOCKED` (11), `EXIT_FAILED` (12), `EXIT_QUEUED` (13), `EXIT_WAIT_TIMEOUT` (14), `EXIT_NOT_INITIALIZED` (15) (§7, §13.4).
@@ -1486,6 +1486,9 @@ All six structured exceptions inherit from `StageError` and carry a normative `.
 - **Heartbeat liveness:**
   - `HEARTBEAT_ALLOWED_SOURCES`: Legal source states (`"running"` only; §4, §13.27).
   - `HEARTBEAT_DETAIL_KEYS`: Audit detail keys (empty — heartbeat carries no detail extras; §5, §13.27).
+- **Artifact add:**
+  - `ARTIFACT_ALLOWED_SOURCES`: Legal source states (`"running"` only; §4 rule 4, §13.29).
+  - `ARTIFACT_DETAIL_KEYS`: Audit detail keys (`"path"`, `"label"`; §5, §13.29).
 - **Clear-terminal reset and audit:**
   - `CLEAR_TERMINAL_ALLOWED_SOURCES`: Legal source states (`"done"`, `"blocked"`, `"failed"`, `"queued"`; §4, §13.26).
   - `CLEAR_TERMINAL_IDLE_RESET_FIELDS`: Ten identity/claim fields reset to idle by default (§4, §13.26).
@@ -1501,6 +1504,8 @@ The single source of truth for the canonical top-level public export inventory i
 ```python
 PUBLIC_EXPORTS: tuple[str, ...] = (
     "ALLOWED_TRANSITIONS",
+    "ARTIFACT_ALLOWED_SOURCES",
+    "ARTIFACT_DETAIL_KEYS",
     "ARTIFACT_ENTRY_KEYS",
     "BadArgsError",
     "CLEAR_TERMINAL_ALLOWED_SOURCES",
@@ -1639,7 +1644,7 @@ Under `schema_version: 1`, the top-level public export inventory is strictly **a
 - Existing symbols in `PUBLIC_EXPORTS` MUST NOT be removed, renamed, or relocated.
 - Existing symbol types, semantics, and contracts MUST NOT undergo breaking changes.
 - Future minor or patch releases under schema version 1 MAY add new classes, helper functions, or frozen constants to `stage_signal`, expanding `PUBLIC_EXPORTS` and `__all__`.
-- External orchestrators, embedders, and typing definitions can safely rely on the uninterrupted presence of all 117 public exports throughout the entire lifecycle of `schema_version: 1`.
+- External orchestrators, embedders, and typing definitions can safely rely on the uninterrupted presence of all 119 public exports throughout the entire lifecycle of `schema_version: 1`.
 
 ### 13.22 Doctor human summary strings freeze (`DOCTOR_SUMMARY_RECLAIM_NEEDED`, `DOCTOR_SUMMARY_OK_FORMAT`)
 
@@ -2150,4 +2155,90 @@ Under `schema_version: 1`, the heartbeat liveness contract is strictly **additiv
 - No new event type is introduced for heartbeating: the audit record stays a `heartbeat` event (§13.5).
 - New heartbeat detail keys or note modes MAY be added in minor or patch releases only as additional constants; existing frozen values MUST keep their exact values.
 - Readers MUST tolerate unknown future `heartbeat` detail keys and unknown future note strings without failing.
+
+### 13.29 Artifact add contract freeze (`ARTIFACT_ALLOWED_SOURCES`, `ARTIFACT_DETAIL_KEYS`)
+
+`Stage.artifact` / `stage-signal artifact PATH [--label LABEL]` (§4 rule 4, §6, §13.20) records an artifact path in `STATUS.json` without changing lifecycle state. Under `schema_version: 1`, the allowed source, the path/label validation, the omit-vs-set label rule, the appended entry shape, and the `artifact` audit event shape are frozen so orchestrators can attach build outputs and branch on recorded paths without scraping human text. The `artifact` event type itself is frozen in §13.5 and the record keys in §13.6; the allowed edge is frozen in §13.19. (§13.28 is reserved for the `note` contract, owned separately.)
+
+#### 13.29.1 Frozen constants and exact values
+
+The single sources of truth are defined in `stage_signal.constants` and exported from `stage_signal` and `__all__`:
+
+```python
+ARTIFACT_ALLOWED_SOURCES = ("running",)
+
+ARTIFACT_DETAIL_KEYS = (
+    "path",
+    "label",
+)
+```
+
+- `ARTIFACT_ALLOWED_SOURCES`: exactly `("running",)`. Artifact recording is legal only from the `running` state (§4 rule 4, §13.12). It MUST equal `allowed_source_states("artifact")` from `ALLOWED_TRANSITIONS` (§13.19), whose sole frozen edge is `(running, "artifact") -> running`.
+- `ARTIFACT_DETAIL_KEYS`: exactly `("path", "label")`. Detail keys on the `artifact` event record appended by each successful call (§13.29.4).
+
+#### 13.29.2 Allowed source and the non-running guard
+
+`artifact` is permitted only when `state == "running"` (§4 rule 4, §13.12, §13.19). The target state is always `running` (no lifecycle transition):
+
+| Precondition failure | Library | CLI exit |
+|----------------------|---------|----------|
+| Stage not initialized (missing dir/STATUS) | `NotInitialized` | 15 (`EXIT_NOT_INITIALIZED`; §7, §13.4, §13.17) |
+| Empty or whitespace-only `PATH` | `BadArgsError` | 2 (`EXIT_BAD_ARGS`; §7, §13.4, §13.17) |
+| Current state is `queued`, `done`, `blocked`, or `failed` | `IllegalTransition` | 3 (`EXIT_ILLEGAL_TRANSITION`; §7, §13.4, §13.17) |
+
+From any non-running state, `artifact` is strictly illegal and MUST raise `IllegalTransition` (exit 3) with no mutation of STATUS, events, or mirrors. Path validation (`BadArgsError` on empty/whitespace-only `PATH`) is evaluated before the state guard in `Stage.artifact`, so an empty path is exit 2 regardless of state. No child process, signal, or mirror side effect occurs on precondition failure.
+
+#### 13.29.3 Entry append and path/label validation with omit-vs-set label
+
+On success, from the exact implementation in `Stage.artifact` (`src/stage_signal/stage.py`):
+
+- One entry is appended to `STATUS.json`'s `artifacts[]` list: `artifacts.append({"path": path, "label": label, "added_at": now_iso()})`.
+- `set(entry.keys()) == set(ARTIFACT_ENTRY_KEYS)` (`path`, `label`, `added_at`; §3, §13.7). The `label` key MUST be present even when `null`, and `added_at` is the current ISO-8601 timestamp (`now_iso()`).
+- `updated_at` is bumped by the standard mutation path (§4 rule 9).
+- `state`, `stage_id`, `stage_name`, `attempt`, `session_id`, `pid`, `pid_token`, and all other STATUS fields are preserved unchanged.
+- Path validation: `if not path or not path.strip(): raise BadArgsError("artifact requires non-empty PATH")`. The recorded `path` is stored byte-for-byte as supplied (no normalization, no empty-means-default); the CLI passes `args.path` through unchanged.
+- Label omit-vs-set: `Stage.artifact(path, *, label=None)` with CLI `stage-signal artifact PATH [--label LABEL]` (argparse default `None`):
+  - Omitted (`label=None` / CLI without `--label`): the entry records `"label": null` and the audit detail records `"label": null`.
+  - Set (`label=<str>`, including the empty string `""`): the entry and the audit detail record exactly that string, even when empty. There is no empty-means-clear vs empty-means-keep distinction and no label validation; only `None` produces `null`.
+- `start` artifact clearing (new `stage_id` clears, same-`stage_id` retry keeps) and `clear-terminal` artifact reset/preservation are owned by §4 and §13.26 and are cross-linked only (§13.29.5), not changed here.
+
+#### 13.29.4 Audit event shape
+
+Each successful `artifact` call appends exactly one `artifact` event (§5; no new event type is introduced):
+
+- `type` is exactly `"artifact"` (a member of `EVENT_TYPES`; §13.5) with the standard record keys (`EVENT_RECORD_KEYS`; §13.6). `state` is `"running"` and `stage_id` / `stage_name` / `attempt` reflect the post-mutation STATUS.
+- `message` is the path passthrough: exactly the supplied `path` string — byte-for-byte, no affixes.
+- `detail` carries exactly `ARTIFACT_DETAIL_KEYS`: `{"path": <str>, "label": <str|null>}` reflecting the call arguments (`label` is `null` when omitted, otherwise exactly the supplied string including `""`).
+
+Readers MUST tolerate additive unknown keys on the `artifact` `detail` object without failing (§13.1).
+
+#### 13.29.5 Preservation and clear rules (cross-link only)
+
+Artifact list lifecycle across other mutations is owned elsewhere and is NOT re-frozen here:
+
+- Preserved across `heartbeat` calls (heartbeat touches only `heartbeat_at` / `heartbeat_note`; §13.27).
+- `start` with a new `stage_id` clears `artifacts` to `[]`; retry of the same `stage_id` keeps them (§4 rule 2).
+- `clear-terminal` default idle reset clears `artifacts` to `[]`, while `--keep-stage` preserves them via `CLEAR_TERMINAL_KEEP_STAGE_PRESERVED_FIELDS` (§4 rule 8, §13.26).
+- `reclaim --keep-failed` preserves stage identity including `artifacts`; default reclaim clears to idle queued as the second step (§13.25).
+
+#### 13.29.6 Cross-links
+
+- **§3 (STATUS.json schema):** the `artifacts[]` field and its `{"path", "label", "added_at"}` item shape.
+- **§4 rule 4 (States & transitions):** normative `artifact PATH [--label]` allowed-only-from-`running` rule and the `updated_at` bump rule (§4 rule 9); preservation/clear rules on `start` (§4 rule 2) and `clear-terminal` (§4 rule 8).
+- **§5 (events.jsonl) + §13.5/§13.6:** the `artifact` event type and required record keys; audit-trail reads via `events`.
+- **§6 (CLI contract):** `stage-signal artifact PATH [--label LABEL]` usage line.
+- **§13.7 (entry keys freeze):** `ARTIFACT_ENTRY_KEYS` (`path`, `label`, `added_at`) matched by every appended entry.
+- **§13.12 (states freeze):** `running` as the sole legal source vs `queued` and terminal `done`/`blocked`/`failed`.
+- **§13.19 (transition matrix freeze):** the single frozen `(running, "artifact") -> running` edge and the non-running guard.
+- **§13.20 (Stage method surface freeze):** `artifact(path, *, label=None) -> dict[str, Any]` signature and CLI equivalence.
+- **§13.26 (clear-terminal freeze):** `CLEAR_TERMINAL_IDLE_RESET_FIELDS` / `CLEAR_TERMINAL_KEEP_STAGE_PRESERVED_FIELDS` ownership of artifact clearing vs preservation.
+
+#### 13.29.7 Additive-only evolution policy
+
+Under `schema_version: 1`, the artifact add contract is strictly **additive-only** (§13.1):
+
+- The frozen allowed source, the non-empty-path validation, the `None`-means-`null` omit-vs-set label rule, the `ARTIFACT_ENTRY_KEYS`-matching append shape, and the path-passthrough / `{"path", "label"}`-detail audit shape MUST NOT be removed, renamed, reworded, or change semantic meaning.
+- No new event type is introduced for artifact recording: the audit record stays an `artifact` event (§13.5).
+- New artifact detail keys or label modes MAY be added in minor or patch releases only as additional constants; existing frozen values MUST keep their exact values.
+- Readers MUST tolerate unknown future `artifact` detail keys and unknown future entry keys without failing.
 

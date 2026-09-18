@@ -19,6 +19,8 @@ import pytest
 
 from stage_signal import (
     ALLOWED_TRANSITIONS,
+    ARTIFACT_ALLOWED_SOURCES,
+    ARTIFACT_DETAIL_KEYS,
     ARTIFACT_ENTRY_KEYS,
     CLEAR_TERMINAL_ALLOWED_SOURCES,
     CLEAR_TERMINAL_ALWAYS_CLEARED_FIELDS,
@@ -3749,9 +3751,11 @@ def test_diagnose_doctor_json_summary_null_on_problems(
 
 
 def test_public_exports_constant_freeze() -> None:
-    """PUBLIC_EXPORTS matches the frozen 117-element tuple in SPEC §13.21."""
+    """PUBLIC_EXPORTS matches the frozen 119-element tuple in SPEC §13.21."""
     expected = (
         "ALLOWED_TRANSITIONS",
+        "ARTIFACT_ALLOWED_SOURCES",
+        "ARTIFACT_DETAIL_KEYS",
         "ARTIFACT_ENTRY_KEYS",
         "BadArgsError",
         "CLEAR_TERMINAL_ALLOWED_SOURCES",
@@ -3871,7 +3875,7 @@ def test_public_exports_constant_freeze() -> None:
     )
     assert PUBLIC_EXPORTS == expected
     assert isinstance(PUBLIC_EXPORTS, tuple)
-    assert len(PUBLIC_EXPORTS) == 117
+    assert len(PUBLIC_EXPORTS) == 119
     assert PUBLIC_EXPORTS == tuple(sorted(PUBLIC_EXPORTS))
     assert len(PUBLIC_EXPORTS) == len(set(PUBLIC_EXPORTS))
 
@@ -4011,6 +4015,8 @@ def test_public_exports_category_coverage() -> None:
         "SUPERVISE_EXIT_PERMISSION_DENIED",
         "HEARTBEAT_ALLOWED_SOURCES",
         "HEARTBEAT_DETAIL_KEYS",
+        "ARTIFACT_ALLOWED_SOURCES",
+        "ARTIFACT_DETAIL_KEYS",
     }
     for const_name in core_constants:
         assert const_name in PUBLIC_EXPORTS
@@ -5211,3 +5217,201 @@ def test_heartbeat_age_only_while_running_freeze(
     stage.clear_terminal()
     assert stage.status()["state"] == STATE_QUEUED
     assert stage.status()["heartbeat_age_seconds"] is None
+
+
+# 21. Artifact add contract freeze (SPEC §13.29, issue #152)
+# =============================================================================
+
+
+def test_artifact_constants_freeze() -> None:
+    """Artifact frozen constants match the exact values in SPEC §13.29.1."""
+    assert ARTIFACT_ALLOWED_SOURCES == ("running",)
+    assert isinstance(ARTIFACT_ALLOWED_SOURCES, tuple)
+    assert len(ARTIFACT_ALLOWED_SOURCES) == 1
+    assert STATE_RUNNING in ARTIFACT_ALLOWED_SOURCES
+    for terminal in TERMINAL_STATES:
+        assert terminal not in ARTIFACT_ALLOWED_SOURCES
+    assert STATE_QUEUED not in ARTIFACT_ALLOWED_SOURCES
+
+    assert ARTIFACT_DETAIL_KEYS == ("path", "label")
+    assert isinstance(ARTIFACT_DETAIL_KEYS, tuple)
+    assert len(ARTIFACT_DETAIL_KEYS) == 2
+
+    # Allowed sources agree with the frozen transition matrix (SPEC §13.19)
+    assert tuple(allowed_source_states("artifact")) == ARTIFACT_ALLOWED_SOURCES
+    assert is_transition_allowed(STATE_RUNNING, "artifact") is True
+    assert transition_target(STATE_RUNNING, "artifact") == STATE_RUNNING
+
+
+def test_artifact_constants_exported_from_top_level() -> None:
+    """Artifact freeze constants are exported from top-level stage_signal (SPEC §13.29)."""
+    import stage_signal
+
+    for name, expected in (
+        ("ARTIFACT_ALLOWED_SOURCES", ARTIFACT_ALLOWED_SOURCES),
+        ("ARTIFACT_DETAIL_KEYS", ARTIFACT_DETAIL_KEYS),
+    ):
+        assert hasattr(stage_signal, name), f"stage_signal missing {name!r}"
+        assert name in stage_signal.__all__, f"{name!r} not in stage_signal.__all__"
+        assert getattr(stage_signal, name) is expected
+
+
+def test_artifact_allowed_source_semantics(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Artifact succeeds only from running; queued/terminal refuse exit 3 (SPEC §13.29.2).
+
+    Synchronous state-machine smoke with no sleeps/threads.
+    """
+    stage_dir = tmp_path / ".stage-signal"
+    stage = Stage(str(stage_dir))
+    stage.init(project="artifact-sources-freeze")
+    status_file = stage_dir / "STATUS.json"
+
+    def assert_no_mutation(snapshot: str, event_count: int) -> None:
+        assert status_file.read_text(encoding="utf-8") == snapshot
+        assert len(stage.events()) == event_count
+
+    # Empty/whitespace-only PATH is BadArgs (exit 2) even from queued
+    with pytest.raises(BadArgsError):
+        stage.artifact("")
+    with pytest.raises(BadArgsError):
+        stage.artifact("   ")
+    capsys.readouterr()
+    assert main(["--dir", str(stage_dir), "artifact", "  "]) == EXIT_BAD_ARGS
+    assert_no_mutation(status_file.read_text(encoding="utf-8"), 1)
+
+    # queued is illegal: library raises, CLI exits 3, no mutation
+    before = status_file.read_text(encoding="utf-8")
+    with pytest.raises(IllegalTransition):
+        stage.artifact("dist/out.bin")
+    assert_no_mutation(before, 1)
+
+    capsys.readouterr()
+    assert main(["--dir", str(stage_dir), "artifact", "dist/out.bin"]) == EXIT_ILLEGAL_TRANSITION
+    assert_no_mutation(before, 1)
+
+    # running succeeds via library and CLI (covers both paths)
+    stage.start(stage="artifact-step", pid=os.getpid())
+    running_status = stage.artifact("dist/out.bin", label="binary")
+    assert running_status["state"] == STATE_RUNNING
+    assert running_status["artifacts"][-1]["path"] == "dist/out.bin"
+    capsys.readouterr()
+    assert main(["--dir", str(stage_dir), "artifact", "dist/cli.bin"]) == EXIT_OK
+    assert stage.status()["state"] == STATE_RUNNING
+    assert stage.status()["artifacts"][-1]["path"] == "dist/cli.bin"
+
+    # each terminal source refuses with no mutation
+    for terminal_state, finisher in (
+        (STATE_DONE, lambda: stage.done(summary="finished")),
+        (STATE_BLOCKED, lambda: stage.blocked(reason="waiting")),
+        (STATE_FAILED, lambda: stage.fail(reason="broken")),
+    ):
+        # Re-enter running first when coming from a terminal state
+        if stage.status()["state"] != STATE_RUNNING:
+            stage.start(stage=f"artifact-{terminal_state}", pid=os.getpid())
+        finisher()
+        assert stage.status()["state"] == terminal_state
+        before = status_file.read_text(encoding="utf-8")
+        events_before = len(stage.events())
+        with pytest.raises(IllegalTransition):
+            stage.artifact("dist/should-not-land.bin")
+        assert_no_mutation(before, events_before)
+
+        capsys.readouterr()
+        assert main(["--dir", str(stage_dir), "artifact", "dist/should-not-land.bin"]) == EXIT_ILLEGAL_TRANSITION
+        assert_no_mutation(before, events_before)
+
+
+def test_artifact_entry_append_and_label_omit_vs_set_freeze(tmp_path: Path) -> None:
+    """Artifact appends {path, label, added_at} per ARTIFACT_ENTRY_KEYS; label None->null (SPEC §13.29.3).
+
+    Compares entries already recorded (no sleeps/threads).
+    """
+    from datetime import datetime as _datetime
+
+    stage_dir = tmp_path / ".stage-signal"
+    stage = Stage(str(stage_dir))
+    stage.init(project="artifact-entry-freeze")
+    stage.start(stage="artifact-entry-step", pid=os.getpid())
+
+    # Omitted label records null with all ARTIFACT_ENTRY_KEYS present
+    first = stage.artifact("dist/out.bin")
+    assert first["state"] == STATE_RUNNING
+    assert first["stage_id"] == "artifact-entry-step"
+    entry = first["artifacts"][-1]
+    assert set(entry.keys()) == set(ARTIFACT_ENTRY_KEYS)
+    assert entry["path"] == "dist/out.bin"
+    assert entry["label"] is None
+    assert isinstance(entry["added_at"], str) and entry["added_at"]
+    first_ts = _datetime.fromisoformat(str(entry["added_at"]))
+
+    # Set label records exactly, including preserving other identity fields
+    second = stage.artifact("dist/report.json", label="report")
+    entry2 = second["artifacts"][-1]
+    assert set(entry2.keys()) == set(ARTIFACT_ENTRY_KEYS)
+    assert entry2["path"] == "dist/report.json"
+    assert entry2["label"] == "report"
+    assert _datetime.fromisoformat(str(entry2["added_at"])) >= first_ts
+    assert len(second["artifacts"]) == 2
+    # Earlier entry unchanged (append-only)
+    assert second["artifacts"][0] == entry
+    assert second["stage_id"] == "artifact-entry-step"
+
+    # Explicit empty string label is stored exactly (only None produces null)
+    third = stage.artifact("dist/empty-label.bin", label="")
+    assert third["artifacts"][-1]["label"] == ""
+    assert set(third["artifacts"][-1].keys()) == set(ARTIFACT_ENTRY_KEYS)
+
+
+def test_artifact_audit_event_shape_freeze(tmp_path: Path) -> None:
+    """Each artifact appends one artifact event with path message + path/label detail (SPEC §13.29.4)."""
+    stage_dir = tmp_path / ".stage-signal"
+    stage = Stage(str(stage_dir))
+    stage.init(project="artifact-audit-freeze")
+    stage.start(stage="artifact-audit-step", pid=os.getpid())
+
+    # Omitted label: message is path, detail carries null label
+    events_before = len(stage.events())
+    stage.artifact("dist/out.bin")
+    events = stage.events()
+    assert len(events) == events_before + 1
+    last = events[-1]
+    assert last["type"] == "artifact"
+    assert last["type"] in EVENT_TYPES
+    assert last["state"] == STATE_RUNNING
+    assert last["stage_id"] == "artifact-audit-step"
+    assert last["message"] == "dist/out.bin"
+    assert tuple(last["detail"].keys()) == ARTIFACT_DETAIL_KEYS
+    assert last["detail"] == {"path": "dist/out.bin", "label": None}
+    for key in EVENT_RECORD_KEYS:
+        assert key in last
+
+    # Set label: message stays path-only, detail echoes path+label exactly
+    events_before = len(stage.events())
+    stage.artifact("dist/report.json", label="report")
+    events = stage.events()
+    assert len(events) == events_before + 1
+    last = events[-1]
+    assert last["type"] == "artifact"
+    assert last["message"] == "dist/report.json"
+    assert tuple(last["detail"].keys()) == ARTIFACT_DETAIL_KEYS
+    assert last["detail"] == {"path": "dist/report.json", "label": "report"}
+
+
+def test_artifact_preserved_across_heartbeat_freeze(tmp_path: Path) -> None:
+    """Artifacts survive heartbeats unchanged (SPEC §13.29.5 cross-links §13.27).
+
+    No sleeps: asserts on entries already recorded.
+    """
+    stage_dir = tmp_path / ".stage-signal"
+    stage = Stage(str(stage_dir))
+    stage.init(project="artifact-preserve-freeze")
+    stage.start(stage="artifact-preserve-step", pid=os.getpid())
+    stage.artifact("dist/keep.bin", label="keep")
+    before = list(stage.status()["artifacts"])
+    assert len(before) == 1
+
+    after = stage.heartbeat(note="still alive")
+    assert after["artifacts"] == before
+    assert after["state"] == STATE_RUNNING
