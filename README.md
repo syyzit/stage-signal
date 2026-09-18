@@ -370,8 +370,12 @@ Agent UIs and chat transcripts are for humans. Orchestrators need a stable, bori
 pytest + both smokes + packaging check via `python -m build` /
 `twine check`, no upload). Contract: SPEC v1.
 
-`main` carries SPEC contract freezes through §13.41 while the published
-package remains soaking at `0.1.6` (no version bump in this change).
+`main` carries SPEC contract freezes through §13.41 — status / events /
+doctor / wait observers (§13.35–§13.38), `.orch` mirror (§13.39),
+concurrency and locking (§13.40), and proof gate (§13.41) — while the
+published package remains soaking at `0.1.6` (no version bump in this
+change). Action pins (`@v0.1.6`) and the optional PyPI `version` pin
+(`"0.1.6"`) stay aligned with the soak.
 
 ---
 
