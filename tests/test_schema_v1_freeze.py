@@ -50,6 +50,10 @@ from stage_signal import (
     STATUS_REQUIRED_KEYS,
     TERMINAL_STATES,
     WAIT_JSON_KEYS,
+    WAIT_OUTCOME_MET,
+    WAIT_OUTCOME_MISMATCH,
+    WAIT_OUTCOME_TIMEOUT,
+    WAIT_OUTCOMES,
     WARNING_CODE_DEAD_PID,
     WARNING_CODE_STALE_HEARTBEAT,
     WARNING_CODE_UNPARSEABLE_HEARTBEAT,
@@ -659,11 +663,13 @@ def test_wait_json_contract_keys_met(tmp_path: Path, monkeypatch: pytest.MonkeyP
         assert k in data, f"Key {k!r} missing in wait --json [outcome=met]"
 
     assert data["outcome"] == "met"
+    assert data["outcome"] in WAIT_OUTCOMES
     assert data["wanted"] == "done"
     assert data["observed_state"] == "done"
     assert data["state"] == "done"
     assert data["exit_code"] == 0
     assert data["timeout"] is False
+    assert (data["outcome"] == "timeout") is data["timeout"]
     assert data["needs_reclaim"] is False
     assert data["status"] is not None
     assert data["status"]["state"] == "done"
@@ -688,11 +694,13 @@ def test_wait_json_contract_keys_mismatch(tmp_path: Path, monkeypatch: pytest.Mo
         assert k in data, f"Key {k!r} missing in wait --json [outcome=mismatch]"
 
     assert data["outcome"] == "mismatch"
+    assert data["outcome"] in WAIT_OUTCOMES
     assert data["wanted"] == "done"
     assert data["observed_state"] == "blocked"
     assert data["state"] == "blocked"
     assert data["exit_code"] == 11
     assert data["timeout"] is False
+    assert (data["outcome"] == "timeout") is data["timeout"]
     assert data["reason"] == "rate limited"
     assert data["needs_reclaim"] is False
     assert data["status"] is not None
@@ -718,11 +726,13 @@ def test_wait_json_contract_keys_timeout_path(tmp_path: Path, monkeypatch: pytes
         assert k in data, f"Key {k!r} missing in wait --json [outcome=timeout]"
 
     assert data["outcome"] == "timeout"
+    assert data["outcome"] in WAIT_OUTCOMES
     assert data["wanted"] == "terminal"
     assert data["observed_state"] == "running"
     assert data["state"] == "running"
     assert data["exit_code"] == 14
     assert data["timeout"] is True
+    assert (data["outcome"] == "timeout") is data["timeout"]
     assert data["stage_id"] == "step-running"
     assert data["dir"] == str(stage_dir)
     assert isinstance(data["reason"], str)
@@ -750,10 +760,12 @@ def test_wait_json_needs_reclaim_timeout_path(tmp_path: Path, monkeypatch: pytes
         assert k in data, f"Key {k!r} missing in wait --json --needs-reclaim [timeout]"
 
     assert data["outcome"] == "timeout"
+    assert data["outcome"] in WAIT_OUTCOMES
     assert data["wanted"] == "needs_reclaim"
     assert data["observed_state"] == "running"
     assert data["exit_code"] == 14
     assert data["timeout"] is True
+    assert (data["outcome"] == "timeout") is data["timeout"]
     assert isinstance(data["reason"], str)
     assert data["needs_reclaim"] is False
 
@@ -1290,4 +1302,225 @@ def test_unknown_state_rejected_by_validator(tmp_path: Path) -> None:
     with pytest.raises(CorruptStatusError, match="unknown state 'unknown_state'"):
         stage.status()
 
+# ============================================================================
+# 10. Wait outcomes enum freeze (SPEC §13.11, issue #117)
+# ============================================================================
 
+
+def test_wait_outcomes_freeze() -> None:
+    """WAIT_OUTCOMES must match the exact 3 frozen outcomes in canonical order (SPEC §13.11)."""
+    expected = ("met", "mismatch", "timeout")
+    assert WAIT_OUTCOMES == expected
+    assert len(WAIT_OUTCOMES) == 3
+    assert WAIT_OUTCOME_MET == "met"
+    assert WAIT_OUTCOME_MISMATCH == "mismatch"
+    assert WAIT_OUTCOME_TIMEOUT == "timeout"
+    assert set(WAIT_OUTCOMES) == {"met", "mismatch", "timeout"}
+    assert all(isinstance(o, str) for o in WAIT_OUTCOMES)
+
+
+def _assert_wait_payload_contract(
+    payload: dict[str, Any],
+    *,
+    expected_outcome: str,
+    expected_exit: int,
+    expected_timeout: bool,
+    expected_wanted: str | None = None,
+) -> None:
+    """Validate a wait --json payload against the SPEC §13.3.3 and §13.11 contract."""
+    assert isinstance(payload, dict)
+    for k in WAIT_JSON_KEYS:
+        assert k in payload, f"Key {k!r} missing in wait --json: {payload!r}"
+    assert payload["outcome"] in WAIT_OUTCOMES
+    assert payload["outcome"] == expected_outcome
+    assert payload["exit_code"] == expected_exit
+    assert payload["timeout"] is expected_timeout
+    # timeout bool must be strictly consistent with outcome (SPEC §13.11)
+    assert (payload["outcome"] == "timeout") is payload["timeout"]
+    if expected_wanted is not None:
+        assert payload["wanted"] == expected_wanted
+
+
+@pytest.mark.parametrize(
+    "wanted,terminal_action,action_args,expected_outcome,expected_exit",
+    [
+        ("done", "done", {"summary": "build finished"}, "met", EXIT_OK),
+        ("terminal", "done", {"summary": "finished"}, "met", EXIT_OK),
+        ("terminal", "blocked", {"reason": "paused"}, "met", EXIT_OK),
+        ("terminal", "fail", {"reason": "crashed"}, "met", EXIT_OK),
+        ("done", "blocked", {"reason": "blocked instead"}, "mismatch", EXIT_BLOCKED),
+        ("done", "fail", {"reason": "failed instead"}, "mismatch", EXIT_FAILED),
+        ("blocked", "done", {"summary": "done instead"}, "mismatch", EXIT_OK),
+        ("failed", "done", {"summary": "done instead"}, "mismatch", EXIT_OK),
+    ],
+)
+def test_wait_json_outcomes_terminal_paths(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    wanted: str,
+    terminal_action: str,
+    action_args: dict[str, Any],
+    expected_outcome: str,
+    expected_exit: int,
+) -> None:
+    """wait --json outcomes across terminal resolutions satisfy SPEC §13.11 contract."""
+    stage_dir = tmp_path / ".stage-signal"
+    monkeypatch.setenv("STAGE_SIGNAL_DIR", str(stage_dir))
+    stage = Stage(str(stage_dir))
+    stage.init(project="wait-outcomes-test")
+    stage.start(stage="task", pid=os.getpid())
+
+    if terminal_action == "done":
+        stage.done(**action_args)
+    elif terminal_action == "blocked":
+        stage.blocked(**action_args)
+    elif terminal_action == "fail":
+        stage.fail(**action_args)
+
+    capsys.readouterr()
+    exit_code = main(["wait", "--json", "--state", wanted, "--timeout", "1", "--poll", "0.05"])
+    assert exit_code == expected_exit
+    cli_data = json.loads(capsys.readouterr().out)
+
+    _assert_wait_payload_contract(
+        cli_data,
+        expected_outcome=expected_outcome,
+        expected_exit=expected_exit,
+        expected_timeout=False,
+        expected_wanted=wanted,
+    )
+
+
+def test_wait_json_outcome_timeout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """wait --json on running and queued stages with expired timeout emits outcome='timeout' and timeout=True."""
+    stage_dir = tmp_path / ".stage-signal"
+    monkeypatch.setenv("STAGE_SIGNAL_DIR", str(stage_dir))
+    stage = Stage(str(stage_dir))
+    stage.init(project="wait-timeout-test")
+
+    # 1. Queued stage timing out waiting for done
+    capsys.readouterr()
+    exit_code = main(["wait", "--json", "--state", "done", "--timeout", "0.05", "--poll", "0.02"])
+    assert exit_code == EXIT_WAIT_TIMEOUT
+    cli_data = json.loads(capsys.readouterr().out)
+    _assert_wait_payload_contract(
+        cli_data,
+        expected_outcome="timeout",
+        expected_exit=EXIT_WAIT_TIMEOUT,
+        expected_timeout=True,
+        expected_wanted="done",
+    )
+
+    # 2. Running stage timing out waiting for terminal
+    stage.start(stage="worker", pid=os.getpid())
+    capsys.readouterr()
+    exit_code = main(["wait", "--json", "--state", "terminal", "--timeout", "0.05", "--poll", "0.02"])
+    assert exit_code == EXIT_WAIT_TIMEOUT
+    cli_data = json.loads(capsys.readouterr().out)
+    _assert_wait_payload_contract(
+        cli_data,
+        expected_outcome="timeout",
+        expected_exit=EXIT_WAIT_TIMEOUT,
+        expected_timeout=True,
+        expected_wanted="terminal",
+    )
+
+
+def test_wait_json_needs_reclaim_outcomes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """wait --json --needs-reclaim emits met, mismatch, and timeout outcomes consistent with SPEC §13.11."""
+    stage_dir = tmp_path / ".stage-signal"
+    monkeypatch.setenv("STAGE_SIGNAL_DIR", str(stage_dir))
+    stage = Stage(str(stage_dir))
+
+    # 1. Met: stage running with DEAD_PID
+    stage.init(project="reclaim-met")
+    dead_proc = subprocess.Popen([sys.executable, "-c", "pass"])
+    dead_proc.wait(timeout=5)
+    stage.start(stage="dead-worker", pid=dead_proc.pid)
+
+    capsys.readouterr()
+    exit_code = main(["wait", "--json", "--needs-reclaim", "--timeout", "1", "--poll", "0.05"])
+    assert exit_code == EXIT_OK
+    cli_data = json.loads(capsys.readouterr().out)
+    _assert_wait_payload_contract(
+        cli_data,
+        expected_outcome="met",
+        expected_exit=EXIT_OK,
+        expected_timeout=False,
+        expected_wanted="needs_reclaim",
+    )
+    assert cli_data["needs_reclaim"] is True
+
+    # 2. Mismatch: stage finishes to done without reclaim -> exit 1 mismatch
+    stage_dir_mismatch = tmp_path / "mismatch" / ".stage-signal"
+    monkeypatch.setenv("STAGE_SIGNAL_DIR", str(stage_dir_mismatch))
+    stage_m = Stage(str(stage_dir_mismatch))
+    stage_m.init(project="reclaim-mismatch")
+    stage_m.start(stage="normal-worker", pid=os.getpid())
+    stage_m.done(summary="done without needing reclaim")
+
+    capsys.readouterr()
+    exit_code = main(["wait", "--json", "--needs-reclaim", "--timeout", "1", "--poll", "0.05"])
+    assert exit_code == EXIT_ERROR
+    cli_data = json.loads(capsys.readouterr().out)
+    _assert_wait_payload_contract(
+        cli_data,
+        expected_outcome="mismatch",
+        expected_exit=EXIT_ERROR,
+        expected_timeout=False,
+        expected_wanted="needs_reclaim",
+    )
+    assert cli_data["needs_reclaim"] is False
+
+    # 3. Timeout: healthy running stage does not need reclaim before timeout
+    stage_dir_timeout = tmp_path / "timeout" / ".stage-signal"
+    monkeypatch.setenv("STAGE_SIGNAL_DIR", str(stage_dir_timeout))
+    stage_t = Stage(str(stage_dir_timeout))
+    stage_t.init(project="reclaim-timeout")
+    stage_t.start(stage="healthy-worker", pid=os.getpid())
+
+    capsys.readouterr()
+    exit_code = main(["wait", "--json", "--needs-reclaim", "--timeout", "0.05", "--poll", "0.02"])
+    assert exit_code == EXIT_WAIT_TIMEOUT
+    cli_data = json.loads(capsys.readouterr().out)
+    _assert_wait_payload_contract(
+        cli_data,
+        expected_outcome="timeout",
+        expected_exit=EXIT_WAIT_TIMEOUT,
+        expected_timeout=True,
+        expected_wanted="needs_reclaim",
+    )
+    assert cli_data["needs_reclaim"] is False
+
+
+def test_wait_outcome_tolerates_additive_fields() -> None:
+    """Consumers and readers of wait --json tolerate unknown additive fields (SPEC §13.1, §13.11)."""
+    payload_with_extras: dict[str, Any] = {
+        "outcome": "met",
+        "wanted": "done",
+        "observed_state": "done",
+        "state": "done",
+        "exit_code": 0,
+        "timeout": False,
+        "stage_id": "step-1",
+        "dir": "/tmp/.stage-signal",
+        "reason": None,
+        "needs_reclaim": False,
+        "status": {"state": "done"},
+        "future_duration_seconds": 1.23,
+        "future_trace_id": "trace-456",
+    }
+    _assert_wait_payload_contract(
+        payload_with_extras,
+        expected_outcome="met",
+        expected_exit=0,
+        expected_timeout=False,
+        expected_wanted="done",
+    )
+    assert payload_with_extras.get("future_duration_seconds") == 1.23
+    assert payload_with_extras.get("future_trace_id") == "trace-456"

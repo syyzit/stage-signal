@@ -175,6 +175,15 @@ WAIT_JSON_KEYS = (
     "status",
 )
 
+WAIT_OUTCOME_MET = "met"
+WAIT_OUTCOME_MISMATCH = "mismatch"
+WAIT_OUTCOME_TIMEOUT = "timeout"
+WAIT_OUTCOMES = (
+    WAIT_OUTCOME_MET,
+    WAIT_OUTCOME_MISMATCH,
+    WAIT_OUTCOME_TIMEOUT,
+)
+
 
 def state_exit_code(state: str) -> int:
     """Map a stage state to its observer exit code (SPEC §7)."""
