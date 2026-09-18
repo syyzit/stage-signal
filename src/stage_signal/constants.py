@@ -221,6 +221,24 @@ STATUS_MD_OPTIONAL_HEADINGS = (
 )
 STATUS_MD_HEADINGS = STATUS_MD_REQUIRED_HEADINGS + STATUS_MD_OPTIONAL_HEADINGS
 
+STAGE_PUBLIC_METHODS = (
+    "artifact",
+    "blocked",
+    "clear_terminal",
+    "diagnose",
+    "done",
+    "events",
+    "fail",
+    "heartbeat",
+    "init",
+    "note",
+    "reclaim",
+    "start",
+    "status",
+    "supervise",
+    "wait",
+)
+
 
 def state_exit_code(state: str) -> int:
     """Map a stage state to its observer exit code (SPEC §6, §7, §13.16)."""
