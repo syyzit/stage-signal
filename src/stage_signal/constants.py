@@ -272,6 +272,15 @@ FAIL_IF_NEEDS_RECLAIM_ALLOWED_SOURCES = (
 )
 
 FAIL_DETAIL_KEYS: tuple[str, ...] = ()
+
+# Frozen blocked terminal contract (SPEC §13.32)
+BLOCKED_ALLOWED_SOURCES = (
+    "queued",
+    "running",
+    "blocked",
+)
+
+BLOCKED_DETAIL_KEYS: tuple[str, ...] = ()
 # Frozen start/claim-running contract (SPEC §13.33)
 START_ALLOWED_SOURCES = (
     "queued",
@@ -507,6 +516,8 @@ PUBLIC_EXPORTS: tuple[str, ...] = (
     "ARTIFACT_ALLOWED_SOURCES",
     "ARTIFACT_DETAIL_KEYS",
     "ARTIFACT_ENTRY_KEYS",
+    "BLOCKED_ALLOWED_SOURCES",
+    "BLOCKED_DETAIL_KEYS",
     "BadArgsError",
     "CLEAR_TERMINAL_ALLOWED_SOURCES",
     "CLEAR_TERMINAL_ALWAYS_CLEARED_FIELDS",
