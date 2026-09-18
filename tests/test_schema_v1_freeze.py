@@ -7490,3 +7490,290 @@ def test_init_cli_behavior(
     out = capsys.readouterr().out
     assert out.startswith("initialized cli-proj -> queued - (attempt 1)")
 
+
+# ---------------------------------------------------------------------------
+# §13.35: Status read snapshot contract freeze
+# ---------------------------------------------------------------------------
+
+
+def test_status_snapshot_keys_exact_freeze() -> None:
+    """STATUS_JSON_KEYS is exactly the 23 required keys + 2 derived read fields (SPEC §13.35.1)."""
+    assert STATUS_JSON_KEYS == STATUS_REQUIRED_KEYS + (
+        "needs_reclaim",
+        "heartbeat_age_seconds",
+    )
+    assert isinstance(STATUS_JSON_KEYS, tuple)
+    assert len(STATUS_JSON_KEYS) == 25
+    assert len(set(STATUS_JSON_KEYS)) == 25
+    assert STATUS_JSON_KEYS[-2:] == ("needs_reclaim", "heartbeat_age_seconds")
+
+
+def test_status_read_pure_shared_lock_no_mutation(tmp_path: Path) -> None:
+    """Stage.status() is a non-mutating shared-lock read returning a detached snapshot (SPEC §13.35.2).
+
+    Synchronous test with zero sleeps/threads.
+    """
+    stage_dir = tmp_path / ".stage-signal"
+    stage = Stage(str(stage_dir))
+    stage.init(project="status-pure-read-freeze")
+    stage.start(stage="pure-step", pid=os.getpid())
+    status_file = stage_dir / STATUS_FILENAME
+
+    raw_before = status_file.read_text(encoding="utf-8")
+    events_before = len(stage.events())
+
+    first = stage.status()
+    second = stage.status()
+
+    # Derived keys live only on the snapshot, never on disk.
+    assert "needs_reclaim" not in json.loads(raw_before)
+    assert "heartbeat_age_seconds" not in json.loads(raw_before)
+    for key in STATUS_JSON_KEYS:
+        assert key in first, f"guaranteed key {key!r} missing from Stage.status()"
+
+    # Reads mutate nothing: identical file bytes, identical event count.
+    assert status_file.read_text(encoding="utf-8") == raw_before
+    assert len(stage.events()) == events_before
+
+    # Consecutive snapshots agree on every persisted field (age may tick between reads).
+    for key in STATUS_REQUIRED_KEYS:
+        assert second[key] == first[key]
+    assert second["needs_reclaim"] == first["needs_reclaim"]
+    assert isinstance(first["heartbeat_age_seconds"], float)
+
+    # The returned snapshot is detached: caller mutation never reaches disk.
+    first["state"] = "HACKED"
+    first["needs_reclaim"] = "HACKED"
+    assert status_file.read_text(encoding="utf-8") == raw_before
+    assert stage.status()["state"] == STATE_RUNNING
+
+
+def test_status_derived_fields_freeze(tmp_path: Path) -> None:
+    """needs_reclaim + heartbeat_age_seconds semantics across states (SPEC §13.35.3).
+
+    Synchronous test with zero sleeps/threads (staleness is crafted on disk, not waited out).
+    """
+    stage_dir = tmp_path / ".stage-signal"
+    stage = Stage(str(stage_dir))
+    stage.init(project="status-derived-freeze")
+
+    # queued: no reclaim, null age.
+    queued = stage.status()
+    assert queued["needs_reclaim"] is False
+    assert queued["heartbeat_age_seconds"] is None
+
+    # healthy running (live claimant, fresh heartbeat): no reclaim, float age >= 0.
+    stage.start(stage="derived-step", pid=os.getpid())
+    healthy = stage.status()
+    assert healthy["state"] == STATE_RUNNING
+    assert healthy["needs_reclaim"] is False
+    assert isinstance(healthy["heartbeat_age_seconds"], float)
+    assert healthy["heartbeat_age_seconds"] >= 0.0
+
+    # running with a confirmed-dead claimant: needs_reclaim True, age still a float.
+    dead_proc = subprocess.Popen([sys.executable, "-c", "pass"])
+    dead_proc.wait(timeout=5)
+    stage.start(stage="derived-dead", pid=dead_proc.pid)
+    dead = stage.status()
+    assert dead["needs_reclaim"] is True
+    assert isinstance(dead["heartbeat_age_seconds"], float)
+
+    # running with a stale heartbeat (crafted on disk): STALE -> needs_reclaim True, age > threshold.
+    status_file = stage_dir / STATUS_FILENAME
+    raw = json.loads(status_file.read_text(encoding="utf-8"))
+    raw["heartbeat_at"] = "2000-01-01T00:00:00+00:00"
+    raw["pid"] = os.getpid()
+    status_file.write_text(json.dumps(raw, indent=2) + "\n", encoding="utf-8")
+    stale = stage.status()
+    assert stale["state"] == STATE_RUNNING
+    assert stale["needs_reclaim"] is True
+    assert isinstance(stale["heartbeat_age_seconds"], float)
+    assert stale["heartbeat_age_seconds"] > DEFAULT_STALE_THRESHOLD
+
+    # running with an unparseable heartbeat: null age, UNPARSEABLE alone is not reclaim.
+    raw["heartbeat_at"] = "not-a-timestamp"
+    status_file.write_text(json.dumps(raw, indent=2) + "\n", encoding="utf-8")
+    garbled = stage.status()
+    assert garbled["heartbeat_age_seconds"] is None
+    assert garbled["needs_reclaim"] is False
+
+    # terminal states: null age even though heartbeat_at stays recorded; no reclaim.
+    stage.start(stage="derived-terminal", pid=os.getpid())
+    stage.done(summary="derived done")
+    done = stage.status()
+    assert done["heartbeat_at"] is not None
+    assert done["heartbeat_age_seconds"] is None
+    assert done["needs_reclaim"] is False
+
+    stage.start(stage="derived-blocked", pid=os.getpid())
+    stage.blocked(reason="derived blocked")
+    assert stage.status()["heartbeat_at"] is not None
+    assert stage.status()["heartbeat_age_seconds"] is None
+    assert stage.status()["needs_reclaim"] is False
+
+    stage.start(stage="derived-failed", pid=os.getpid())
+    stage.fail(reason="derived failed")
+    assert stage.status()["heartbeat_at"] is not None
+    assert stage.status()["heartbeat_age_seconds"] is None
+    assert stage.status()["needs_reclaim"] is False
+
+    # idle queued after clear-terminal: null age, no reclaim.
+    stage.clear_terminal()
+    idle = stage.status()
+    assert idle["state"] == STATE_QUEUED
+    assert idle["heartbeat_age_seconds"] is None
+    assert idle["needs_reclaim"] is False
+
+
+def test_status_cli_human_and_json_shapes_freeze(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Human one-liner + updated/heartbeat/result/error lines vs --json object (SPEC §13.35.5).
+
+    Synchronous test with zero sleeps/threads.
+    """
+    stage_dir = tmp_path / ".stage-signal"
+    stage = Stage(str(stage_dir))
+    stage.init(project="status-shapes-freeze")
+
+    def human() -> tuple[int, str]:
+        capsys.readouterr()
+        rc = main(["--dir", str(stage_dir), "status"])
+        return rc, capsys.readouterr().out
+
+    def as_json() -> tuple[int, dict[str, Any]]:
+        capsys.readouterr()
+        rc = main(["--dir", str(stage_dir), "status", "--json"])
+        return rc, json.loads(capsys.readouterr().out)
+
+    # queued: '-' stage slot, bare null heartbeat, no age suffix, no result/error.
+    rc, out = human()
+    assert rc == EXIT_QUEUED == state_exit_code("queued")
+    lines = out.splitlines()
+    assert lines[0] == "queued - (attempt 1)"
+    assert lines[1].startswith("updated: ")
+    assert "heartbeat: None" in lines[1]
+    assert "(age " not in out
+    assert "result:" not in out
+    assert "error:" not in out
+    rc, payload = as_json()
+    assert rc == EXIT_QUEUED
+    for key in STATUS_JSON_KEYS:
+        assert key in payload, f"guaranteed key {key!r} missing from status --json [queued]"
+    assert payload["state"] == "queued"
+
+    # running: named slot, heartbeat with (age Ns) suffix, no result/error.
+    stage.start(stage="shaped-step", pid=os.getpid())
+    rc, out = human()
+    assert rc == EXIT_RUNNING == state_exit_code("running")
+    lines = out.splitlines()
+    assert lines[0] == "running shaped-step (attempt 1)"
+    assert "(age " in lines[1] and lines[1].rstrip().endswith(")")
+    assert "result:" not in out
+    assert "error:" not in out
+    rc, payload = as_json()
+    assert rc == EXIT_RUNNING
+    for key in STATUS_JSON_KEYS:
+        assert key in payload, f"guaranteed key {key!r} missing from status --json [running]"
+    assert isinstance(payload["heartbeat_age_seconds"], float)
+    assert payload["needs_reclaim"] is False
+
+    # done: result line, bare heartbeat (no age suffix despite recorded timestamp).
+    stage.done(summary="shaped done")
+    rc, out = human()
+    assert rc == EXIT_OK == state_exit_code("done")
+    assert out.splitlines()[0] == "done shaped-step (attempt 1)"
+    assert "(age " not in out
+    assert '"summary": "shaped done"' in out
+    assert "error:" not in out
+    rc, payload = as_json()
+    assert rc == EXIT_OK
+    assert payload["heartbeat_age_seconds"] is None
+
+    # blocked: error line with kind blocked.
+    stage.start(stage="shaped-blocked", pid=os.getpid())
+    stage.blocked(reason="shaped wait")
+    rc, out = human()
+    assert rc == EXIT_BLOCKED == state_exit_code("blocked")
+    assert out.splitlines()[0].startswith("blocked shaped-blocked (attempt 1)")
+    assert '"reason": "shaped wait"' in out
+    assert '"kind": "blocked"' in out
+    assert "result:" not in out
+
+    # failed: error line with kind failed.
+    stage.start(stage="shaped-failed", pid=os.getpid())
+    stage.fail(reason="shaped crash")
+    rc, out = human()
+    assert rc == EXIT_FAILED == state_exit_code("failed")
+    assert out.splitlines()[0].startswith("failed shaped-failed (attempt 1)")
+    assert '"kind": "failed"' in out
+
+
+def test_status_uninitialized_and_corrupt_freeze(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Status reads raise NotInitialized (exit 15) / CorruptStatusError (exit 1) (SPEC §13.35.4).
+
+    Synchronous test with zero sleeps/threads.
+    """
+    missing_dir = tmp_path / "nonexistent" / ".stage-signal"
+    missing_stage = Stage(str(missing_dir))
+    with pytest.raises(NotInitialized) as exc_info:
+        missing_stage.status()
+    assert exc_info.value.exit_code == EXIT_NOT_INITIALIZED == 15
+
+    for argv in (["status"], ["status", "--json"]):
+        capsys.readouterr()
+        rc = main(["--dir", str(missing_dir)] + argv)
+        assert rc == EXIT_NOT_INITIALIZED == 15
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert "stage-signal: error:" in captured.err
+        assert "not initialized" in captured.err
+
+    # Corrupt STATUS.json surfaces CorruptStatusError (exit 1) on both shapes.
+    stage_dir = tmp_path / ".stage-signal"
+    Stage(str(stage_dir)).init(project="status-corrupt-freeze")
+    (stage_dir / STATUS_FILENAME).write_text("{not valid json", encoding="utf-8")
+    with pytest.raises(CorruptStatusError) as exc_info:
+        Stage(str(stage_dir)).status()
+    assert exc_info.value.exit_code == EXIT_ERROR == 1
+    for argv in (["status"], ["status", "--json"]):
+        capsys.readouterr()
+        assert main(["--dir", str(stage_dir)] + argv) == EXIT_ERROR
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert "stage-signal: error:" in captured.err
+
+
+def test_status_read_cross_links_freeze() -> None:
+    """Status read reuses frozen exit, method-surface, and export symbols (SPEC §13.35.6)."""
+    import stage_signal
+
+    for state, code in (
+        ("queued", EXIT_QUEUED),
+        ("running", EXIT_RUNNING),
+        ("done", EXIT_OK),
+        ("blocked", EXIT_BLOCKED),
+        ("failed", EXIT_FAILED),
+    ):
+        assert state_exit_code(state) == code
+        assert STATE_EXIT_CODES[state] == code
+
+    assert "status" in STAGE_PUBLIC_METHODS
+    assert callable(Stage.status)
+
+    for name in (
+        "STATUS_JSON_KEYS",
+        "STATE_EXIT_CODES",
+        "state_exit_code",
+        "NotInitialized",
+        "DEFAULT_STALE_THRESHOLD",
+    ):
+        assert hasattr(stage_signal, name), f"stage_signal missing {name!r}"
+        assert name in stage_signal.__all__, f"{name!r} not in stage_signal.__all__"
+        assert name in PUBLIC_EXPORTS, f"{name!r} not in PUBLIC_EXPORTS"
+
+    # §13.35 adds no export: the inventory stays at the 134 frozen symbols.
+    assert len(PUBLIC_EXPORTS) == 134
+

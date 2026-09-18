@@ -2986,3 +2986,94 @@ Under `schema_version: 1`, the init bootstrap contract is strictly **additive-on
 - The initial `queued` state, `attempt: 1`, and `detail: {}` on the `init` event MUST NOT change.
 - Readers MUST tolerate unknown future `init` detail keys and unknown future STATUS fields without failing.
 
+### 13.35 Status read snapshot contract freeze (no new constants)
+
+`Stage.status` / `stage-signal status [--json]` (§6, §11, §13.20) is the pure status observer: it returns the current `STATUS.json` snapshot (§3) enriched with two derived observability fields, without mutating anything. Under `schema_version: 1`, the shared-lock non-mutating read, the exact derived-field semantics (`needs_reclaim`, `heartbeat_age_seconds`), the `NotInitialized` (exit 15) / corrupt (exit 1) preconditions, and the human vs `--json` CLI shapes with state-reflecting exit codes are frozen so orchestrators can poll `status` in shell `if` directly or branch on the JSON payload without scraping human text. This section introduces **no new constants**: the snapshot key set is already frozen as `STATUS_JSON_KEYS` (§13.3.1), the exit mapping as `STATE_EXIT_CODES` / `state_exit_code` (§13.16), the failure taxonomy as `NotInitialized` / `CorruptStatusError` (§13.17), and the staleness default as `DEFAULT_STALE_THRESHOLD` (§13.14). No audit event is emitted by a status read: there is no `status` event type in `EVENT_TYPES` (§13.5) and `STATUS.md` is never rewritten by `status`.
+
+#### 13.35.1 Frozen constants and exact values (existing symbols only)
+
+The single sources of truth are the already-frozen, already-exported symbols (defined in `stage_signal.constants`, exported from `stage_signal` and `__all__`, inventoried in `PUBLIC_EXPORTS`; §13.21):
+
+```python
+STATUS_JSON_KEYS = STATUS_REQUIRED_KEYS + (
+    "needs_reclaim",
+    "heartbeat_age_seconds",
+)
+```
+
+- `STATUS_JSON_KEYS`: exactly the 23 `STATUS_REQUIRED_KEYS` (§13.2) in order, followed by exactly `("needs_reclaim", "heartbeat_age_seconds")` — 25 guaranteed keys total. Every `Stage.status()` return value and every `status --json` payload contains all of them (§13.35.3); the two trailing keys are derived on read and are never persisted to `STATUS.json` on disk (§3, §13.35.2). The on-disk optional `pid_token` (§3) passes through on the snapshot when present, so the snapshot is a superset of `STATUS_JSON_KEYS`, never a subset.
+- `STATE_EXIT_CODES` / `state_exit_code(state)` (§13.16): the CLI exit is always `state_exit_code(snapshot["state"])` — `queued` → 13, `running` → 10, `done` → 0, `blocked` → 11, `failed` → 12. No status-specific exit constant exists.
+- `NotInitialized` (`exit_code == EXIT_NOT_INITIALIZED == 15`) and `CorruptStatusError` (`exit_code == EXIT_ERROR == 1`) (§13.17): the only two read preconditions (§13.35.4). No status-specific exception exists.
+- `DEFAULT_STALE_THRESHOLD` (`300.0`) (§13.14): the staleness threshold consumed by the derived `needs_reclaim` computation with its default; `status` exposes no `--stale-after` override (unlike `doctor`).
+- `PUBLIC_EXPORTS` stays at 134 symbols: this section adds no entry (§13.21).
+
+#### 13.35.2 Shared-lock pure read with no mutation
+
+From the exact implementation in `Stage.status` (`src/stage_signal/stage.py`):
+
+```python
+def status(self) -> dict[str, Any]:
+    """Read current STATUS (shared lock)."""
+    with self._store.locked(exclusive=False):
+        status = copy.deepcopy(self._store.read_status())
+        _, status["needs_reclaim"] = _reclaim_diagnostics(status)
+        return _attach_heartbeat_age(status)
+```
+
+- **Shared lock:** the read holds `store.locked(exclusive=False)` — POSIX shared `LOCK_SH` on `locks/stage.lock` (Windows falls back to exclusive byte locking; §8). It never takes the exclusive mutation lock and never blocks writers beyond the shared-lock hold.
+- **Deep copy:** the returned snapshot is a `copy.deepcopy` of the on-disk STATUS, so caller-side mutation of the returned dict never touches `STATUS.json`. A second `status()` call re-reads from disk.
+- **No mutation of any kind:** a status read performs no `write_status`, appends no event to `events.jsonl` (the event count is unchanged across reads), rewrites neither `STATUS.md` nor the `.orch/` mirror (§10, §13.18), and never bumps `updated_at`. The torn-read single retry inside `store.read_status` (§2, §8) is inherited unchanged.
+- **Derived keys are read-only:** `STATUS.json` on disk contains the 23 `STATUS_REQUIRED_KEYS` (§13.2) plus the optional `pid_token` (§3) — never `needs_reclaim` or `heartbeat_age_seconds`. Writers MUST NOT persist the derived keys; readers MUST NOT expect them on disk and MUST tolerate unknown additional on-disk keys per §13.1.
+
+#### 13.35.3 Derived fields: `needs_reclaim` and `heartbeat_age_seconds`
+
+Both derived fields are computed on read under the shared lock and are owned here only as read enrichments (detection rules themselves are cross-linked, not redefined):
+
+- **`needs_reclaim` (bool, always present):** `bool` from `_reclaim_diagnostics(status)` evaluated with the default `stale_after=DEFAULT_STALE_THRESHOLD` (`300.0`; §13.14). It is `true` exactly when `state == "running"` and a `DEAD_PID` or `STALE_HEARTBEAT` warning applies (§13.8) — the same detection as `doctor --json` / `Stage.diagnose()` with defaults and the same boolean nested on `wait --json` (§6, §13.3.2, §13.3.3). It is `false` otherwise, including healthy `running`, all non-running states, and `running` with only an `UNPARSEABLE_HEARTBEAT` warning. `status` warnings remain advisory only: `needs_reclaim` never changes stage state and never changes the state-reflecting exit code (§13.35.5); orchestrators that need to block until reclaim is actionable use `wait --needs-reclaim` (§6).
+- **`heartbeat_age_seconds` (float | null, always present):** from `_attach_heartbeat_age(status)`: `null` unless `state == "running"` — including `done`, `blocked`, `failed`, and `queued` even when `heartbeat_at` remains recorded. While `running`, it is `max(0.0, (now - heartbeat_at).total_seconds())` (float `>= 0`; a timezone-naive `heartbeat_at` is assumed UTC) when `heartbeat_at` parses as ISO-8601, else `null` when `heartbeat_at` is missing or unparseable (§3, §6, §13.27.5). The human `(age Ns)` suffix renders from this same value (§13.35.5).
+
+#### 13.35.4 Precondition failures: not initialized vs corrupt
+
+| Precondition failure | Library | CLI exit (human and `--json` alike) |
+|----------------------|---------|--------------------------------------|
+| Stage not initialized (missing dir/STATUS) | `NotInitialized` | 15 (`EXIT_NOT_INITIALIZED`; §7, §13.4, §13.17) |
+| Corrupt `STATUS.json` (unreadable, bad JSON, missing required keys, unknown state; §13.2) | `CorruptStatusError` | 1 (`EXIT_ERROR`; §7, §13.4, §13.17) |
+
+- On `NotInitialized`, the CLI prints `stage-signal: error: not initialized: <STATUS path> missing (...)` on `stderr` and prints nothing on `stdout` — in both human and `--json` modes. The exit is 15 either way; there is no JSON payload on this path.
+- On corrupt STATUS, the CLI exits 1 with the validation message on `stderr` and no `stdout` payload, mirroring every other reader (§13.17).
+- Guards are evaluated inside the shared-lock read via `store.read_status()`; a read failure mutates nothing (reads never mutate, §13.35.2).
+
+#### 13.35.5 CLI shapes: human text vs `--json` object
+
+From the exact implementation in `cmd_status` (`src/stage_signal/cli.py`): the snapshot is fetched once via `Stage.status()`, rendered, and the process exits with `state_exit_code(str(snapshot["state"]))` (§13.16).
+
+- **Human (default, no `--json`):**
+  - Line 1 is the one-liner `_one_line(status)`: `{state} {stage_name or "-"} (attempt {attempt})` — e.g. `running mystage (attempt 1)`, or `queued - (attempt 1)` before the first `start` / after an idle reset.
+  - Line 2 is `updated: {updated_at}  heartbeat: {display}`, where `display` is `{heartbeat_at} (age {N}s)` with `N = max(0, int(round(heartbeat_age_seconds)))` only when `state == "running"` with a recorded `heartbeat_at` and a non-null age; otherwise the bare `{heartbeat_at}` (rendered as `None` when null) with no age suffix (§3, §13.27.5).
+  - A `result: {compact JSON}` line follows if and only if `result` is truthy (i.e. `done`); an `error: {compact JSON}` line follows if and only if `error` is truthy (i.e. `blocked`/`failed`). Both use single-line `json.dumps` of the `RESULT_KEYS` / `ERROR_KEYS` objects (§13.9).
+- **`--json`:** prints exactly one JSON object (`json.dumps(snapshot, indent=2)`) whose top-level keys include all of `STATUS_JSON_KEYS` (§13.3.1, §13.35.1), including the derived `needs_reclaim` and `heartbeat_age_seconds`. No human text is printed in this mode.
+- **Exit code:** always the observer mapping for the observed state (`queued` → 13, `running` → 10, `done` → 0, `blocked` → 11, `failed` → 12; §7, §13.16) — identical for human and `--json` modes. This contrasts with mutation commands, which exit 0 on success regardless of target state (§7).
+
+#### 13.35.6 Cross-links
+
+- **§3 (STATUS.json schema):** the on-disk fields, the `pid_token` optionality note, and the derived `heartbeat_age_seconds` read-only rule restated here.
+- **§6 (CLI contract):** `stage-signal status [--json]` usage line, the heartbeat-age display, the `needs_reclaim` shared semantics with `doctor`/`wait --needs-reclaim`, and the observe-in-`if` exit contract.
+- **§13.2 (STATUS required keys freeze):** the 23-key on-disk prefix of the 25-key snapshot.
+- **§13.8 (doctor warnings freeze):** `DEAD_PID` / `STALE_HEARTBEAT` detection consumed (not redefined) by derived `needs_reclaim`.
+- **§13.12 (states freeze):** the five observed states vs the running-only age rule and the exit-code partition.
+- **§13.14 (environment and timing defaults freeze):** `DEFAULT_STALE_THRESHOLD` (`300.0`) consumed at its default; no status flag overrides it.
+- **§13.16 (state-to-exit-code mapping freeze):** `STATE_EXIT_CODES` / `state_exit_code` reused for every status exit.
+- **§13.17 (exception hierarchy freeze):** `NotInitialized` (exit 15) / `CorruptStatusError` (exit 1) as the only read failures.
+- **§13.20 (Stage method surface freeze):** `status() -> dict[str, Any]` signature and CLI equivalence.
+- **§13.21 (Top-level public export inventory):** no addition — `STATUS_JSON_KEYS`, `STATE_EXIT_CODES`, `state_exit_code`, `NotInitialized`, `DEFAULT_STALE_THRESHOLD` are already inventoried; `PUBLIC_EXPORTS` stays at 134 symbols.
+- **§13.27 (heartbeat freeze):** the `heartbeat_at` clock this section observes (age exclusively while running).
+
+#### 13.35.7 Additive-only evolution policy
+
+Under `schema_version: 1`, the status read snapshot contract is strictly **additive-only** (§13.1):
+
+- The shared-lock non-mutating read, the guaranteed `STATUS_JSON_KEYS` snapshot shape (superset when the optional `pid_token` passes through), the running-only age rule, the default-threshold `needs_reclaim` semantics, the exit-15-when-uninitialized / exit-1-when-corrupt preconditions, the human one-line / `updated`+`heartbeat` / conditional `result`+`error` rendering, and the state-reflecting exit codes MUST NOT be removed, renamed, reworded, or change semantic meaning.
+- No new event type is introduced for status reads: observing status stays event-free (§13.5).
+- New derived snapshot keys MAY be added in minor or patch releases only as additional trailing entries of `STATUS_JSON_KEYS` (with `PUBLIC_EXPORTS` growing additively); existing frozen keys and values MUST keep their exact values and order.
+- Readers MUST tolerate unknown future snapshot keys without failing.
+
