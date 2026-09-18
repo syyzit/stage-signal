@@ -220,6 +220,16 @@ HEARTBEAT_ALLOWED_SOURCES = (
 
 HEARTBEAT_DETAIL_KEYS: tuple[str, ...] = ()
 
+# Frozen artifact add contract (SPEC §13.29)
+ARTIFACT_ALLOWED_SOURCES = (
+    "running",
+)
+
+ARTIFACT_DETAIL_KEYS = (
+    "path",
+    "label",
+)
+
 # Frozen schema_version 1 key sets (SPEC §13)
 STATUS_REQUIRED_KEYS = (
     "schema_version",
@@ -435,6 +445,8 @@ def allowed_source_states(command: str) -> tuple[str, ...]:
 # Canonical public export inventory under schema_version 1 (SPEC §13.21)
 PUBLIC_EXPORTS: tuple[str, ...] = (
     "ALLOWED_TRANSITIONS",
+    "ARTIFACT_ALLOWED_SOURCES",
+    "ARTIFACT_DETAIL_KEYS",
     "ARTIFACT_ENTRY_KEYS",
     "BadArgsError",
     "CLEAR_TERMINAL_ALLOWED_SOURCES",
