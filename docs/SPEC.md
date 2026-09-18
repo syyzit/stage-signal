@@ -3240,3 +3240,115 @@ Under `schema_version: 1`, the events read and tail contract is strictly **addit
 - New event fields MAY be added in future minor or patch releases; readers MUST tolerate unknown keys. Existing keys and their semantic types MUST remain intact.
 
 
+### 13.37 Doctor / diagnose read contract freeze (no new constants)
+
+`Stage.diagnose` / `stage-signal doctor [--stale-after SEC] [--json] [--format human|json] [--exit-reclaim]` (§6, §11, §13.20) is the pure health observer: it inspects the stage dir, validates `STATUS.json` and `events.jsonl`, probes the claiming-PID liveness and heartbeat staleness, and reports the frozen 7-key diagnosis object without mutating stage state. Under `schema_version: 1`, the `DOCTOR_JSON_KEYS` shape (§13.3.2), the `WARNING_*` warning objects and codes (§13.8), the summary strings (§13.22), the `needs_reclaim` agreement with `status`/`wait`, the exit behavior, and the shared-lock pure read are frozen so orchestrators can branch on `needs_reclaim` or `doctor --exit-reclaim` in shell `if` directly without scraping human text. This section introduces **no new constants**: the diagnosis key set is already frozen as `DOCTOR_JSON_KEYS` (§13.3.2), warnings as `WARNING_KEYS` / `WARNING_CODES` (§13.8), summaries as `DOCTOR_SUMMARY_RECLAIM_NEEDED` / `DOCTOR_SUMMARY_OK_FORMAT` / `doctor_summary_ok` (§13.22), and the staleness default as `DEFAULT_STALE_THRESHOLD` (§13.14). No audit event is emitted by a doctor read: there is no `doctor`/`diagnose` event type in `EVENT_TYPES` (§13.5) and neither `STATUS.json`, `STATUS.md`, nor the `.orch/` mirror (§10, §13.18) is ever rewritten by `diagnose`. The events read contract is frozen in §13.36 (issue #166); this section is §13.37.
+
+#### 13.37.1 Frozen constants and exact values (existing symbols only)
+
+The single sources of truth are the already-frozen, already-exported symbols (defined in `stage_signal.constants`, exported from `stage_signal` and `__all__`, inventoried in `PUBLIC_EXPORTS`; §13.21):
+
+```python
+DOCTOR_JSON_KEYS = (
+    "ok",
+    "needs_reclaim",
+    "state",
+    "problems",
+    "warnings",
+    "status",
+    "summary",
+)
+```
+
+- `DOCTOR_JSON_KEYS`: exactly these 7 keys in order (§13.3.2). Every `Stage.diagnose()` return value and every `doctor --json` / `doctor --format json` payload contains all of them — across healthy, warnings-only, problems, and uninitialized conditions (§13.37.4). No diagnosis-specific key beyond these 7 exists.
+- `WARNING_KEYS` (aliased as `WARNING_REQUIRED_KEYS` / `DOCTOR_WARNING_KEYS`) exactly `("code", "message", "detail")`, and `WARNING_CODES` exactly `("STALE_HEARTBEAT", "DEAD_PID", "UNPARSEABLE_HEARTBEAT")` with individual `WARNING_CODE_STALE_HEARTBEAT` / `WARNING_CODE_DEAD_PID` / `WARNING_CODE_UNPARSEABLE_HEARTBEAT` aliases (§13.8): every entry of the `warnings` list carries all three keys with `code` in `WARNING_CODES` and `detail` an object. Detection rules themselves are owned by §13.8 and consumed here, not redefined.
+- `DOCTOR_SUMMARY_RECLAIM_NEEDED` (`"ATTENTION: running needs reclaim"`), `DOCTOR_SUMMARY_OK_FORMAT` (`"OK: {state}"`), and the `doctor_summary_ok(state)` helper (§13.22): the `summary` string values and the null-vs-string rule (§13.37.4) are owned by §13.22 and consumed here, not redefined.
+- `DEFAULT_STALE_THRESHOLD` (`300.0`) (§13.14): the default `stale_after` consumed by the `needs_reclaim` / `STALE_HEARTBEAT` computation; `diagnose(stale_after=None)` disables heartbeat checks and the CLI `--stale-after SEC` overrides the default per invocation (§13.37.3).
+- `PUBLIC_EXPORTS` stays at 134 symbols: this section adds no entry (§13.21).
+
+#### 13.37.2 Shared-lock pure read with no mutation
+
+From the exact implementation in `Stage.diagnose` (`src/stage_signal/stage.py`):
+
+```python
+def diagnose(self, *, stale_after=DEFAULT_STALE_THRESHOLD):
+    """Pure observer (SPEC §13.37): holds a shared lock for STATUS/events
+    reads, mutates no stage state, appends no events, and rewrites
+    neither STATUS.md nor the .orch mirror."""
+    ...
+    if not store.dir.is_dir():
+        ...  # missing-dir early return: no lock, no layout creation
+        return {"ok": False, "needs_reclaim": False, "state": None,
+                "problems": problems, "warnings": [], "status": None,
+                "summary": None}
+    with store.locked(exclusive=False):
+        ...  # read STATUS.json, read events.jsonl, probe lock writability
+        ...
+    warnings, needs_reclaim = _reclaim_diagnostics(status, stale_after=stale_after)
+    ...
+    return {"ok": ..., "needs_reclaim": ..., "state": ...,
+            "problems": ..., "warnings": ...,
+            "status": _attach_heartbeat_age(copy.deepcopy(status))
+                      if status is not None else None,
+            "summary": ...}
+```
+
+- **Shared lock:** after the missing-dir early return, all `STATUS.json` / `events.jsonl` reads and the lock-writability probe hold `store.locked(exclusive=False)` — POSIX shared `LOCK_SH` on `locks/stage.lock` (Windows falls back to exclusive byte locking; §8). The observer never takes the exclusive mutation lock and never blocks writers beyond the shared-lock hold. The missing-dir path takes no lock and creates no layout, so probing a absent dir stays side-effect free.
+- **Detached snapshot:** the nested `status` in the diagnosis is `_attach_heartbeat_age(copy.deepcopy(status))` — a deep copy enriched with the running-only `heartbeat_age_seconds` read field (same helper as `status`; §13.35.3). Caller-side mutation of the returned diagnosis or its nested `status` never reaches `STATUS.json`; a second `diagnose()` call re-reads from disk.
+- **No mutation of any kind:** a doctor read performs no `write_status`, appends no event to `events.jsonl` (the event count is unchanged across reads), rewrites neither `STATUS.md` nor the `.orch/` mirror (§10, §13.18), and never bumps `updated_at` or changes `state`. The `ensure_layout()` + `open(lock_path, "a")` writability probe inside the shared lock is idempotent setup (same as the `ensure_layout()` inherited by every `locked()` observer; §13.35.2), never stage mutation. The torn-read single retry inside `store.read_status` (§2, §8) is inherited unchanged. The `_reclaim_diagnostics` liveness probe (`os.kill(pid, 0)` / Windows API; §13.8) and wall-clock age computation run lock-free on the already-read snapshot.
+- **Event-free observer:** there is no `doctor`/`diagnose` entry in `EVENT_TYPES` (§13.5); observing health stays event-free exactly like `status` (§13.35.2).
+
+#### 13.37.3 Derived `needs_reclaim`: agreement with `status` / `wait`
+
+`needs_reclaim` (bool, always present) is computed by the same `_reclaim_diagnostics(status, stale_after=stale_after)` helper consumed by `status` (at its default) and `wait --needs-reclaim` (§6, §13.3.1, §13.3.2, §13.3.3, §13.8, §13.35.3) — the rules are cross-linked, not redefined:
+
+- It is `true` exactly when `state == "running"` and a `DEAD_PID` or `STALE_HEARTBEAT` warning applies (§13.8). It is `false` otherwise, including healthy `running`, all non-running states, `running` with only an `UNPARSEABLE_HEARTBEAT` warning, and missing/unreadable STATUS with no reclaim warnings.
+- It is independent of `ok` (which means "no problems"; §13.37.4) and may stay `true` while `problems` is non-empty and `summary` is `null` (e.g. corrupt `events.jsonl` coexisting with a dead claimant). Orchestrators MUST branch on this boolean, never on string-matching `summary` or scraping `WARNING:` text (§13.22).
+- With defaults (`stale_after=DEFAULT_STALE_THRESHOLD`, CLI without `--stale-after`), the boolean agrees exactly with `status --json` `needs_reclaim` and with the `wait --needs-reclaim` met-condition on the same snapshot (§6, §13.35.3). `stale_after=None` disables heartbeat checks (only a `DEAD_PID` can set reclaim); an explicit float overrides the threshold for that call only (`doctor --stale-after SEC`, including `--stale-after 3600` silencing a 600s-old heartbeat). Doctor warnings remain advisory only: `needs_reclaim` never changes stage state by itself; orchestrators that need to block until reclaim is actionable use `wait --needs-reclaim` (§6).
+
+#### 13.37.4 Problems, warnings, and summary
+
+- **`problems` (list[str], always present):** health blockers — `missing dir: <dir>`, `missing STATUS: <path>`, corrupt `STATUS.json` / `events.jsonl` validation messages (same `CorruptStatusError` text readers see; §13.17), and `lock file not writable: ...`. `ok` is `not problems`. When `problems` is non-empty the CLI exits 1 (or 10 under `--exit-reclaim` when `needs_reclaim` is also true; §13.37.5) and `summary` is `null` per §13.22.2 — regardless of `needs_reclaim`, which remains independently computed.
+- **`warnings` (list[object], always present):** advisory entries each carrying all of `WARNING_KEYS` with `code` in `WARNING_CODES` and `detail` an object (§13.8, §13.37.1). Warnings alone never flip `ok` to `false` and never change the default exit 0; the process-liveness (`DEAD_PID`) message names the narrow recovery gate `fail --reason TEXT --if-dead-pid`, while the pair (`DEAD_PID` or `STALE_HEARTBEAT`) names the `needs_reclaim` condition consumed by `reclaim` / `fail --if-needs-reclaim` / `wait --needs-reclaim` (§6).
+- **`state` (str | null):** `status["state"]` when STATUS parsed, else `null` (missing dir, missing/corrupt STATUS). **`status` (object | null):** the detached snapshot with running-only `heartbeat_age_seconds` when STATUS parsed, else `null` (§13.37.2). **`summary` (str | null):** exactly the §13.22 rule — `null` when `problems` is non-empty; else `DOCTOR_SUMMARY_RECLAIM_NEEDED` when `needs_reclaim` is true; else `doctor_summary_ok(state)` (`"OK: {state}"`, including `"OK: queued"` for an initialized-but-never-started dir and `"OK: {state}"` for terminal states).
+
+#### 13.37.5 CLI shapes: human text vs `--json` object, flags, and exits
+
+From the exact implementation in `cmd_doctor` (`src/stage_signal/cli.py`): the diagnosis is fetched once via `Stage.diagnose(stale_after=args.stale_after)`, rendered, and the process exits per the table below.
+
+- **Human (default, no `--json` / `--format json`):** one `PROBLEM: <text>` line per `problems` entry, one `WARNING: <message>` line per `warnings` entry (message only, not the structured detail), then the `summary` string line when it is a string (no `summary` line when `summary` is `null`). No JSON is printed in this mode.
+- **`--json` (or `--format json`):** prints exactly one JSON object (`json.dumps(diagnosis, indent=2)`) whose top-level keys are exactly `DOCTOR_JSON_KEYS` (§13.3.2, §13.37.1), including the nested `status` snapshot and the `summary` string-or-null. `--format json` output is byte-identical to `--json`; `--format human` matches the default. No human text is printed in JSON mode.
+- **Flags:** `--stale-after SEC` overrides the staleness threshold for that invocation (float; bad values exit 2 via argparse). `--exit-reclaim` preserves all output while mapping `needs_reclaim is true` to exit 10 (`EXIT_RUNNING`; §7, §13.4); without the flag, reclaim warnings stay exit 0.
+- **Exits (human and `--json` alike):**
+
+| Condition | Exit |
+|-----------|------|
+| Bad CLI args (`--stale-after` unparseable, unknown `--format`) | 2 (`EXIT_BAD_ARGS`; §7, §13.4, §13.17) |
+| `--exit-reclaim` set and `needs_reclaim` is true (even when `problems` coexist) | 10 (`EXIT_RUNNING`; §7, §13.4) |
+| `problems` non-empty (missing dir/STATUS, corrupt STATUS/events, unwritable lock) without the row above | 1 (`EXIT_ERROR`; §7, §13.4) |
+| Otherwise — healthy or warnings-only (including `needs_reclaim` without the flag) | 0 (`EXIT_OK`; §7, §13.4) |
+
+- Unlike `status`, doctor never exits with the state-reflecting observer codes 11/12/13 as a state signal and never exits 3/14/15: uninitialized is problems (exit 1, not 15), corrupt is problems (exit 1), and timeouts do not apply (poll with `wait --needs-reclaim` instead of a `doctor` sleep loop; §6). This contrasts with mutation commands, which exit 0 on success regardless of target state (§7).
+
+#### 13.37.6 Cross-links
+
+- **§6 (CLI contract):** `stage-signal doctor [--stale-after SEC] [--json] [--format human|json] [--exit-reclaim]` usage line, the `PROBLEM:` / `WARNING:` / summary human rendering, the `--json` object shape, the `--exit-reclaim` → 10 mapping, and the `wait --needs-reclaim` → `reclaim` loop (never a `doctor` sleep loop).
+- **§13.3 (JSON contract keys):** the 7-key `DOCTOR_JSON_KEYS` shape (§13.3.2) frozen here; `STATUS_JSON_KEYS` (§13.3.1) for the nested `status` snapshot; `WAIT_JSON_KEYS` (§13.3.3) for the agreed `needs_reclaim` boolean.
+- **§13.8 (doctor warnings freeze):** `WARNING_KEYS` / `WARNING_CODES` / `WARNING_CODE_*` shapes and the `DEAD_PID` / `STALE_HEARTBEAT` vs `UNPARSEABLE_HEARTBEAT` reclaim partition consumed (not redefined) by `needs_reclaim`.
+- **§13.22 (doctor summary strings freeze):** `DOCTOR_SUMMARY_RECLAIM_NEEDED` / `DOCTOR_SUMMARY_OK_FORMAT` / `doctor_summary_ok` values and the null-vs-string rule consumed (not redefined) for `summary`.
+- **§13.35 (status read snapshot freeze):** the companion pure observer — shared-lock non-mutating read, detached snapshot, default-threshold `needs_reclaim` agreement, and running-only `heartbeat_age_seconds` on the nested `status`.
+- **§13.12 (states freeze):** the five observed `state` values vs the running-only reclaim rule.
+- **§13.14 (environment and timing defaults freeze):** `DEFAULT_STALE_THRESHOLD` (`300.0`) consumed at its default; overridden per-call only by `stale_after` / `--stale-after`.
+- **§13.20 (Stage method surface freeze):** `diagnose(*, stale_after=DEFAULT_STALE_THRESHOLD) -> dict[str, Any]` signature and CLI equivalence.
+- **§13.21 (Top-level public export inventory):** no addition — `DOCTOR_JSON_KEYS`, `WARNING_KEYS`, `WARNING_CODES`, `WARNING_CODE_*`, `DOCTOR_SUMMARY_RECLAIM_NEEDED`, `DOCTOR_SUMMARY_OK_FORMAT`, `doctor_summary_ok`, and `DEFAULT_STALE_THRESHOLD` are already inventoried; `PUBLIC_EXPORTS` stays at 134 symbols.
+
+#### 13.37.7 Additive-only evolution policy
+
+Under `schema_version: 1`, the doctor / diagnose read contract is strictly **additive-only** (§13.1):
+
+- The shared-lock non-mutating read, the guaranteed 7-key `DOCTOR_JSON_KEYS` shape, the `WARNING_KEYS` / `WARNING_CODES` warning shape, the §13.22 summary strings and null-vs-string rule, the `DEAD_PID`-or-`STALE_HEARTBEAT`-while-`running` reclaim agreement with `status`/`wait`, the human `PROBLEM:` / `WARNING:` / summary rendering vs single-JSON-object output, and the 0/1/2/10 exit table MUST NOT be removed, renamed, reworded, or change semantic meaning.
+- No new event type is introduced for doctor reads: observing health stays event-free (§13.5).
+- New diagnosis keys MAY be added in minor or patch releases only as additional trailing entries of `DOCTOR_JSON_KEYS` (with `PUBLIC_EXPORTS` growing additively); existing frozen keys and values MUST keep their exact values and order.
+- Readers MUST tolerate unknown future diagnosis keys, unknown future warning codes, and unknown future summary strings without failing; orchestrators MUST keep branching on `needs_reclaim`, not on `summary` text.
+
+
