@@ -70,7 +70,12 @@ from stage_signal import (
     WARNING_CODES,
     WARNING_KEYS,
     WARNING_REQUIRED_KEYS,
+    BadArgsError,
     CorruptStatusError,
+    IllegalTransition,
+    NotInitialized,
+    StageError,
+    WaitTimeout,
     Stage,
     resolve_dir,
     state_exit_code,
@@ -2221,4 +2226,317 @@ def test_mutation_commands_exit_zero_distinct_from_status_observer(
     assert main(["--dir", str(stage_dir), "start", "--stage", "s3", "--pid", str(pid)]) == EXIT_OK
     assert main(["--dir", str(stage_dir), "fail", "--reason", "bad state"]) == EXIT_OK
     assert main(["--dir", str(stage_dir), "status"]) == STATE_EXIT_CODES["failed"]
+
+
+# =============================================================================
+# 15. Public exception hierarchy and exit mapping freeze (SPEC §13.17, issue #129)
+# =============================================================================
+
+
+def test_exception_hierarchy_issubclass() -> None:
+    """Exception classes follow the frozen inheritance hierarchy in SPEC §13.17."""
+    assert issubclass(StageError, Exception)
+    assert issubclass(BadArgsError, StageError)
+    assert issubclass(IllegalTransition, StageError)
+    assert issubclass(NotInitialized, StageError)
+    assert issubclass(CorruptStatusError, StageError)
+    assert issubclass(WaitTimeout, StageError)
+
+    # Base class directly inherits from Exception
+    assert StageError.__bases__ == (Exception,)
+
+    # Subclasses directly inherit from StageError
+    subclasses = [
+        BadArgsError,
+        IllegalTransition,
+        NotInitialized,
+        CorruptStatusError,
+        WaitTimeout,
+    ]
+    for sub in subclasses:
+        assert StageError in sub.__mro__
+        assert sub.__bases__ == (StageError,)
+
+    # Subclasses are mutually distinct branches (none inherits from another)
+    for i, a in enumerate(subclasses):
+        for j, b in enumerate(subclasses):
+            if i != j:
+                assert not issubclass(a, b), f"{a.__name__} must not inherit from {b.__name__}"
+
+
+def test_exception_exports_from_top_level() -> None:
+    """All exception types are exported from stage_signal top-level / __all__ (SPEC §13.17)."""
+    import stage_signal
+
+    frozen_exceptions = {
+        "StageError": StageError,
+        "BadArgsError": BadArgsError,
+        "IllegalTransition": IllegalTransition,
+        "NotInitialized": NotInitialized,
+        "CorruptStatusError": CorruptStatusError,
+        "WaitTimeout": WaitTimeout,
+    }
+
+    for name, exc_cls in frozen_exceptions.items():
+        assert hasattr(stage_signal, name), f"{name} must be an attribute of stage_signal"
+        assert name in stage_signal.__all__, f"{name} must be listed in stage_signal.__all__"
+        assert getattr(stage_signal, name) is exc_cls, f"stage_signal.{name} must be {exc_cls}"
+
+
+def test_exception_exit_code_constants_and_instances() -> None:
+    """Exception class- and instance-level exit_code attributes match SPEC §13.17."""
+    expected_exit_codes = {
+        StageError: (EXIT_ERROR, 1),
+        BadArgsError: (EXIT_BAD_ARGS, 2),
+        IllegalTransition: (EXIT_ILLEGAL_TRANSITION, 3),
+        NotInitialized: (EXIT_NOT_INITIALIZED, 15),
+        CorruptStatusError: (EXIT_ERROR, 1),
+        WaitTimeout: (EXIT_WAIT_TIMEOUT, 14),
+    }
+
+    for exc_cls, (const_val, numeric_val) in expected_exit_codes.items():
+        assert const_val == numeric_val
+        # Class-level attribute
+        assert exc_cls.exit_code == numeric_val
+        # Instance-level attribute
+        instance = exc_cls(f"test error message for {exc_cls.__name__}")
+        assert instance.exit_code == numeric_val
+        assert str(instance) == f"test error message for {exc_cls.__name__}"
+
+
+def test_exception_instance_attributes_preserved() -> None:
+    """Specific exception attributes (detail, last_status) are preserved (SPEC §13.17)."""
+    # StageError detail kwarg
+    err_with_detail = StageError("something broke", detail={"extra": 42})
+    assert err_with_detail.detail == {"extra": 42}
+
+    err_no_detail = StageError("no detail")
+    assert err_no_detail.detail is None
+
+    # WaitTimeout last_status kwarg
+    status_dict = {"state": "running", "stage_id": "step1"}
+    timeout_err = WaitTimeout("timed out waiting", last_status=status_dict)
+    assert timeout_err.last_status == status_dict
+
+    timeout_no_status = WaitTimeout("timed out")
+    assert timeout_no_status.last_status is None
+
+
+def test_not_initialized_library_and_cli_exit(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """NotInitialized raised by library maps to EXIT_NOT_INITIALIZED (15) in CLI (SPEC §7, §13.4, §13.17)."""
+    nonexistent = tmp_path / "does_not_exist"
+    stage = Stage(nonexistent)
+
+    # Library call raises NotInitialized with exit_code 15
+    with pytest.raises(NotInitialized) as exc_info:
+        stage.status()
+    assert exc_info.value.exit_code == EXIT_NOT_INITIALIZED == 15
+
+    with pytest.raises(NotInitialized) as exc_info:
+        stage.heartbeat()
+    assert exc_info.value.exit_code == EXIT_NOT_INITIALIZED == 15
+
+    # CLI catches NotInitialized and exits with 15
+    capsys.readouterr()
+    rc_status = main(["--dir", str(nonexistent), "status"])
+    assert rc_status == EXIT_NOT_INITIALIZED == 15
+    err_out = capsys.readouterr().err
+    assert "stage-signal: error:" in err_out
+
+    capsys.readouterr()
+    rc_hb = main(["--dir", str(nonexistent), "heartbeat"])
+    assert rc_hb == EXIT_NOT_INITIALIZED == 15
+    err_out = capsys.readouterr().err
+    assert "stage-signal: error:" in err_out
+
+
+def test_bad_args_error_library_and_cli_exit(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """BadArgsError raised by library/CLI maps to EXIT_BAD_ARGS (2) in CLI (SPEC §7, §13.4, §13.17)."""
+    stage_dir = tmp_path / ".stage-signal"
+    assert main(["--dir", str(stage_dir), "init", "--project", "bad-args-test"]) == EXIT_OK
+    stage = Stage(stage_dir)
+
+    # Library call raises BadArgsError with exit_code 2
+    with pytest.raises(BadArgsError) as exc_info:
+        stage.start(stage="")
+    assert exc_info.value.exit_code == EXIT_BAD_ARGS == 2
+
+    with pytest.raises(BadArgsError) as exc_info:
+        stage.start(stage="step1", pid=-99)
+    assert exc_info.value.exit_code == EXIT_BAD_ARGS == 2
+
+    with pytest.raises(BadArgsError) as exc_info:
+        stage.note("")
+    assert exc_info.value.exit_code == EXIT_BAD_ARGS == 2
+
+    # CLI catches BadArgsError and exits with 2
+    capsys.readouterr()
+    rc_empty_note = main(["--dir", str(stage_dir), "note", ""])
+    assert rc_empty_note == EXIT_BAD_ARGS == 2
+    err_out = capsys.readouterr().err
+    assert "stage-signal: error: note requires non-empty TEXT" in err_out
+
+    capsys.readouterr()
+    rc_bad_start = main(["--dir", str(stage_dir), "start", "--stage", "", "--pid", str(os.getpid())])
+    assert rc_bad_start == EXIT_BAD_ARGS == 2
+    err_out = capsys.readouterr().err
+    assert "stage-signal: error: start requires a non-empty --stage NAME" in err_out
+
+    capsys.readouterr()
+    rc_bad_meta = main(["--dir", str(stage_dir), "start", "--stage", "ok", "--pid", str(os.getpid()), "--meta", "badjson{"])
+    assert rc_bad_meta == EXIT_BAD_ARGS == 2
+    err_out = capsys.readouterr().err
+    assert "stage-signal: error:" in err_out
+
+
+def test_illegal_transition_library_and_cli_exit(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """IllegalTransition raised by library maps to EXIT_ILLEGAL_TRANSITION (3) in CLI (SPEC §7, §13.4, §13.17)."""
+    stage_dir = tmp_path / ".stage-signal"
+    pid = os.getpid()
+    assert main(["--dir", str(stage_dir), "init", "--project", "illegal-trans-test"]) == EXIT_OK
+    assert main(["--dir", str(stage_dir), "start", "--stage", "phase1", "--pid", str(pid)]) == EXIT_OK
+    stage = Stage(stage_dir)
+
+    # 1. Illegal transition: done --accept-failure from running (only allowed from failed)
+    with pytest.raises(IllegalTransition) as exc_info:
+        stage.done(summary="premature accept failure", accept_failure=True)
+    assert exc_info.value.exit_code == EXIT_ILLEGAL_TRANSITION == 3
+
+    capsys.readouterr()
+    rc_acc_fail = main(["--dir", str(stage_dir), "done", "--summary", "premature accept failure", "--accept-failure"])
+    assert rc_acc_fail == EXIT_ILLEGAL_TRANSITION == 3
+    err_out = capsys.readouterr().err
+    assert "stage-signal: error:" in err_out
+    assert "done --accept-failure only allowed from state 'failed'" in err_out
+
+    # 2. Failed --require-proof gate
+    missing_proof = str(tmp_path / "missing_proof.json")
+    with pytest.raises(IllegalTransition) as exc_info:
+        stage.done(summary="done with proof", require_proof=missing_proof)
+    assert exc_info.value.exit_code == EXIT_ILLEGAL_TRANSITION == 3
+
+    capsys.readouterr()
+    rc_proof = main([
+        "--dir",
+        str(stage_dir),
+        "done",
+        "--summary",
+        "done with proof",
+        "--require-proof",
+        "--proof-ref",
+        missing_proof,
+    ])
+    assert rc_proof == EXIT_ILLEGAL_TRANSITION == 3
+    err_out = capsys.readouterr().err
+    assert "stage-signal: error: proof gate failed:" in err_out
+
+    # 3. Illegal reclaim when needs_reclaim is false
+    with pytest.raises(IllegalTransition) as exc_info:
+        stage.reclaim(reason="premature reclaim")
+    assert exc_info.value.exit_code == EXIT_ILLEGAL_TRANSITION == 3
+
+    capsys.readouterr()
+    rc_reclaim = main(["--dir", str(stage_dir), "reclaim", "--reason", "premature reclaim"])
+    assert rc_reclaim == EXIT_ILLEGAL_TRANSITION == 3
+    err_out = capsys.readouterr().err
+    assert "stage-signal: error:" in err_out
+
+    # 4. Transition not allowed from terminal state: complete to done, then attempt blocked
+    assert main(["--dir", str(stage_dir), "done", "--summary", "completed"]) == EXIT_OK
+    with pytest.raises(IllegalTransition) as exc_info:
+        stage.blocked(reason="cannot block after done")
+    assert exc_info.value.exit_code == EXIT_ILLEGAL_TRANSITION == 3
+
+    capsys.readouterr()
+    rc_term = main(["--dir", str(stage_dir), "blocked", "--reason", "cannot block after done"])
+    assert rc_term == EXIT_ILLEGAL_TRANSITION == 3
+    err_out = capsys.readouterr().err
+    assert "stage-signal: error: blocked not allowed from terminal state 'done'" in err_out
+
+
+def test_corrupt_status_error_library_and_cli_exit(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """CorruptStatusError raised by library maps to EXIT_ERROR (1) in CLI (SPEC §7, §13.4, §13.17)."""
+    stage_dir = tmp_path / ".stage-signal"
+    assert main(["--dir", str(stage_dir), "init", "--project", "corrupt-test"]) == EXIT_OK
+    stage = Stage(stage_dir)
+    status_file = stage_dir / "STATUS.json"
+
+    # Malformed JSON in STATUS.json
+    status_file.write_text("{malformed: json")
+
+    with pytest.raises(CorruptStatusError) as exc_info:
+        stage.status()
+    assert exc_info.value.exit_code == EXIT_ERROR == 1
+
+    capsys.readouterr()
+    rc_corrupt = main(["--dir", str(stage_dir), "status"])
+    assert rc_corrupt == EXIT_ERROR == 1
+    err_out = capsys.readouterr().err
+    assert "stage-signal: error: corrupt STATUS.json" in err_out
+
+    # Invalid schema (missing required keys)
+    status_file.write_text(json.dumps({"schema_version": 1, "state": "running"}))
+
+    with pytest.raises(CorruptStatusError) as exc_info:
+        stage.status()
+    assert exc_info.value.exit_code == EXIT_ERROR == 1
+
+    capsys.readouterr()
+    rc_invalid_schema = main(["--dir", str(stage_dir), "status"])
+    assert rc_invalid_schema == EXIT_ERROR == 1
+    err_out = capsys.readouterr().err
+    assert "stage-signal: error:" in err_out
+    assert "missing keys:" in err_out
+
+
+def test_wait_timeout_library_and_cli_exit(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """WaitTimeout raised by library maps to EXIT_WAIT_TIMEOUT (14) in CLI (SPEC §7, §13.4, §13.17)."""
+    stage_dir = tmp_path / ".stage-signal"
+    pid = os.getpid()
+    assert main(["--dir", str(stage_dir), "init", "--project", "wait-test"]) == EXIT_OK
+    assert main(["--dir", str(stage_dir), "start", "--stage", "step1", "--pid", str(pid)]) == EXIT_OK
+    stage = Stage(stage_dir)
+
+    # Library call raises WaitTimeout with exit_code 14 and populates last_status
+    with pytest.raises(WaitTimeout) as exc_info:
+        stage.wait(want="done", timeout=0.05, poll=0.01)
+    assert exc_info.value.exit_code == EXIT_WAIT_TIMEOUT == 14
+    assert exc_info.value.last_status is not None
+    assert exc_info.value.last_status["state"] == "running"
+
+    # CLI human output
+    capsys.readouterr()
+    rc_human = main(["--dir", str(stage_dir), "wait", "--state", "done", "--timeout", "0.05", "--poll", "0.01"])
+    assert rc_human == EXIT_WAIT_TIMEOUT == 14
+    err_human = capsys.readouterr().err
+    assert "stage-signal: error: wait timed out after" in err_human
+
+    # CLI JSON output
+    capsys.readouterr()
+    rc_json = main(["--dir", str(stage_dir), "wait", "--state", "done", "--timeout", "0.05", "--poll", "0.01", "--json"])
+    assert rc_json == EXIT_WAIT_TIMEOUT == 14
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["outcome"] == "timeout"
+    assert payload["exit_code"] == EXIT_WAIT_TIMEOUT == 14
+    assert payload["timeout"] is True
+
+
+def test_stage_error_base_cli_exit(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    """Direct or generic StageError caught by CLI exits with EXIT_ERROR (1) (SPEC §7, §13.4, §13.17)."""
+    # Verify base StageError instance
+    err = StageError("generic stage failure", detail="details")
+    assert err.exit_code == EXIT_ERROR == 1
+    assert err.detail == "details"
+    assert str(err) == "generic stage failure"
+
+    # Monkeypatch a Stage method to raise raw StageError
+    monkeypatch.setattr(
+        "stage_signal.cli.Stage.status",
+        lambda self: (_ for _ in ()).throw(StageError("simulated unhandled stage error")),
+    )
+    capsys.readouterr()
+    rc = main(["status"])
+    assert rc == EXIT_ERROR == 1
+    err_out = capsys.readouterr().err
+    assert "stage-signal: error: simulated unhandled stage error" in err_out
 
