@@ -1387,7 +1387,7 @@ External orchestrators, Python embedders, typing tools, and harnesses interact w
 
 #### 13.21.1 Canonical export inventory
 
-`stage_signal` exports exactly 130 public symbols matching `stage_signal.__all__`. These symbols are structured into four canonical categories:
+`stage_signal` exports exactly 134 public symbols matching `stage_signal.__all__`. These symbols are structured into four canonical categories:
 
 ##### 1. Classes (§11, §13.20)
 - `Stage`: The primary high-level lifecycle orchestrator, embedding context manager, and transition driver (§11, §13.20).
@@ -1428,7 +1428,7 @@ All six structured exceptions inherit from `StageError` and carry a normative `.
 - **Inventories:**
   - `CLI_SUBCOMMANDS`: 15 frozen CLI subcommands (§13.15).
   - `STAGE_PUBLIC_METHODS`: 15 frozen `Stage` public instance methods (§13.20).
-  - `PUBLIC_EXPORTS`: 130 frozen public symbols exported from top-level package namespace (§13.21).
+  - `PUBLIC_EXPORTS`: 134 frozen public symbols exported from top-level package namespace (§13.21).
 - **Exit codes:**
   - `EXIT_CODES`: Tuple of all 10 standard exit codes (§7, §13.4).
   - Individual exit codes: `EXIT_OK` (0), `EXIT_ERROR` (1), `EXIT_BAD_ARGS` (2), `EXIT_ILLEGAL_TRANSITION` (3), `EXIT_RUNNING` (10), `EXIT_BLOCKED` (11), `EXIT_FAILED` (12), `EXIT_QUEUED` (13), `EXIT_WAIT_TIMEOUT` (14), `EXIT_NOT_INITIALIZED` (15) (§7, §13.4).
@@ -1497,6 +1497,9 @@ All six structured exceptions inherit from `StageError` and carry a normative `.
   - `FAIL_IF_DEAD_PID_ALLOWED_SOURCES`: Legal `--if-dead-pid` source states (`"queued"`, `"running"`, `"failed"`; §4 rule 6, §13.31).
   - `FAIL_IF_NEEDS_RECLAIM_ALLOWED_SOURCES`: Legal `--if-needs-reclaim` source states (`"running"` only; §4 rule 6, §13.31).
   - `FAIL_DETAIL_KEYS`: Audit detail keys (empty — fail carries no detail extras; §5, §13.31).
+- **Blocked terminal:**
+  - `BLOCKED_ALLOWED_SOURCES`: Legal source states (`"queued"`, `"running"`, `"blocked"`; §4 rule 6, §13.32).
+  - `BLOCKED_DETAIL_KEYS`: Audit detail keys (empty — blocked carries no detail extras; §5, §13.32).
 - **Clear-terminal reset and audit:**
   - `CLEAR_TERMINAL_ALLOWED_SOURCES`: Legal source states (`"done"`, `"blocked"`, `"failed"`, `"queued"`; §4, §13.26).
   - `CLEAR_TERMINAL_IDLE_RESET_FIELDS`: Ten identity/claim fields reset to idle by default (§4, §13.26).
@@ -1525,6 +1528,8 @@ PUBLIC_EXPORTS: tuple[str, ...] = (
     "ARTIFACT_ALLOWED_SOURCES",
     "ARTIFACT_DETAIL_KEYS",
     "ARTIFACT_ENTRY_KEYS",
+    "BLOCKED_ALLOWED_SOURCES",
+    "BLOCKED_DETAIL_KEYS",
     "BadArgsError",
     "CLEAR_TERMINAL_ALLOWED_SOURCES",
     "CLEAR_TERMINAL_ALWAYS_CLEARED_FIELDS",
@@ -1675,7 +1680,7 @@ Under `schema_version: 1`, the top-level public export inventory is strictly **a
 - Existing symbols in `PUBLIC_EXPORTS` MUST NOT be removed, renamed, or relocated.
 - Existing symbol types, semantics, and contracts MUST NOT undergo breaking changes.
 - Future minor or patch releases under schema version 1 MAY add new classes, helper functions, or frozen constants to `stage_signal`, expanding `PUBLIC_EXPORTS` and `__all__`.
-- External orchestrators, embedders, and typing definitions can safely rely on the uninterrupted presence of all 132 public exports throughout the entire lifecycle of `schema_version: 1`.
+- External orchestrators, embedders, and typing definitions can safely rely on the uninterrupted presence of all 134 public exports throughout the entire lifecycle of `schema_version: 1`.
 
 ### 13.22 Doctor human summary strings freeze (`DOCTOR_SUMMARY_RECLAIM_NEEDED`, `DOCTOR_SUMMARY_OK_FORMAT`)
 
@@ -2621,6 +2626,96 @@ Under `schema_version: 1`, the fail terminal contract is strictly **additive-onl
 - No new event type is introduced for failing: the audit record stays a `failed` event (§13.5).
 - New fail detail keys or guard modes MAY be added in minor or patch releases only as additional constants; existing frozen values MUST keep their exact values.
 - Readers MUST tolerate unknown future `failed` detail keys and unknown future `error` object keys without failing.
+
+### 13.32 Blocked terminal contract freeze (`BLOCKED_ALLOWED_SOURCES`, `BLOCKED_DETAIL_KEYS`)
+
+`Stage.blocked` / `stage-signal blocked --reason TEXT` (§4 rule 6, §6, §13.20) marks an external blockage by transitioning the stage to terminal `blocked` with an `error` payload. Under `schema_version: 1`, the allowed source states, the non-empty reason validation, the `error`-object shape (cross-linked to `ERROR_KEYS` / `ERROR_KINDS`, not redefined), the `result`-to-`null` rule, and the `blocked` audit event shape are frozen so orchestrators can park a stage awaiting external input and branch on `error.reason` / `error.kind` without scraping human text. The `blocked` event type itself is frozen in §13.5 and the record keys in §13.6; the allowed edges are frozen in §13.19.
+
+#### 13.32.1 Frozen constants and exact values
+
+The single sources of truth are defined in `stage_signal.constants` and exported from `stage_signal` and `__all__`:
+
+```python
+BLOCKED_ALLOWED_SOURCES = (
+    "queued",
+    "running",
+    "blocked",
+)
+
+BLOCKED_DETAIL_KEYS: tuple[str, ...] = ()
+```
+
+- `BLOCKED_ALLOWED_SOURCES`: exactly `("queued", "running", "blocked")`. Plain `blocked` is legal from `queued` or `running`, plus the idempotent repeat from `blocked` (§4 rule 6, §13.12). It MUST equal `allowed_source_states("blocked")` from `ALLOWED_TRANSITIONS` (§13.19), whose frozen blocked edges are `(queued, "blocked") -> blocked`, `(running, "blocked") -> blocked`, and `(blocked, "blocked") -> blocked`.
+- `BLOCKED_DETAIL_KEYS`: exactly `()`. A `blocked`-emitted `blocked` audit record carries no detail extras (`detail == {}`, §13.32.5).
+
+#### 13.32.2 Allowed sources and the terminal guard
+
+`blocked` enforces `_require_terminal_source(current, STATE_BLOCKED, "blocked")`, i.e. the `(state, "blocked")` edge MUST be a member of `ALLOWED_TRANSITIONS` (§13.19), otherwise `IllegalTransition` (exit 3) with no mutation:
+
+| Precondition failure | Library | CLI exit |
+|----------------------|---------|----------|
+| Stage not initialized (missing dir/STATUS) | `NotInitialized` | 15 (`EXIT_NOT_INITIALIZED`; §7, §13.4, §13.17) |
+| Corrupt `STATUS.json` / unreadable events | `CorruptStatusError` | 1 (`EXIT_ERROR`; §7, §13.4, §13.17) |
+| Missing, empty, or whitespace-only `--reason` | `BadArgsError` | 2 (`EXIT_BAD_ARGS`; §7, §13.4, §13.17) |
+| Current state is `done` or `failed` (terminal-to-different-terminal without an intervening `start`) | `IllegalTransition` | 3 (`EXIT_ILLEGAL_TRANSITION`; §7, §13.4, §13.17) |
+
+`blocked` from `blocked` is the idempotent repeat (exit 0, reason overwritten). `blocked` from `done` or `failed` is strictly illegal and MUST raise `IllegalTransition` (exit 3) with no mutation of STATUS, events, or mirrors. Argument validation (exit 2) is evaluated before any state guard, so an empty reason is exit 2 regardless of state. All guards are checked under the mutation lock.
+
+#### 13.32.3 Reason validation
+
+From the exact implementation in `Stage.blocked` (`src/stage_signal/stage.py`), evaluated before any mutation:
+
+- **Reason validation:** `if not reason or not reason.strip(): raise BadArgsError("blocked requires non-empty --reason TEXT")`.
+  - Passing `None`, an empty string `""`, or a whitespace-only string (spaces, tabs, newlines) raises `BadArgsError`.
+  - In the CLI, `--reason` is `required=True`, so omitting the flag makes `argparse` fail with exit 2 (`EXIT_BAD_ARGS`); passing `--reason ""` or `--reason "  "` reaches `Stage.blocked`, which raises `BadArgsError` (exit 2).
+  - Validation strips only for the emptiness check: a valid reason is stored byte-for-byte as supplied (no stripping, no normalization); the audit `message` and `error.reason` carry the original string verbatim (§13.32.4, §13.32.5).
+
+#### 13.32.4 Success payload: `error` object, `kind`, and `result=null`
+
+On success, from the exact implementation in `Stage.blocked` (`src/stage_signal/stage.py`):
+
+- `state` is set to `"blocked"` (`STATE_BLOCKED`; §13.12).
+- `error` is set to `{"reason": reason, "kind": "blocked", "finished_at": now_iso()}`, where `reason` is the verbatim supplied string and `finished_at` is the current ISO-8601 timestamp (`now_iso()`).
+- `set(error.keys()) == set(ERROR_KEYS)` (`reason`, `kind`, `finished_at`); the `error` object keys are owned by §13.9 and are NOT redefined here. `error.kind` is exactly `"blocked"` (`STATE_BLOCKED`), a member of the frozen `ERROR_KINDS` (`blocked`, `failed`; §13.9). Readers MUST tolerate unknown additional keys on the `error` object (§13.1, §13.9).
+- `result` is set to `null` (a `blocked` stage never carries a `result`; §13.9).
+- `updated_at` is bumped by the standard mutation path (§4 rule 9). All other STATUS fields (`stage_id`, `stage_name`, `attempt`, `session_id`, `pid`, `pid_token`, `proof`, `artifacts`, `notes`, `meta`, claim/git/heartbeat fields) are preserved unchanged.
+- CLI stdout on success is `blocked <one_line_summary>: <reason>` (e.g. `blocked blocked my-stage (attempt 1): waiting on reviewer`) with exit 0 (`EXIT_OK`; mutation commands exit 0 on success regardless of target state, §7, §13.4). A successful `blocked` transition (not the `blocked` command) is mirror-eligible: when mirroring is enabled (`--write-status-mirror` or `$STAGE_SIGNAL_STATUS_MIRROR`), the `.orch/` mirror is rewritten best-effort (§10); mirror failures warn on `stderr` and never abort the transition.
+
+#### 13.32.5 Audit event shape
+
+Each successful `blocked` call appends exactly one `blocked` event (§5; no new event type is introduced):
+
+- `type` is exactly `"blocked"` (a member of `EVENT_TYPES`; §13.5) with the standard record keys (`EVENT_RECORD_KEYS`; §13.6). `ts` equals the mutation `updated_at`. `state` is `"blocked"` and `stage_id` / `stage_name` / `attempt` reflect the post-mutation STATUS.
+- `message` is the reason passthrough: exactly the supplied `reason` string — byte-for-byte, no affixes.
+- `detail` is exactly `{}`: `set(detail.keys()) == set(BLOCKED_DETAIL_KEYS)` (empty).
+
+Readers MUST tolerate additive unknown keys on the `blocked` `detail` object without failing (§13.1).
+
+#### 13.32.6 Status mirror and CLI behavior
+
+- **Status mirror write:** Successful `blocked` mutations trigger best-effort repository-level mirror writes (`write_status_mirror`) to `.orch/STATUS.md` when configured (§10, §13.14). The `write_status_mirror` keyword argument / `--write-status-mirror` CLI flag can override default mirror behavior.
+- **`STATUS.md` human mirror:** `store.write_status_md` is called best-effort, rendering `state: blocked` and appending the `error:` section with reason, kind, and finished timestamp, while omitting any `result:` section (§13.18).
+- **CLI output:** `stage-signal blocked` prints `blocked <one_line_summary>: <reason>` to standard output and exits 0 (`EXIT_OK`).
+
+#### 13.32.7 Cross-links
+
+- **§4 rule 6 (States & transitions):** normative `blocked --reason` rule — same transition rule as `done` with an `error` payload instead of a `result`, plus the `updated_at` bump rule (§4 rule 9); staleness never auto-mutates.
+- **§5 (events.jsonl) + §13.5/§13.6:** the `blocked` event type and required record keys; audit-trail reads via `events`.
+- **§6 (CLI contract):** `stage-signal blocked --reason TEXT [--write-status-mirror]` usage line and the mutation-command exit 0 contract.
+- **§13.9 (result/error object keys freeze):** `ERROR_KEYS` (`reason`, `kind`, `finished_at`) matched by every blocked-written `error` object and `ERROR_KINDS` (`blocked`, `failed`) containing `error.kind`; `result: null` validity.
+- **§13.12 (states freeze):** `blocked` as a terminal state vs `queued`/`running` sources and the `done`/`failed` refusal.
+- **§13.17 (exception hierarchy freeze):** `BadArgsError` (exit 2) for reason validation, `IllegalTransition` (exit 3) for source refusal, `NotInitialized` (exit 15) / `CorruptStatusError` (exit 1) for precondition failures.
+- **§13.19 (transition matrix freeze):** the frozen `blocked` edges and the illegal-edge refusal rule.
+- **§13.20 (Stage method surface freeze):** `blocked(reason, *, write_status_mirror=None) -> dict[str, Any]` signature and CLI equivalence.
+
+#### 13.32.8 Additive-only evolution policy
+
+Under `schema_version: 1`, the blocked terminal contract is strictly **additive-only** (§13.1):
+
+- The frozen allowed sources, the non-empty-reason validation, the `ERROR_KEYS`-matching / `kind: blocked` / `result: null` payload, and the reason-passthrough / empty-`detail` audit shape MUST NOT be removed, renamed, reworded, or change semantic meaning.
+- No new event type is introduced for blocking: the audit record stays a `blocked` event (§13.5).
+- New blocked detail keys MAY be added in minor or patch releases only as additional constants; existing frozen values MUST keep their exact values.
+- Readers MUST tolerate unknown future `blocked` detail keys and unknown future `error` object keys without failing.
 
 ### 13.33 Start claim-running contract freeze (`START_ALLOWED_SOURCES`, `START_DETAIL_KEYS`)
 
