@@ -70,10 +70,21 @@ from stage_signal import (
     WARNING_REQUIRED_KEYS,
     CorruptStatusError,
     Stage,
+    resolve_dir,
     state_exit_code,
     write_status_mirror,
+    DEFAULT_STALE_THRESHOLD,
+    ENV_DIR,
+    ENV_PROJECT,
+    ENV_PROOF_REF,
+    ENV_STATUS_MIRROR,
+    ENV_VARS,
+    EVENTS_DEFAULT_TAIL,
+    MAX_NOTES,
+    WAIT_DEFAULT_POLL,
+    WAIT_DEFAULT_TIMEOUT,
 )
-from stage_signal.cli import main
+from stage_signal.cli import build_parser, main
 from stage_signal.constants import STATE_EXIT_CODES
 from stage_signal.store import validate_status
 
@@ -1679,4 +1690,236 @@ def test_layout_readers_tolerate_unknown_extra_files(
     # Verify events
     events = stage.events()
     assert len(events) >= 1
+
+
+# =============================================================================
+# 12. Environment variables and timing defaults freeze (SPEC §13.14, issue #122)
+# ============================================================================
+
+
+def test_env_vars_freeze() -> None:
+    """Environment variable names are frozen under SPEC §13.14."""
+    assert ENV_DIR == "STAGE_SIGNAL_DIR"
+    assert ENV_PROJECT == "STAGE_SIGNAL_PROJECT"
+    assert ENV_PROOF_REF == "STAGE_SIGNAL_PROOF_REF"
+    assert ENV_STATUS_MIRROR == "STAGE_SIGNAL_STATUS_MIRROR"
+    expected_vars = (
+        "STAGE_SIGNAL_DIR",
+        "STAGE_SIGNAL_PROJECT",
+        "STAGE_SIGNAL_PROOF_REF",
+        "STAGE_SIGNAL_STATUS_MIRROR",
+    )
+    assert ENV_VARS == expected_vars
+    assert len(ENV_VARS) == 4
+    assert all(var.startswith("STAGE_SIGNAL_") for var in ENV_VARS)
+
+
+def test_timing_and_capacity_defaults_freeze() -> None:
+    """Timing defaults and capacity limits are pinned under SPEC §13.14."""
+    assert WAIT_DEFAULT_TIMEOUT == 3600.0
+    assert isinstance(WAIT_DEFAULT_TIMEOUT, float)
+
+    assert WAIT_DEFAULT_POLL == 5.0
+    assert isinstance(WAIT_DEFAULT_POLL, float)
+
+    assert EVENTS_DEFAULT_TAIL == 20
+    assert isinstance(EVENTS_DEFAULT_TAIL, int)
+
+    assert DEFAULT_STALE_THRESHOLD == 300.0
+    assert isinstance(DEFAULT_STALE_THRESHOLD, float)
+
+    assert SUPERVISE_DEFAULT_EVERY == 60.0
+    assert isinstance(SUPERVISE_DEFAULT_EVERY, float)
+
+    assert MAX_NOTES == 200
+    assert isinstance(MAX_NOTES, int)
+
+
+def test_env_and_timing_constants_exported_from_top_level() -> None:
+    """All frozen constants in SPEC §13.14 are exported from stage_signal."""
+    import stage_signal
+
+    expected_exports = [
+        "ENV_DIR",
+        "ENV_PROJECT",
+        "ENV_PROOF_REF",
+        "ENV_STATUS_MIRROR",
+        "ENV_VARS",
+        "WAIT_DEFAULT_TIMEOUT",
+        "WAIT_DEFAULT_POLL",
+        "EVENTS_DEFAULT_TAIL",
+        "DEFAULT_STALE_THRESHOLD",
+        "SUPERVISE_DEFAULT_EVERY",
+        "MAX_NOTES",
+    ]
+    for name in expected_exports:
+        assert hasattr(stage_signal, name), f"{name} not exported from stage_signal"
+        assert name in stage_signal.__all__, f"{name} not in stage_signal.__all__"
+
+
+def test_stage_signal_dir_honored_when_dir_omitted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """STAGE_SIGNAL_DIR is honored when --dir is omitted (SPEC §2, §13.14)."""
+    env_dir = tmp_path / "custom-env-dir"
+    monkeypatch.setenv("STAGE_SIGNAL_DIR", str(env_dir))
+
+    # 1. Python API resolve_dir() honors STAGE_SIGNAL_DIR
+    resolved = resolve_dir(None)
+    assert resolved == env_dir.resolve()
+
+    # 2. StageStore without explicit dir honors STAGE_SIGNAL_DIR
+    stage = Stage()
+    assert stage._store.dir == env_dir.resolve()
+
+    # 3. CLI init without --dir honors STAGE_SIGNAL_DIR
+    capsys.readouterr()
+    exit_code = main(["init", "--project", "env-init-test"])
+    assert exit_code == EXIT_OK
+    assert (env_dir / "STATUS.json").exists()
+
+    # 4. CLI status --json without --dir reads from STAGE_SIGNAL_DIR
+    capsys.readouterr()
+    exit_code = main(["status", "--json"])
+    assert exit_code == EXIT_QUEUED
+    status_data = json.loads(capsys.readouterr().out)
+    assert status_data["project"] == "env-init-test"
+    assert status_data["state"] == STATE_QUEUED
+
+
+def test_cli_dir_wins_over_stage_signal_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """--dir explicitly takes precedence over STAGE_SIGNAL_DIR (SPEC §2, §13.14)."""
+    env_dir = tmp_path / "env-ignored-dir"
+    explicit_dir = tmp_path / "explicit-dir"
+    monkeypatch.setenv("STAGE_SIGNAL_DIR", str(env_dir))
+
+    # 1. resolve_dir(explicit) returns explicit even when env is set
+    assert resolve_dir(explicit_dir) == explicit_dir.resolve()
+
+    # 2. CLI --dir targets explicit_dir, leaves env_dir untouched
+    capsys.readouterr()
+    exit_code = main(["--dir", str(explicit_dir), "init", "--project", "explicit-wins"])
+    assert exit_code == EXIT_OK
+    assert (explicit_dir / "STATUS.json").exists()
+    assert not (env_dir / "STATUS.json").exists()
+
+    # 3. CLI status --dir reads explicit_dir
+    capsys.readouterr()
+    exit_code = main(["--dir", str(explicit_dir), "status", "--json"])
+    assert exit_code == EXIT_QUEUED
+    status_data = json.loads(capsys.readouterr().out)
+    assert status_data["project"] == "explicit-wins"
+
+
+def test_stage_signal_project_env_fallback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """STAGE_SIGNAL_PROJECT provides fallback project name when --project is omitted (SPEC §13.14)."""
+    stage_dir = tmp_path / ".stage-signal"
+    monkeypatch.setenv("STAGE_SIGNAL_PROJECT", "env-project-fallback")
+
+    stage = Stage(str(stage_dir))
+    stage.init()
+    assert stage.status()["project"] == "env-project-fallback"
+
+
+def test_stage_signal_proof_ref_env_fallback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """STAGE_SIGNAL_PROOF_REF provides fallback receipt reference for proof gate (SPEC §9, §13.14)."""
+    stage_dir = tmp_path / ".stage-signal"
+    receipt_file = tmp_path / "receipt.txt"
+    receipt_file.write_text("proof receipt content\n", encoding="utf-8")
+
+    monkeypatch.setenv("STAGE_SIGNAL_PROOF_REF", str(receipt_file))
+    stage = Stage(str(stage_dir))
+    stage.init(project="proof-env-test")
+    stage.start(stage="verify-step", pid=os.getpid())
+
+    # done with require_proof=True but proof_ref=None should pick up STAGE_SIGNAL_PROOF_REF
+    stage.done(summary="verified with env proof", require_proof=True)
+    status = stage.status()
+    assert status["proof"] == {
+        "tool": "agent-done-or-not",
+        "ref": str(receipt_file),
+        "verified": "file",
+    }
+
+
+def test_stage_signal_status_mirror_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """STAGE_SIGNAL_STATUS_MIRROR=1 enables .orch mirror writes (SPEC §10, §13.14)."""
+    stage_dir = tmp_path / ".stage-signal"
+    orch_dir = tmp_path / ".orch"
+    monkeypatch.setenv("STAGE_SIGNAL_STATUS_MIRROR", "1")
+
+    stage = Stage(str(stage_dir))
+    stage.init(project="mirror-env-test")
+    stage.start(stage="mirror-step", pid=os.getpid())
+
+    assert (orch_dir / "STATUS.md").exists()
+    assert "mirror-step" in (orch_dir / "STATUS.md").read_text(encoding="utf-8")
+
+    stage.done(summary="mirror finished")
+    assert (orch_dir / "DONE").exists()
+
+
+def test_stale_threshold_matches_doctor_and_supervise_defaults() -> None:
+    """DEFAULT_STALE_THRESHOLD matches doctor and supervise defaults across API and CLI (SPEC §13.14)."""
+    import inspect
+
+    # 1. Stage.diagnose stale_after default
+    diag_sig = inspect.signature(Stage.diagnose)
+    assert diag_sig.parameters["stale_after"].default == DEFAULT_STALE_THRESHOLD
+
+    # 2. Stage.supervise stale_threshold default
+    sup_sig = inspect.signature(Stage.supervise)
+    assert sup_sig.parameters["stale_threshold"].default == DEFAULT_STALE_THRESHOLD
+    assert sup_sig.parameters["every"].default == SUPERVISE_DEFAULT_EVERY
+
+    # 3. CLI parser defaults
+    parser = build_parser()
+    doc_args = parser.parse_args(["doctor"])
+    assert doc_args.stale_after == DEFAULT_STALE_THRESHOLD
+
+    sup_args = parser.parse_args(["supervise", "--", "echo", "hi"])
+    assert sup_args.every == SUPERVISE_DEFAULT_EVERY
+
+
+def test_wait_cli_timing_defaults() -> None:
+    """WAIT_DEFAULT_TIMEOUT and WAIT_DEFAULT_POLL match CLI wait parser defaults (SPEC §6, §13.14)."""
+    parser = build_parser()
+    wait_args = parser.parse_args(["wait"])
+    assert wait_args.timeout == WAIT_DEFAULT_TIMEOUT
+    assert wait_args.poll == WAIT_DEFAULT_POLL
+
+
+def test_events_cli_default_tail() -> None:
+    """EVENTS_DEFAULT_TAIL matches CLI events parser default and filters events (SPEC §5, §13.14)."""
+    parser = build_parser()
+    events_args = parser.parse_args(["events"])
+    assert events_args.tail == EVENTS_DEFAULT_TAIL
+
+
+def test_max_notes_capacity_limit(tmp_path: Path) -> None:
+    """MAX_NOTES pins the maximum retained notes in STATUS.json (SPEC §3, §13.14)."""
+    stage_dir = tmp_path / ".stage-signal"
+    stage = Stage(str(stage_dir))
+    stage.init(project="max-notes-test")
+    stage.start(stage="notes-capacity", pid=os.getpid())
+
+    # Append MAX_NOTES + 15 notes
+    total_notes = MAX_NOTES + 15
+    for i in range(total_notes):
+        stage.note(f"note-{i}")
+
+    status = stage.status()
+    notes = status["notes"]
+    assert len(notes) == MAX_NOTES
+    # FIFO truncation: first note retained should be note-15, last note-214
+    assert notes[0]["text"] == "note-15"
+    assert notes[-1]["text"] == f"note-{total_notes - 1}"
 
