@@ -2877,212 +2877,6 @@ def test_status_md_on_disk_lifecycle_smoke(tmp_path: Path) -> None:
     assert '"reason": "fatal failure encountered"' in content_failed
 
 
-# 17. Stage public method surface freeze (SPEC §13.20, issue #134)
-# =============================================================================
-
-
-def test_stage_public_methods_constant_freeze() -> None:
-    """STAGE_PUBLIC_METHODS matches the frozen tuple in SPEC §13.20."""
-    expected = (
-        "artifact",
-        "blocked",
-        "clear_terminal",
-        "diagnose",
-        "done",
-        "events",
-        "fail",
-        "heartbeat",
-        "init",
-        "note",
-        "reclaim",
-        "start",
-        "status",
-        "supervise",
-        "wait",
-    )
-    assert STAGE_PUBLIC_METHODS == expected
-    assert isinstance(STAGE_PUBLIC_METHODS, tuple)
-    assert len(STAGE_PUBLIC_METHODS) == 15
-    assert STAGE_PUBLIC_METHODS == tuple(sorted(STAGE_PUBLIC_METHODS))
-
-    # All methods required by issue #134 must be present
-    mandatory_minimum = (
-        "init",
-        "start",
-        "heartbeat",
-        "note",
-        "done",
-        "blocked",
-        "fail",
-        "reclaim",
-        "clear_terminal",
-        "supervise",
-        "status",
-        "wait",
-    )
-    for method in mandatory_minimum:
-        assert method in STAGE_PUBLIC_METHODS, f"Mandatory method {method!r} missing"
-
-    for method in STAGE_PUBLIC_METHODS:
-        assert isinstance(method, str)
-        assert method
-        assert method == method.strip()
-
-
-def test_stage_public_methods_exported_from_top_level() -> None:
-    """STAGE_PUBLIC_METHODS is exported from top-level stage_signal (SPEC §13.20)."""
-    import stage_signal
-
-    assert hasattr(stage_signal, "STAGE_PUBLIC_METHODS")
-    assert "STAGE_PUBLIC_METHODS" in stage_signal.__all__
-    assert stage_signal.STAGE_PUBLIC_METHODS is STAGE_PUBLIC_METHODS
-
-
-def test_stage_public_methods_exist_and_callable(tmp_path: Path) -> None:
-    """Every method in STAGE_PUBLIC_METHODS exists and is callable on Stage (SPEC §13.20)."""
-    stage_dir = tmp_path / ".stage-signal"
-    stage = Stage(stage_dir)
-
-    for method_name in STAGE_PUBLIC_METHODS:
-        assert hasattr(stage, method_name), f"Stage instance missing method {method_name!r}"
-        method = getattr(stage, method_name)
-        assert callable(method), f"Stage.{method_name} is not callable"
-        # Must have docstring
-        assert getattr(Stage, method_name).__doc__, f"Stage.{method_name} missing docstring"
-
-
-def test_stage_public_methods_no_accidental_private_leakage() -> None:
-    """No private names in STAGE_PUBLIC_METHODS and no unlisted public methods (SPEC §13.20)."""
-    # 1. No private or dunder names in STAGE_PUBLIC_METHODS
-    for method_name in STAGE_PUBLIC_METHODS:
-        assert not method_name.startswith("_"), f"Private name {method_name!r} leaked into freeze list"
-
-    # 2. All public callables on Stage (excluding classmethod open) match STAGE_PUBLIC_METHODS
-    public_callables = {
-        name
-        for name in dir(Stage)
-        if not name.startswith("_") and callable(getattr(Stage, name))
-    }
-    # open is a classmethod constructor; all others are instance methods
-    assert public_callables == set(STAGE_PUBLIC_METHODS) | {"open"}
-
-    # 3. dir is an exposed property on Stage, not a method
-    assert hasattr(Stage, "dir")
-    assert isinstance(getattr(Stage, "dir"), property)
-
-
-def test_top_level_helpers_exported_and_callable() -> None:
-    """Top-level helper functions cross-linked in SPEC §13.20 are exported and callable."""
-    import stage_signal
-
-    helpers = (
-        "resolve_dir",
-        "state_exit_code",
-        "render_status_md",
-        "write_status_mirror",
-        "verify_proof",
-        "wait_condition_met",
-        "want_matches",
-        "StageStore",
-    )
-    for helper in helpers:
-        assert hasattr(stage_signal, helper), f"stage_signal missing helper {helper!r}"
-        assert helper in stage_signal.__all__, f"{helper!r} not in stage_signal.__all__"
-        attr = getattr(stage_signal, helper)
-        assert callable(attr), f"{helper!r} is not callable"
-
-
-def test_stage_public_methods_lifecycle_smoke(tmp_path: Path) -> None:
-    """Smoke test exercising all 15 public methods on Stage (SPEC §11, §13.20)."""
-    stage_dir = tmp_path / ".stage-signal"
-    stage = Stage(stage_dir)
-
-    # 1. init
-    init_res = stage.init(project="smoke-proj")
-    assert init_res["state"] == "queued"
-    assert init_res["project"] == "smoke-proj"
-
-    # 2. start
-    start_res = stage.start(stage="smoke-step", pid=os.getpid())
-    assert start_res["state"] == "running"
-    assert start_res["stage_name"] == "smoke-step"
-
-    # 3. heartbeat
-    hb_res = stage.heartbeat(note="smoke heartbeat")
-    assert hb_res["state"] == "running"
-    assert hb_res["heartbeat_note"] == "smoke heartbeat"
-
-    # 4. note
-    note_res = stage.note("smoke note")
-    assert note_res["state"] == "running"
-    assert len(note_res["notes"]) == 1
-    assert note_res["notes"][0]["text"] == "smoke note"
-
-    # 5. artifact
-    art_res = stage.artifact("dist/smoke.txt", label="report")
-    assert art_res["state"] == "running"
-    assert len(art_res["artifacts"]) == 1
-    assert art_res["artifacts"][0]["path"] == "dist/smoke.txt"
-
-    # 6. status
-    st_res = stage.status()
-    assert st_res["state"] == "running"
-    assert st_res["stage_name"] == "smoke-step"
-
-    # 7. events
-    ev_res = stage.events()
-    assert isinstance(ev_res, list)
-    assert len(ev_res) >= 5
-
-    # 8. diagnose
-    diag_res = stage.diagnose()
-    assert diag_res["ok"] is True
-    assert diag_res["state"] == "running"
-
-    # 9. done
-    done_res = stage.done(summary="smoke complete")
-    assert done_res["state"] == "done"
-    assert done_res["result"]["summary"] == "smoke complete"
-
-    # 10. wait (already met)
-    wait_res = stage.wait(want="done", timeout=1, poll=0.01)
-    assert wait_res["state"] == "done"
-
-    # 11. clear_terminal
-    clear_res = stage.clear_terminal()
-    assert clear_res["state"] == "queued"
-    assert clear_res["stage_name"] is None
-
-    # 12. blocked
-    stage.start(stage="smoke-block", pid=os.getpid())
-    block_res = stage.blocked(reason="smoke blocked reason")
-    assert block_res["state"] == "blocked"
-    assert block_res["error"]["reason"] == "smoke blocked reason"
-    stage.clear_terminal()
-
-    # 13. fail
-    stage.start(stage="smoke-fail", pid=os.getpid())
-    fail_res = stage.fail(reason="smoke failed reason")
-    assert fail_res["state"] == "failed"
-    assert fail_res["error"]["reason"] == "smoke failed reason"
-    stage.clear_terminal()
-
-    # 14. supervise (runs command and auto-heartbeats to done)
-    stage.start(stage="smoke-supervise", pid=os.getpid())
-    rc = stage.supervise([sys.executable, "-c", "import sys; sys.exit(0)"])
-    assert rc == 0
-    assert stage.status()["state"] == "done"
-    stage.clear_terminal()
-
-    # 15. reclaim (with dead pid)
-    dead_proc = subprocess.Popen([sys.executable, "-c", "pass"])
-    dead_proc.wait(timeout=5)
-    stage.start(stage="smoke-dead", pid=dead_proc.pid)
-    assert stage.status()["needs_reclaim"] is True
-    reclaim_res = stage.reclaim(reason="dead worker reclaim")
-    assert reclaim_res["state"] == "queued"
-    assert stage.status()["needs_reclaim"] is False
-=======
 # ============================================================================
 # 19. Allowed transition matrix freeze (SPEC §13.19, issue #133)
 # ============================================================================
@@ -3526,4 +3320,209 @@ def test_representative_illegal_transitions_raise_and_cli_exit(
     assert status_file.read_text(encoding="utf-8") == failed_content
 
 
-# ======================================================================
+# =============================================================================
+# 17. Stage public method surface freeze (SPEC §13.20, issue #134)
+# =============================================================================
+
+
+def test_stage_public_methods_constant_freeze() -> None:
+    """STAGE_PUBLIC_METHODS matches the frozen tuple in SPEC §13.20."""
+    expected = (
+        "artifact",
+        "blocked",
+        "clear_terminal",
+        "diagnose",
+        "done",
+        "events",
+        "fail",
+        "heartbeat",
+        "init",
+        "note",
+        "reclaim",
+        "start",
+        "status",
+        "supervise",
+        "wait",
+    )
+    assert STAGE_PUBLIC_METHODS == expected
+    assert isinstance(STAGE_PUBLIC_METHODS, tuple)
+    assert len(STAGE_PUBLIC_METHODS) == 15
+    assert STAGE_PUBLIC_METHODS == tuple(sorted(STAGE_PUBLIC_METHODS))
+
+    # All methods required by issue #134 must be present
+    mandatory_minimum = (
+        "init",
+        "start",
+        "heartbeat",
+        "note",
+        "done",
+        "blocked",
+        "fail",
+        "reclaim",
+        "clear_terminal",
+        "supervise",
+        "status",
+        "wait",
+    )
+    for method in mandatory_minimum:
+        assert method in STAGE_PUBLIC_METHODS, f"Mandatory method {method!r} missing"
+
+    for method in STAGE_PUBLIC_METHODS:
+        assert isinstance(method, str)
+        assert method
+        assert method == method.strip()
+
+
+def test_stage_public_methods_exported_from_top_level() -> None:
+    """STAGE_PUBLIC_METHODS is exported from top-level stage_signal (SPEC §13.20)."""
+    import stage_signal
+
+    assert hasattr(stage_signal, "STAGE_PUBLIC_METHODS")
+    assert "STAGE_PUBLIC_METHODS" in stage_signal.__all__
+    assert stage_signal.STAGE_PUBLIC_METHODS is STAGE_PUBLIC_METHODS
+
+
+def test_stage_public_methods_exist_and_callable(tmp_path: Path) -> None:
+    """Every method in STAGE_PUBLIC_METHODS exists and is callable on Stage (SPEC §13.20)."""
+    stage_dir = tmp_path / ".stage-signal"
+    stage = Stage(stage_dir)
+
+    for method_name in STAGE_PUBLIC_METHODS:
+        assert hasattr(stage, method_name), f"Stage instance missing method {method_name!r}"
+        method = getattr(stage, method_name)
+        assert callable(method), f"Stage.{method_name} is not callable"
+        # Must have docstring
+        assert getattr(Stage, method_name).__doc__, f"Stage.{method_name} missing docstring"
+
+
+def test_stage_public_methods_no_accidental_private_leakage() -> None:
+    """No private names in STAGE_PUBLIC_METHODS and no unlisted public methods (SPEC §13.20)."""
+    # 1. No private or dunder names in STAGE_PUBLIC_METHODS
+    for method_name in STAGE_PUBLIC_METHODS:
+        assert not method_name.startswith("_"), f"Private name {method_name!r} leaked into freeze list"
+
+    # 2. All public callables on Stage (excluding classmethod open) match STAGE_PUBLIC_METHODS
+    public_callables = {
+        name
+        for name in dir(Stage)
+        if not name.startswith("_") and callable(getattr(Stage, name))
+    }
+    # open is a classmethod constructor; all others are instance methods
+    assert public_callables == set(STAGE_PUBLIC_METHODS) | {"open"}
+
+    # 3. dir is an exposed property on Stage, not a method
+    assert hasattr(Stage, "dir")
+    assert isinstance(getattr(Stage, "dir"), property)
+
+
+def test_top_level_helpers_exported_and_callable() -> None:
+    """Top-level helper functions cross-linked in SPEC §13.20 are exported and callable."""
+    import stage_signal
+
+    helpers = (
+        "resolve_dir",
+        "state_exit_code",
+        "render_status_md",
+        "write_status_mirror",
+        "verify_proof",
+        "wait_condition_met",
+        "want_matches",
+        "StageStore",
+    )
+    for helper in helpers:
+        assert hasattr(stage_signal, helper), f"stage_signal missing helper {helper!r}"
+        assert helper in stage_signal.__all__, f"{helper!r} not in stage_signal.__all__"
+        attr = getattr(stage_signal, helper)
+        assert callable(attr), f"{helper!r} is not callable"
+
+
+def test_stage_public_methods_lifecycle_smoke(tmp_path: Path) -> None:
+    """Smoke test exercising all 15 public methods on Stage (SPEC §11, §13.20)."""
+    stage_dir = tmp_path / ".stage-signal"
+    stage = Stage(stage_dir)
+
+    # 1. init
+    init_res = stage.init(project="smoke-proj")
+    assert init_res["state"] == "queued"
+    assert init_res["project"] == "smoke-proj"
+
+    # 2. start
+    start_res = stage.start(stage="smoke-step", pid=os.getpid())
+    assert start_res["state"] == "running"
+    assert start_res["stage_name"] == "smoke-step"
+
+    # 3. heartbeat
+    hb_res = stage.heartbeat(note="smoke heartbeat")
+    assert hb_res["state"] == "running"
+    assert hb_res["heartbeat_note"] == "smoke heartbeat"
+
+    # 4. note
+    note_res = stage.note("smoke note")
+    assert note_res["state"] == "running"
+    assert len(note_res["notes"]) == 1
+    assert note_res["notes"][0]["text"] == "smoke note"
+
+    # 5. artifact
+    art_res = stage.artifact("dist/smoke.txt", label="report")
+    assert art_res["state"] == "running"
+    assert len(art_res["artifacts"]) == 1
+    assert art_res["artifacts"][0]["path"] == "dist/smoke.txt"
+
+    # 6. status
+    st_res = stage.status()
+    assert st_res["state"] == "running"
+    assert st_res["stage_name"] == "smoke-step"
+
+    # 7. events
+    ev_res = stage.events()
+    assert isinstance(ev_res, list)
+    assert len(ev_res) >= 5
+
+    # 8. diagnose
+    diag_res = stage.diagnose()
+    assert diag_res["ok"] is True
+    assert diag_res["state"] == "running"
+
+    # 9. done
+    done_res = stage.done(summary="smoke complete")
+    assert done_res["state"] == "done"
+    assert done_res["result"]["summary"] == "smoke complete"
+
+    # 10. wait (already met)
+    wait_res = stage.wait(want="done", timeout=1, poll=0.01)
+    assert wait_res["state"] == "done"
+
+    # 11. clear_terminal
+    clear_res = stage.clear_terminal()
+    assert clear_res["state"] == "queued"
+    assert clear_res["stage_name"] is None
+
+    # 12. blocked
+    stage.start(stage="smoke-block", pid=os.getpid())
+    block_res = stage.blocked(reason="smoke blocked reason")
+    assert block_res["state"] == "blocked"
+    assert block_res["error"]["reason"] == "smoke blocked reason"
+    stage.clear_terminal()
+
+    # 13. fail
+    stage.start(stage="smoke-fail", pid=os.getpid())
+    fail_res = stage.fail(reason="smoke failed reason")
+    assert fail_res["state"] == "failed"
+    assert fail_res["error"]["reason"] == "smoke failed reason"
+    stage.clear_terminal()
+
+    # 14. supervise (runs command and auto-heartbeats to done)
+    stage.start(stage="smoke-supervise", pid=os.getpid())
+    rc = stage.supervise([sys.executable, "-c", "import sys; sys.exit(0)"])
+    assert rc == 0
+    assert stage.status()["state"] == "done"
+    stage.clear_terminal()
+
+    # 15. reclaim (with dead pid)
+    dead_proc = subprocess.Popen([sys.executable, "-c", "pass"])
+    dead_proc.wait(timeout=5)
+    stage.start(stage="smoke-dead", pid=dead_proc.pid)
+    assert stage.status()["needs_reclaim"] is True
+    reclaim_res = stage.reclaim(reason="dead worker reclaim")
+    assert reclaim_res["state"] == "queued"
+    assert stage.status()["needs_reclaim"] is False
