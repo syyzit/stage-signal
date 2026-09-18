@@ -21,10 +21,17 @@ from .constants import (
     DEFAULT_MIRROR_DIRNAME,
     DEFAULT_STALE_THRESHOLD,
     SUPERVISE_DEFAULT_EVERY,
+    SUPERVISE_DONE_SUMMARY_FORMAT,
+    SUPERVISE_EXIT_NOT_FOUND,
+    SUPERVISE_EXIT_PERMISSION_DENIED,
+    SUPERVISE_FAIL_REASON_FORMAT,
+    SUPERVISE_SIGNAL_REASON_FORMAT,
     ENV_STATUS_MIRROR,
     ENV_PROJECT,
     ENV_PROOF_REF,
     allowed_source_states,
+    supervise_adopt_message,
+    supervise_signal_exit,
     EVENT_TYPES,
     MAX_NOTES,
     SCHEMA_VERSION,
@@ -757,6 +764,8 @@ class Stage:
         and the terminal transition is recorded before returning.
 
         Returns the exit code of the child process (or 128 + sig on signal).
+        The adoption heartbeat shape and exit-code mapping are frozen
+        under schema_version 1 (SPEC §13.24).
         """
         if (
             not isinstance(every, (int, float))
@@ -799,13 +808,13 @@ class Stage:
                 reason=f"command not found: {cmd_list[0]}",
                 write_status_mirror=write_status_mirror,
             )
-            return 127
+            return SUPERVISE_EXIT_NOT_FOUND
         except PermissionError as exc:
             self.fail(
                 reason=f"permission denied: {cmd_list[0]}",
                 write_status_mirror=write_status_mirror,
             )
-            return 126
+            return SUPERVISE_EXIT_PERMISSION_DENIED
         except OSError as exc:
             self.fail(
                 reason=f"failed to execute command {cmd_list[0]}: {exc}",
@@ -837,7 +846,7 @@ class Stage:
                             "stage_name": current.get("stage_name"),
                             "state": current.get("state"),
                             "attempt": current.get("attempt"),
-                            "message": f"adopted child pid {child_pid}",
+                            "message": supervise_adopt_message(child_pid),
                             "detail": {
                                 "previous_pid": previous_pid,
                                 "pid": child_pid,
@@ -917,15 +926,19 @@ class Stage:
                 sig_name = signal.Signals(sig_num).name
             except (ValueError, AttributeError):
                 sig_name = f"SIG{sig_num}"
-            exit_code = 128 + sig_num
-            default_fail_reason = f"command terminated by {sig_name}: {cmd_display}"
+            exit_code = supervise_signal_exit(sig_num)
+            default_fail_reason = SUPERVISE_SIGNAL_REASON_FORMAT.format(
+                signame=sig_name, cmd=cmd_display
+            )
         else:
             exit_code = rc
-            default_fail_reason = f"command failed with exit code {exit_code}: {cmd_display}"
+            default_fail_reason = SUPERVISE_FAIL_REASON_FORMAT.format(
+                code=exit_code, cmd=cmd_display
+            )
 
         if exit_code == 0:
             self.done(
-                summary=summary or f"command succeeded (exit 0): {cmd_display}",
+                summary=summary or SUPERVISE_DONE_SUMMARY_FORMAT.format(cmd=cmd_display),
                 write_status_mirror=write_status_mirror,
             )
         else:

@@ -1387,7 +1387,7 @@ External orchestrators, Python embedders, typing tools, and harnesses interact w
 
 #### 13.21.1 Canonical export inventory
 
-`stage_signal` exports exactly 93 public symbols matching `stage_signal.__all__`. These symbols are structured into four canonical categories:
+`stage_signal` exports exactly 103 public symbols matching `stage_signal.__all__`. These symbols are structured into four canonical categories:
 
 ##### 1. Classes (§11, §13.20)
 - `Stage`: The primary high-level lifecycle orchestrator, embedding context manager, and transition driver (§11, §13.20).
@@ -1410,6 +1410,8 @@ All six structured exceptions inherit from `StageError` and carry a normative `.
 - `is_transition_allowed(from_state: str, command: str) -> bool`: Evaluates whether a `(from_state, command)` transition edge is legal (§13.19).
 - `transition_target(from_state: str, command: str) -> str`: Returns the target state for a legal transition edge or raises `ValueError` (§13.19).
 - `verify_proof(ref: Optional[str] = None) -> dict[str, Any]`: Verifies composition proof artifacts for `--require-proof` gates (§9, §13.10).
+- `supervise_adopt_message(pid) -> str`: Renders the frozen supervise adoption heartbeat message (`SUPERVISE_ADOPT_MESSAGE_FORMAT`; §13.24).
+- `supervise_signal_exit(signum: int) -> int`: Maps a terminating signal number to the frozen supervise exit code `128 + SIGNUM` (§13.24).
 - `wait_condition_met(status: dict[str, Any], *, want: str, needs_reclaim: bool = False) -> bool`: Evaluates whether wait criteria are satisfied (§6, §13.11).
 - `want_matches(want: str, state: str) -> bool`: Matches target state against wait condition strings (§6).
 - `write_status_mirror(stage_dir: Path, status: dict[str, Any], *, repo_root: Optional[Path] = None) -> Optional[Path]`: Best-effort repository-level `.orch/STATUS.md` and `.orch/DONE` mirror writer (§10).
@@ -1426,7 +1428,7 @@ All six structured exceptions inherit from `StageError` and carry a normative `.
 - **Inventories:**
   - `CLI_SUBCOMMANDS`: 15 frozen CLI subcommands (§13.15).
   - `STAGE_PUBLIC_METHODS`: 15 frozen `Stage` public instance methods (§13.20).
-  - `PUBLIC_EXPORTS`: 93 frozen public symbols exported from top-level package namespace (§13.21).
+  - `PUBLIC_EXPORTS`: 103 frozen public symbols exported from top-level package namespace (§13.21).
 - **Exit codes:**
   - `EXIT_CODES`: Tuple of all 10 standard exit codes (§7, §13.4).
   - Individual exit codes: `EXIT_OK` (0), `EXIT_ERROR` (1), `EXIT_BAD_ARGS` (2), `EXIT_ILLEGAL_TRANSITION` (3), `EXIT_RUNNING` (10), `EXIT_BLOCKED` (11), `EXIT_FAILED` (12), `EXIT_QUEUED` (13), `EXIT_WAIT_TIMEOUT` (14), `EXIT_NOT_INITIALIZED` (15) (§7, §13.4).
@@ -1471,6 +1473,9 @@ All six structured exceptions inherit from `StageError` and carry a normative `.
   - `STATUS_MD_HEADINGS`: Union of required and optional headings (§13.18).
 - **Supervision:**
   - `SUPERVISE_DEFAULT_EVERY`: Child supervision heartbeat interval (60.0; §4, §6, §13.14).
+  - `SUPERVISE_ADOPT_MESSAGE_FORMAT` (`"adopted child pid {pid}"`) and helper `supervise_adopt_message(pid)`; `SUPERVISE_ADOPT_DETAIL_KEYS` (`previous_pid`, `pid`, `pid_token`; §13.24).
+  - Default terminal templates: `SUPERVISE_DONE_SUMMARY_FORMAT` (`"command succeeded (exit 0): {cmd}"`), `SUPERVISE_FAIL_REASON_FORMAT` (`"command failed with exit code {code}: {cmd}"`), `SUPERVISE_SIGNAL_REASON_FORMAT` (`"command terminated by {signame}: {cmd}"`; §13.24).
+  - Exit mapping: `SUPERVISE_SIGNAL_EXIT_BASE` (128) and helper `supervise_signal_exit(signum)`; spawn failures `SUPERVISE_EXIT_NOT_FOUND` (127) and `SUPERVISE_EXIT_PERMISSION_DENIED` (126; §7, §13.24).
 
 #### 13.21.2 Frozen structure export (`PUBLIC_EXPORTS`)
 
@@ -1540,7 +1545,15 @@ PUBLIC_EXPORTS: tuple[str, ...] = (
     "STATUS_MD_REQUIRED_HEADINGS",
     "STATUS_MD_TITLE",
     "STATUS_REQUIRED_KEYS",
+    "SUPERVISE_ADOPT_DETAIL_KEYS",
+    "SUPERVISE_ADOPT_MESSAGE_FORMAT",
     "SUPERVISE_DEFAULT_EVERY",
+    "SUPERVISE_DONE_SUMMARY_FORMAT",
+    "SUPERVISE_EXIT_NOT_FOUND",
+    "SUPERVISE_EXIT_PERMISSION_DENIED",
+    "SUPERVISE_FAIL_REASON_FORMAT",
+    "SUPERVISE_SIGNAL_EXIT_BASE",
+    "SUPERVISE_SIGNAL_REASON_FORMAT",
     "Stage",
     "StageError",
     "StageStore",
@@ -1566,6 +1579,8 @@ PUBLIC_EXPORTS: tuple[str, ...] = (
     "render_status_md",
     "resolve_dir",
     "state_exit_code",
+    "supervise_adopt_message",
+    "supervise_signal_exit",
     "transition_target",
     "verify_proof",
     "wait_condition_met",
@@ -1593,7 +1608,7 @@ Under `schema_version: 1`, the top-level public export inventory is strictly **a
 - Existing symbols in `PUBLIC_EXPORTS` MUST NOT be removed, renamed, or relocated.
 - Existing symbol types, semantics, and contracts MUST NOT undergo breaking changes.
 - Future minor or patch releases under schema version 1 MAY add new classes, helper functions, or frozen constants to `stage_signal`, expanding `PUBLIC_EXPORTS` and `__all__`.
-- External orchestrators, embedders, and typing definitions can safely rely on the uninterrupted presence of all 93 public exports throughout the entire lifecycle of `schema_version: 1`.
+- External orchestrators, embedders, and typing definitions can safely rely on the uninterrupted presence of all 103 public exports throughout the entire lifecycle of `schema_version: 1`.
 
 ### 13.22 Doctor human summary strings freeze (`DOCTOR_SUMMARY_RECLAIM_NEEDED`, `DOCTOR_SUMMARY_OK_FORMAT`)
 
@@ -1628,4 +1643,78 @@ Under `schema_version: 1`, doctor summary strings are strictly **additive-only**
 - The null-vs-string rule in §13.22.2 MUST NOT change: `summary` stays `null` exactly when `problems` is non-empty.
 - New summary variants for future states or conditions MAY be added in minor or patch releases only as additional `"OK: {state}"` renderings for new states, or as new distinct constants; existing frozen strings MUST keep their exact values.
 - Readers MUST treat `summary` as display-only and tolerate unknown future summary strings without failing.
+
+### 13.23 Reserved (wait wants vocabulary)
+
+Reserved for the wait wants vocabulary freeze (issue #141). New sections MUST NOT claim this number.
+
+### 13.24 Supervise child-PID adoption and supervisor exit contract freeze (`SUPERVISE_ADOPT_MESSAGE_FORMAT`, `SUPERVISE_ADOPT_DETAIL_KEYS`, `SUPERVISE_SIGNAL_EXIT_BASE`, `SUPERVISE_EXIT_NOT_FOUND`, `SUPERVISE_EXIT_PERMISSION_DENIED`)
+
+`Stage.supervise` / `stage-signal supervise` (§4 rule 7, §6, §13.20) runs a child command while auto-heartbeating, then records a terminal transition and returns the supervisor exit code. Under `schema_version: 1`, the adoption heartbeat shape and the supervisor exit-code mapping are frozen so orchestrators can branch on the adoption event and on the returned exit code without scraping human text. `doctor` liveness checks and `reclaim --kill` target the adopted child PID rather than the supervisor wrapper process (§13.8).
+
+#### 13.24.1 Frozen constants and exact formats
+
+The single sources of truth are defined in `stage_signal.constants` and exported from `stage_signal` and `__all__`:
+
+```python
+SUPERVISE_ADOPT_MESSAGE_FORMAT = "adopted child pid {pid}"
+SUPERVISE_ADOPT_DETAIL_KEYS = ("previous_pid", "pid", "pid_token")
+
+SUPERVISE_DONE_SUMMARY_FORMAT = "command succeeded (exit 0): {cmd}"
+SUPERVISE_FAIL_REASON_FORMAT = "command failed with exit code {code}: {cmd}"
+SUPERVISE_SIGNAL_REASON_FORMAT = "command terminated by {signame}: {cmd}"
+
+SUPERVISE_SIGNAL_EXIT_BASE = 128
+SUPERVISE_EXIT_NOT_FOUND = 127
+SUPERVISE_EXIT_PERMISSION_DENIED = 126
+```
+
+- The helper `supervise_adopt_message(pid) -> str` renders `SUPERVISE_ADOPT_MESSAGE_FORMAT.format(pid=pid)` and is exported alongside the constants.
+- The helper `supervise_signal_exit(signum: int) -> int` returns `SUPERVISE_SIGNAL_EXIT_BASE + signum` and is exported alongside the constants.
+
+#### 13.24.2 Precondition
+
+The stage MUST already be in state `running` before spawning the child (§4, §6, §13.19):
+
+| Precondition failure | Library | CLI exit |
+|----------------------|---------|----------|
+| Stage not initialized (missing dir/STATUS) | `NotInitialized` | 15 (`EXIT_NOT_INITIALIZED`; §7, §13.4, §13.17) |
+| Current state is not `running` | `IllegalTransition` | 3 (`EXIT_ILLEGAL_TRANSITION`; §7, §13.4, §13.17) |
+| Empty/invalid command or `every` out of range | `BadArgsError` | 2 (`EXIT_BAD_ARGS`; §7, §13.4, §13.17) |
+
+No child process is spawned and no STATUS, event, or mirror mutation occurs on precondition failure.
+
+#### 13.24.3 Adoption under exclusive lock
+
+After `Popen` successfully spawns the child, `supervise` updates STATUS under a single exclusive lock (§8): `pid` becomes the child's `proc.pid`, `pid_token` is refreshed via the existing start-identity capture (or `null` when capture is unavailable, same as `start`; §4), and `updated_at` / `heartbeat_at` are bumped. `stage_id`, `stage_name`, `attempt`, and `session_id` are preserved unchanged.
+
+In that same locked section, adoption is recorded as a `heartbeat` event (no new event type; §5, §13.5):
+
+- `message` is exactly `supervise_adopt_message(child_pid)` (`"adopted child pid <N>"`, byte-for-byte, no affixes).
+- `detail` carries exactly the `SUPERVISE_ADOPT_DETAIL_KEYS` (`previous_pid` is the supervisor-recorded PID before adoption, `pid` is the adopted child PID, `pid_token` is the refreshed token or `null`).
+
+Readers MUST tolerate additive unknown keys on the adoption `detail` object without failing (§13.1).
+
+#### 13.24.4 Terminal mapping and supervisor exit codes
+
+When the child exits, `supervise` records a terminal transition (§4) and returns the supervisor exit code:
+
+| Child outcome | Terminal state | Default `result.summary` / `error.reason` (overridable via `summary=` / `reason=`) | Supervisor return |
+|---------------|----------------|--------------------------------------------------------------------------------------|-------------------|
+| Exit 0 | `done` | `SUPERVISE_DONE_SUMMARY_FORMAT.format(cmd=CMD)` | 0 |
+| Exit N (non-zero) | `failed` | `SUPERVISE_FAIL_REASON_FORMAT.format(code=N, cmd=CMD)` | N (the child exit code) |
+| Terminated by signal SIGNUM | `failed` | `SUPERVISE_SIGNAL_REASON_FORMAT.format(signame=NAME, cmd=CMD)` | `supervise_signal_exit(SIGNUM)` (`128 + SIGNUM`) |
+| Spawn fails: command not found | `failed` (`"command not found: ..."`) | — | `SUPERVISE_EXIT_NOT_FOUND` (127) |
+| Spawn fails: permission denied | `failed` (`"permission denied: ..."`) | — | `SUPERVISE_EXIT_PERMISSION_DENIED` (126) |
+
+`CMD` is the shell-quoted command display string. Signals (`SIGINT`, `SIGTERM`) received by the supervisor are forwarded to the child; the supervisor waits for child exit and records the terminal transition before returning.
+
+#### 13.24.5 Additive-only evolution policy
+
+Under `schema_version: 1`, the supervise adoption and exit contract is strictly **additive-only** (§13.1):
+
+- The frozen adoption message format, detail keys, default summary/reason templates, and exit-code mapping MUST NOT be removed, renamed, reworded, or change semantic meaning.
+- No new event type is introduced for adoption: the adoption record stays a `heartbeat` event (§13.5).
+- New adoption detail keys or terminal templates MAY be added in minor or patch releases only as additional constants; existing frozen values MUST keep their exact values.
+- Readers MUST tolerate unknown future adoption detail keys and unknown future summary/reason strings without failing.
 
