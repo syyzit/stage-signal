@@ -272,6 +272,23 @@ FAIL_IF_NEEDS_RECLAIM_ALLOWED_SOURCES = (
 )
 
 FAIL_DETAIL_KEYS: tuple[str, ...] = ()
+# Frozen start/claim-running contract (SPEC §13.33)
+START_ALLOWED_SOURCES = (
+    "queued",
+    "running",
+    "done",
+    "blocked",
+    "failed",
+)
+
+START_DETAIL_KEYS = (
+    "stage_id",
+    "session_id",
+    "pid",
+    "model",
+    "variant",
+)
+
 # Frozen schema_version 1 key sets (SPEC §13)
 STATUS_REQUIRED_KEYS = (
     "schema_version",
@@ -556,6 +573,8 @@ PUBLIC_EXPORTS: tuple[str, ...] = (
     "RESULT_KEYS",
     "SCHEMA_VERSION",
     "STAGE_PUBLIC_METHODS",
+    "START_ALLOWED_SOURCES",
+    "START_DETAIL_KEYS",
     "STATES",
     "STATE_BLOCKED",
     "STATE_DONE",
