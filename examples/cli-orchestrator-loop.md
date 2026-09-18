@@ -1,5 +1,7 @@
 # Multi-CLI Orchestrator Loop: agy & OpenCode
 
+> **Dogfood harness, not the product.** This guide is an **example outer harness** used while dogfooding stage-signal. The published product is only the thin `.stage-signal/` lifecycle contract (CLI + on-disk status). AGLoop / `.agloop/` (and `.museloop/`) are private orchestrator state, never part of the published package.
+
 This guide demonstrates how an **external orchestrator loop** drives coding agents through a sequence of milestones using `stage-signal` as the contract.
 
 The core thesis of `stage-signal` is simple:
