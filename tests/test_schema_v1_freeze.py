@@ -66,7 +66,15 @@ from stage_signal import (
     STATUS_MD_TITLE,
     STATUS_REQUIRED_KEYS,
     STAGE_PUBLIC_METHODS,
+    SUPERVISE_ADOPT_DETAIL_KEYS,
+    SUPERVISE_ADOPT_MESSAGE_FORMAT,
     SUPERVISE_DEFAULT_EVERY,
+    SUPERVISE_DONE_SUMMARY_FORMAT,
+    SUPERVISE_EXIT_NOT_FOUND,
+    SUPERVISE_EXIT_PERMISSION_DENIED,
+    SUPERVISE_FAIL_REASON_FORMAT,
+    SUPERVISE_SIGNAL_EXIT_BASE,
+    SUPERVISE_SIGNAL_REASON_FORMAT,
     TERMINAL_STATES,
     WAIT_JSON_KEYS,
     WAIT_OUTCOME_MET,
@@ -93,6 +101,8 @@ from stage_signal import (
     allowed_source_states,
     doctor_summary_ok,
     is_transition_allowed,
+    supervise_adopt_message,
+    supervise_signal_exit,
     transition_target,
     write_status_mirror,
     DEFAULT_STALE_THRESHOLD,
@@ -3722,7 +3732,7 @@ def test_diagnose_doctor_json_summary_null_on_problems(
 
 
 def test_public_exports_constant_freeze() -> None:
-    """PUBLIC_EXPORTS matches the frozen 93-element tuple in SPEC §13.21."""
+    """PUBLIC_EXPORTS matches the frozen 103-element tuple in SPEC §13.21."""
     expected = (
         "ALLOWED_TRANSITIONS",
         "ARTIFACT_ENTRY_KEYS",
@@ -3786,7 +3796,15 @@ def test_public_exports_constant_freeze() -> None:
         "STATUS_MD_REQUIRED_HEADINGS",
         "STATUS_MD_TITLE",
         "STATUS_REQUIRED_KEYS",
+        "SUPERVISE_ADOPT_DETAIL_KEYS",
+        "SUPERVISE_ADOPT_MESSAGE_FORMAT",
         "SUPERVISE_DEFAULT_EVERY",
+        "SUPERVISE_DONE_SUMMARY_FORMAT",
+        "SUPERVISE_EXIT_NOT_FOUND",
+        "SUPERVISE_EXIT_PERMISSION_DENIED",
+        "SUPERVISE_FAIL_REASON_FORMAT",
+        "SUPERVISE_SIGNAL_EXIT_BASE",
+        "SUPERVISE_SIGNAL_REASON_FORMAT",
         "Stage",
         "StageError",
         "StageStore",
@@ -3812,6 +3830,8 @@ def test_public_exports_constant_freeze() -> None:
         "render_status_md",
         "resolve_dir",
         "state_exit_code",
+        "supervise_adopt_message",
+        "supervise_signal_exit",
         "transition_target",
         "verify_proof",
         "wait_condition_met",
@@ -3820,7 +3840,7 @@ def test_public_exports_constant_freeze() -> None:
     )
     assert PUBLIC_EXPORTS == expected
     assert isinstance(PUBLIC_EXPORTS, tuple)
-    assert len(PUBLIC_EXPORTS) == 93
+    assert len(PUBLIC_EXPORTS) == 103
     assert PUBLIC_EXPORTS == tuple(sorted(PUBLIC_EXPORTS))
     assert len(PUBLIC_EXPORTS) == len(set(PUBLIC_EXPORTS))
 
@@ -3905,6 +3925,9 @@ def test_public_exports_category_coverage() -> None:
         "wait_condition_met",
         "want_matches",
         "write_status_mirror",
+        "doctor_summary_ok",
+        "supervise_adopt_message",
+        "supervise_signal_exit",
     }
     for fn_name in helpers:
         assert fn_name in PUBLIC_EXPORTS
@@ -3942,6 +3965,14 @@ def test_public_exports_category_coverage() -> None:
         "STATUS_MD_REQUIRED_HEADINGS",
         "STATUS_MD_HEADINGS",
         "PUBLIC_EXPORTS",
+        "SUPERVISE_ADOPT_MESSAGE_FORMAT",
+        "SUPERVISE_ADOPT_DETAIL_KEYS",
+        "SUPERVISE_DONE_SUMMARY_FORMAT",
+        "SUPERVISE_FAIL_REASON_FORMAT",
+        "SUPERVISE_SIGNAL_REASON_FORMAT",
+        "SUPERVISE_SIGNAL_EXIT_BASE",
+        "SUPERVISE_EXIT_NOT_FOUND",
+        "SUPERVISE_EXIT_PERMISSION_DENIED",
     }
     for const_name in core_constants:
         assert const_name in PUBLIC_EXPORTS
@@ -3967,3 +3998,213 @@ def test_public_exports_cross_links() -> None:
     )
     for exc_name in frozen_exceptions:
         assert exc_name in PUBLIC_EXPORTS
+
+
+# =============================================================================
+# 20. Supervise child-PID adoption + supervisor exit contract freeze (SPEC §13.24, issue #142)
+# =============================================================================
+
+
+def test_supervise_adopt_constants_freeze() -> None:
+    """Supervise adoption/exit constants match the frozen values in SPEC §13.24.1."""
+    assert SUPERVISE_ADOPT_MESSAGE_FORMAT == "adopted child pid {pid}"
+    assert isinstance(SUPERVISE_ADOPT_MESSAGE_FORMAT, str)
+
+    assert SUPERVISE_ADOPT_DETAIL_KEYS == ("previous_pid", "pid", "pid_token")
+    assert isinstance(SUPERVISE_ADOPT_DETAIL_KEYS, tuple)
+    assert len(SUPERVISE_ADOPT_DETAIL_KEYS) == 3
+
+    assert SUPERVISE_DONE_SUMMARY_FORMAT == "command succeeded (exit 0): {cmd}"
+    assert SUPERVISE_FAIL_REASON_FORMAT == "command failed with exit code {code}: {cmd}"
+    assert SUPERVISE_SIGNAL_REASON_FORMAT == "command terminated by {signame}: {cmd}"
+    for template in (
+        SUPERVISE_DONE_SUMMARY_FORMAT,
+        SUPERVISE_FAIL_REASON_FORMAT,
+        SUPERVISE_SIGNAL_REASON_FORMAT,
+    ):
+        assert isinstance(template, str)
+
+    assert SUPERVISE_SIGNAL_EXIT_BASE == 128
+    assert isinstance(SUPERVISE_SIGNAL_EXIT_BASE, int)
+    assert SUPERVISE_EXIT_NOT_FOUND == 127
+    assert SUPERVISE_EXIT_PERMISSION_DENIED == 126
+
+    # Helpers render exactly the frozen formats (SPEC §13.24.1)
+    assert supervise_adopt_message(1234) == "adopted child pid 1234"
+    assert (
+        supervise_adopt_message(1234)
+        == SUPERVISE_ADOPT_MESSAGE_FORMAT.format(pid=1234)
+    )
+    assert callable(supervise_adopt_message)
+    assert supervise_signal_exit(15) == 143
+    assert supervise_signal_exit(9) == 137
+    assert (
+        supervise_signal_exit(2) == SUPERVISE_SIGNAL_EXIT_BASE + 2
+    )
+    assert callable(supervise_signal_exit)
+
+
+def test_supervise_adopt_constants_exported_from_top_level() -> None:
+    """Supervise freeze constants/helpers are exported from top-level stage_signal (SPEC §13.24)."""
+    import stage_signal
+
+    for name, expected in (
+        ("SUPERVISE_ADOPT_MESSAGE_FORMAT", SUPERVISE_ADOPT_MESSAGE_FORMAT),
+        ("SUPERVISE_ADOPT_DETAIL_KEYS", SUPERVISE_ADOPT_DETAIL_KEYS),
+        ("SUPERVISE_DONE_SUMMARY_FORMAT", SUPERVISE_DONE_SUMMARY_FORMAT),
+        ("SUPERVISE_FAIL_REASON_FORMAT", SUPERVISE_FAIL_REASON_FORMAT),
+        ("SUPERVISE_SIGNAL_REASON_FORMAT", SUPERVISE_SIGNAL_REASON_FORMAT),
+        ("SUPERVISE_SIGNAL_EXIT_BASE", SUPERVISE_SIGNAL_EXIT_BASE),
+        ("SUPERVISE_EXIT_NOT_FOUND", SUPERVISE_EXIT_NOT_FOUND),
+        ("SUPERVISE_EXIT_PERMISSION_DENIED", SUPERVISE_EXIT_PERMISSION_DENIED),
+        ("supervise_adopt_message", supervise_adopt_message),
+        ("supervise_signal_exit", supervise_signal_exit),
+    ):
+        assert hasattr(stage_signal, name), f"stage_signal missing {name!r}"
+        assert name in stage_signal.__all__, f"{name!r} not in stage_signal.__all__"
+        assert getattr(stage_signal, name) is expected
+
+
+def test_supervise_precondition_freeze(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Supervise precondition failures map to frozen exits with no mutation (SPEC §13.24.2)."""
+    stage_dir = tmp_path / ".stage-signal"
+    stage = Stage(str(stage_dir))
+    stage.init(project="supervise-precondition-freeze")
+    status_file = stage_dir / "STATUS.json"
+
+    def assert_no_mutation(snapshot: str, event_count: int) -> None:
+        assert status_file.read_text(encoding="utf-8") == snapshot
+        assert len(stage.events()) == event_count
+
+    # 1. Queued (not running) -> IllegalTransition / exit 3, no child spawned
+    before = status_file.read_text(encoding="utf-8")
+    with pytest.raises(IllegalTransition, match="requires state 'running'"):
+        stage.supervise([sys.executable, "-c", "pass"])
+    assert_no_mutation(before, 1)
+
+    capsys.readouterr()
+    assert (
+        main(["--dir", str(stage_dir), "supervise", "--", sys.executable, "-c", "pass"])
+        == EXIT_ILLEGAL_TRANSITION
+    )
+    assert "requires state 'running'" in capsys.readouterr().err
+    assert_no_mutation(before, 1)
+
+    # 2. Terminal state (done) -> IllegalTransition / exit 3
+    stage.start(stage="precondition-step", pid=os.getpid())
+    stage.done(summary="finished")
+    before = status_file.read_text(encoding="utf-8")
+    events_before = len(stage.events())
+    with pytest.raises(IllegalTransition, match="requires state 'running'"):
+        stage.supervise([sys.executable, "-c", "pass"])
+    assert_no_mutation(before, events_before)
+
+    # 3. Not initialized -> NotInitialized / exit 15
+    missing = tmp_path / "does-not-exist"
+    uninit = Stage(missing)
+    with pytest.raises(NotInitialized):
+        uninit.supervise([sys.executable, "-c", "pass"])
+
+    capsys.readouterr()
+    assert (
+        main(["--dir", str(missing), "supervise", "--", sys.executable, "-c", "pass"])
+        == EXIT_NOT_INITIALIZED
+    )
+
+
+def test_supervise_adopt_heartbeat_shape_freeze(tmp_path: Path) -> None:
+    """Adoption records STATUS pid/pid_token + exact heartbeat shape (SPEC §13.24.3).
+
+    Synchronous smoke using an instant child process (no sleeps/threads).
+    """
+    stage_dir = tmp_path / ".stage-signal"
+    stage = Stage(str(stage_dir))
+    stage.init(project="supervise-adopt-freeze")
+    previous_pid = 999999
+    stage.start(stage="adopt-step", pid=previous_pid, session_id="sess-adopt-freeze")
+
+    rc = stage.supervise([sys.executable, "-c", "pass"])
+    assert rc == 0
+
+    status = stage.status()
+    child_pid = status["pid"]
+    assert isinstance(child_pid, int)
+    assert child_pid != previous_pid
+    # Identity preserved across adoption (SPEC §13.24.3)
+    assert status["stage_id"] == "adopt-step"
+    assert status["stage_name"] == "adopt-step"
+    assert status["session_id"] == "sess-adopt-freeze"
+    assert status["attempt"] == 1
+
+    # Exactly one adoption heartbeat with the frozen message + detail keys
+    adopt_events = [
+        e
+        for e in stage.events(type="heartbeat")
+        if e.get("message", "").startswith("adopted child pid ")
+    ]
+    assert len(adopt_events) == 1
+    adopt = adopt_events[0]
+    # No new event type introduced (SPEC §13.5, §13.24.5)
+    assert adopt["type"] == "heartbeat"
+    assert adopt["type"] in EVENT_TYPES
+    assert adopt["message"] == supervise_adopt_message(child_pid)
+    assert adopt["message"] == f"adopted child pid {child_pid}"
+    assert set(adopt["detail"].keys()) == set(SUPERVISE_ADOPT_DETAIL_KEYS)
+    assert adopt["detail"] == {
+        "previous_pid": previous_pid,
+        "pid": child_pid,
+        "pid_token": status["pid_token"],
+    }
+
+    # Exit 0 resolves to done with the frozen default summary template
+    assert status["state"] == STATE_DONE
+    import shlex as _shlex
+
+    expected_cmd = " ".join(
+        _shlex.quote(arg) for arg in (sys.executable, "-c", "pass")
+    )
+    assert status["result"]["summary"] == SUPERVISE_DONE_SUMMARY_FORMAT.format(
+        cmd=expected_cmd
+    )
+    assert status["error"] is None
+
+
+def test_supervise_exit_mapping_freeze(tmp_path: Path) -> None:
+    """Supervisor return codes match the frozen exit mapping (SPEC §13.24.4).
+
+    Synchronous smoke using instant child processes (no sleeps/threads/signals).
+    """
+    stage_dir = tmp_path / ".stage-signal"
+    stage = Stage(str(stage_dir))
+    stage.init(project="supervise-exits-freeze")
+
+    # 1. Non-zero child exit -> failed + frozen default reason, return N
+    stage.start(stage="exit-code-step", pid=os.getpid())
+    rc = stage.supervise([sys.executable, "-c", "import sys; sys.exit(42)"])
+    assert rc == 42
+    status = stage.status()
+    assert status["state"] == STATE_FAILED
+    assert status["result"] is None
+    assert status["error"]["reason"].startswith("command failed with exit code 42: ")
+    assert SUPERVISE_FAIL_REASON_FORMAT.format(code=42, cmd="x").startswith(
+        "command failed with exit code 42: "
+    )
+
+    # 2. Command not found -> failed, return 127 (frozen)
+    stage.start(stage="not-found-step", pid=os.getpid())
+    rc = stage.supervise(["__nonexistent_binary_xyz_12345__"])
+    assert rc == SUPERVISE_EXIT_NOT_FOUND == 127
+    status = stage.status()
+    assert status["state"] == STATE_FAILED
+    assert "command not found" in status["error"]["reason"]
+
+    # 3. Signal mapping helper is frozen (no live signal delivery; non-flaky)
+    import signal as _signal
+
+    assert supervise_signal_exit(_signal.SIGTERM) == 128 + _signal.SIGTERM
+    assert supervise_signal_exit(_signal.SIGINT) == 128 + _signal.SIGINT
+    assert SUPERVISE_SIGNAL_REASON_FORMAT.format(
+        signame="SIGTERM", cmd="sleep 60"
+    ) == "command terminated by SIGTERM: sleep 60"

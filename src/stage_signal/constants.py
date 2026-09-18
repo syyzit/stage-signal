@@ -123,6 +123,33 @@ def doctor_summary_ok(state: object) -> str:
     """Format the healthy doctor summary for *state* (SPEC §6, §13.22)."""
     return DOCTOR_SUMMARY_OK_FORMAT.format(state=state)
 
+
+# Frozen supervise child-PID adoption + exit contract (SPEC §13.24)
+SUPERVISE_ADOPT_MESSAGE_FORMAT = "adopted child pid {pid}"
+SUPERVISE_ADOPT_DETAIL_KEYS = (
+    "previous_pid",
+    "pid",
+    "pid_token",
+)
+
+SUPERVISE_DONE_SUMMARY_FORMAT = "command succeeded (exit 0): {cmd}"
+SUPERVISE_FAIL_REASON_FORMAT = "command failed with exit code {code}: {cmd}"
+SUPERVISE_SIGNAL_REASON_FORMAT = "command terminated by {signame}: {cmd}"
+
+SUPERVISE_SIGNAL_EXIT_BASE = 128
+SUPERVISE_EXIT_NOT_FOUND = 127
+SUPERVISE_EXIT_PERMISSION_DENIED = 126
+
+
+def supervise_adopt_message(pid: object) -> str:
+    """Format the supervise adoption heartbeat message for child *pid* (SPEC §13.24)."""
+    return SUPERVISE_ADOPT_MESSAGE_FORMAT.format(pid=pid)
+
+
+def supervise_signal_exit(signum: int) -> int:
+    """Map a terminating signal number to the supervise exit code 128 + SIGNUM (SPEC §13.24)."""
+    return SUPERVISE_SIGNAL_EXIT_BASE + int(signum)
+
 # Frozen schema_version 1 key sets (SPEC §13)
 STATUS_REQUIRED_KEYS = (
     "schema_version",
@@ -396,7 +423,15 @@ PUBLIC_EXPORTS: tuple[str, ...] = (
     "STATUS_MD_REQUIRED_HEADINGS",
     "STATUS_MD_TITLE",
     "STATUS_REQUIRED_KEYS",
+    "SUPERVISE_ADOPT_DETAIL_KEYS",
+    "SUPERVISE_ADOPT_MESSAGE_FORMAT",
     "SUPERVISE_DEFAULT_EVERY",
+    "SUPERVISE_DONE_SUMMARY_FORMAT",
+    "SUPERVISE_EXIT_NOT_FOUND",
+    "SUPERVISE_EXIT_PERMISSION_DENIED",
+    "SUPERVISE_FAIL_REASON_FORMAT",
+    "SUPERVISE_SIGNAL_EXIT_BASE",
+    "SUPERVISE_SIGNAL_REASON_FORMAT",
     "Stage",
     "StageError",
     "StageStore",
@@ -422,6 +457,8 @@ PUBLIC_EXPORTS: tuple[str, ...] = (
     "render_status_md",
     "resolve_dir",
     "state_exit_code",
+    "supervise_adopt_message",
+    "supervise_signal_exit",
     "transition_target",
     "verify_proof",
     "wait_condition_met",
