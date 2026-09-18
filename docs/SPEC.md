@@ -1387,7 +1387,7 @@ External orchestrators, Python embedders, typing tools, and harnesses interact w
 
 #### 13.21.1 Canonical export inventory
 
-`stage_signal` exports exactly 105 public symbols matching `stage_signal.__all__`. These symbols are structured into four canonical categories:
+`stage_signal` exports exactly 112 public symbols matching `stage_signal.__all__`. These symbols are structured into four canonical categories:
 
 ##### 1. Classes (§11, §13.20)
 - `Stage`: The primary high-level lifecycle orchestrator, embedding context manager, and transition driver (§11, §13.20).
@@ -1428,7 +1428,7 @@ All six structured exceptions inherit from `StageError` and carry a normative `.
 - **Inventories:**
   - `CLI_SUBCOMMANDS`: 15 frozen CLI subcommands (§13.15).
   - `STAGE_PUBLIC_METHODS`: 15 frozen `Stage` public instance methods (§13.20).
-  - `PUBLIC_EXPORTS`: 105 frozen public symbols exported from top-level package namespace (§13.21).
+  - `PUBLIC_EXPORTS`: 112 frozen public symbols exported from top-level package namespace (§13.21).
 - **Exit codes:**
   - `EXIT_CODES`: Tuple of all 10 standard exit codes (§7, §13.4).
   - Individual exit codes: `EXIT_OK` (0), `EXIT_ERROR` (1), `EXIT_BAD_ARGS` (2), `EXIT_ILLEGAL_TRANSITION` (3), `EXIT_RUNNING` (10), `EXIT_BLOCKED` (11), `EXIT_FAILED` (12), `EXIT_QUEUED` (13), `EXIT_WAIT_TIMEOUT` (14), `EXIT_NOT_INITIALIZED` (15) (§7, §13.4).
@@ -1479,6 +1479,13 @@ All six structured exceptions inherit from `StageError` and carry a normative `.
   - `SUPERVISE_ADOPT_MESSAGE_FORMAT` (`"adopted child pid {pid}"`) and helper `supervise_adopt_message(pid)`; `SUPERVISE_ADOPT_DETAIL_KEYS` (`previous_pid`, `pid`, `pid_token`; §13.24).
   - Default terminal templates: `SUPERVISE_DONE_SUMMARY_FORMAT` (`"command succeeded (exit 0): {cmd}"`), `SUPERVISE_FAIL_REASON_FORMAT` (`"command failed with exit code {code}: {cmd}"`), `SUPERVISE_SIGNAL_REASON_FORMAT` (`"command terminated by {signame}: {cmd}"`; §13.24).
   - Exit mapping: `SUPERVISE_SIGNAL_EXIT_BASE` (128) and helper `supervise_signal_exit(signum)`; spawn failures `SUPERVISE_EXIT_NOT_FOUND` (127) and `SUPERVISE_EXIT_PERMISSION_DENIED` (126; §7, §13.24).
+- **Clear-terminal reset and audit:**
+  - `CLEAR_TERMINAL_ALLOWED_SOURCES`: Legal source states (`"done"`, `"blocked"`, `"failed"`, `"queued"`; §4, §13.26).
+  - `CLEAR_TERMINAL_IDLE_RESET_FIELDS`: Ten identity/claim fields reset to idle by default (§4, §13.26).
+  - `CLEAR_TERMINAL_KEEP_STAGE_PRESERVED_FIELDS`: The same ten fields preserved with `--keep-stage` (§4, §13.26).
+  - `CLEAR_TERMINAL_ALWAYS_CLEARED_FIELDS`: Terminal payloads always cleared (`"result"`, `"error"`, `"proof"`; §4, §13.26).
+  - `CLEAR_TERMINAL_DETAIL_KEYS`: Audit detail keys (`"keep_stage"`; §5, §13.26).
+  - `CLEAR_TERMINAL_MESSAGE_IDLE` (`"cleared to idle queued"`) and `CLEAR_TERMINAL_MESSAGE_KEEP_STAGE` (`"cleared to queued"`; §5, §13.26).
 
 #### 13.21.2 Frozen structure export (`PUBLIC_EXPORTS`)
 
@@ -1489,6 +1496,13 @@ PUBLIC_EXPORTS: tuple[str, ...] = (
     "ALLOWED_TRANSITIONS",
     "ARTIFACT_ENTRY_KEYS",
     "BadArgsError",
+    "CLEAR_TERMINAL_ALLOWED_SOURCES",
+    "CLEAR_TERMINAL_ALWAYS_CLEARED_FIELDS",
+    "CLEAR_TERMINAL_DETAIL_KEYS",
+    "CLEAR_TERMINAL_IDLE_RESET_FIELDS",
+    "CLEAR_TERMINAL_KEEP_STAGE_PRESERVED_FIELDS",
+    "CLEAR_TERMINAL_MESSAGE_IDLE",
+    "CLEAR_TERMINAL_MESSAGE_KEEP_STAGE",
     "CLI_SUBCOMMANDS",
     "CorruptStatusError",
     "DEFAULT_DIR_NAME",
@@ -1613,7 +1627,7 @@ Under `schema_version: 1`, the top-level public export inventory is strictly **a
 - Existing symbols in `PUBLIC_EXPORTS` MUST NOT be removed, renamed, or relocated.
 - Existing symbol types, semantics, and contracts MUST NOT undergo breaking changes.
 - Future minor or patch releases under schema version 1 MAY add new classes, helper functions, or frozen constants to `stage_signal`, expanding `PUBLIC_EXPORTS` and `__all__`.
-- External orchestrators, embedders, and typing definitions can safely rely on the uninterrupted presence of all 105 public exports throughout the entire lifecycle of `schema_version: 1`.
+- External orchestrators, embedders, and typing definitions can safely rely on the uninterrupted presence of all 112 public exports throughout the entire lifecycle of `schema_version: 1`.
 
 ### 13.22 Doctor human summary strings freeze (`DOCTOR_SUMMARY_RECLAIM_NEEDED`, `DOCTOR_SUMMARY_OK_FORMAT`)
 
@@ -1801,4 +1815,119 @@ Under `schema_version: 1`, the supervise adoption and exit contract is strictly 
 - No new event type is introduced for adoption: the adoption record stays a `heartbeat` event (§13.5).
 - New adoption detail keys or terminal templates MAY be added in minor or patch releases only as additional constants; existing frozen values MUST keep their exact values.
 - Readers MUST tolerate unknown future adoption detail keys and unknown future summary/reason strings without failing.
+
+### 13.25 Reclaim fail-and-clear contract freeze (reserved)
+
+Reserved for the `reclaim --reason TEXT [--keep-failed] [--kill]` / `Stage.reclaim()` freeze (issue #145). The reclaim-emitted `clear_terminal` event shape (`detail: {"keep_stage": false, "reclaim": true}`) is owned by that section, not by §13.26.
+
+### 13.26 Clear-terminal reset and audit contract freeze (`CLEAR_TERMINAL_ALLOWED_SOURCES`, `CLEAR_TERMINAL_IDLE_RESET_FIELDS`, `CLEAR_TERMINAL_KEEP_STAGE_PRESERVED_FIELDS`, `CLEAR_TERMINAL_ALWAYS_CLEARED_FIELDS`, `CLEAR_TERMINAL_DETAIL_KEYS`, `CLEAR_TERMINAL_MESSAGE_IDLE`, `CLEAR_TERMINAL_MESSAGE_KEEP_STAGE`)
+
+`Stage.clear_terminal` / `stage-signal clear-terminal [--keep-stage]` (§4 rule 8, §6, §13.20) resets a terminal or queued stage back to `queued`. Under `schema_version: 1`, the allowed sources, the default idle reset field set, the `--keep-stage` preserved-vs-cleared field set, and the `clear_terminal` audit event shape are frozen so orchestrators can abandon a parked queued stage or reset a finished attempt to idle without scraping human text. The `clear_terminal` event type itself is frozen in §13.5 and the record keys in §13.6; the allowed edges are frozen in §13.19.
+
+#### 13.26.1 Frozen constants and exact values
+
+The single sources of truth are defined in `stage_signal.constants` and exported from `stage_signal` and `__all__`:
+
+```python
+CLEAR_TERMINAL_ALLOWED_SOURCES = ("done", "blocked", "failed", "queued")
+
+CLEAR_TERMINAL_IDLE_RESET_FIELDS = (
+    "stage_id",
+    "stage_name",
+    "session_id",
+    "pid",
+    "pid_token",
+    "started_at",
+    "heartbeat_at",
+    "heartbeat_note",
+    "artifacts",
+    "meta",
+)
+
+CLEAR_TERMINAL_KEEP_STAGE_PRESERVED_FIELDS = (
+    "stage_id",
+    "stage_name",
+    "session_id",
+    "pid",
+    "pid_token",
+    "started_at",
+    "heartbeat_at",
+    "heartbeat_note",
+    "artifacts",
+    "meta",
+)
+
+CLEAR_TERMINAL_ALWAYS_CLEARED_FIELDS = ("result", "error", "proof")
+
+CLEAR_TERMINAL_DETAIL_KEYS = ("keep_stage",)
+
+CLEAR_TERMINAL_MESSAGE_IDLE = "cleared to idle queued"
+CLEAR_TERMINAL_MESSAGE_KEEP_STAGE = "cleared to queued"
+```
+
+`CLEAR_TERMINAL_ALLOWED_SOURCES` lists the legal source states in lifecycle order (`done`, `blocked`, `failed`, then the `queued` abandon path); it MUST equal `set(allowed_source_states("clear-terminal"))` (§13.19). `CLEAR_TERMINAL_KEEP_STAGE_PRESERVED_FIELDS` intentionally enumerates the same ten fields as `CLEAR_TERMINAL_IDLE_RESET_FIELDS`: the default path resets them to idle, while `--keep-stage` preserves them (§13.26.4).
+
+#### 13.26.2 Allowed sources and the `running` guard
+
+`clear-terminal` is permitted from each terminal state (`done`, `blocked`, `failed`; §13.12) and from `queued` — both named queued (abandon a parked stage) and idle queued (no-op reset that still appends an audit event). The target state is always `queued` (§13.19):
+
+| Precondition failure | Library | CLI exit |
+|----------------------|---------|----------|
+| Stage not initialized (missing dir/STATUS) | `NotInitialized` | 15 (`EXIT_NOT_INITIALIZED`; §7, §13.4, §13.17) |
+| Current state is `running` | `IllegalTransition` | 3 (`EXIT_ILLEGAL_TRANSITION`; §7, §13.4, §13.17) |
+
+From `running`, `clear-terminal` is strictly illegal and MUST raise `IllegalTransition` (exit 3) with no mutation of STATUS, events, or mirrors. A stuck running stage MUST first move via `reclaim --reason TEXT` (or `fail --reason TEXT --if-needs-reclaim` / `--if-dead-pid`) per §4 rules 6–7. No child process, signal, or mirror side effect occurs on precondition failure.
+
+#### 13.26.3 Default idle reset field set
+
+By default (without `--keep-stage`), `clear-terminal` resets to a true idle `queued` stage (§4 "Idle vs. Queued"):
+
+- `state` becomes `"queued"`.
+- Every field in `CLEAR_TERMINAL_IDLE_RESET_FIELDS` is reset: `stage_id`, `stage_name`, `session_id`, `pid`, `pid_token`, `started_at`, `heartbeat_at`, and `heartbeat_note` become `null`; `artifacts` becomes `[]`; `meta` becomes `{}`.
+- Every field in `CLEAR_TERMINAL_ALWAYS_CLEARED_FIELDS` is cleared: `result`, `error`, and `proof` become `null`.
+- `updated_at` is bumped by the standard mutation path (§4 rule 9).
+- Preserved unchanged in both modes: `attempt`, `notes`, `model`, `variant`, `repo_path`, `git_branch`, and `git_head`.
+
+An idle `queued` stage therefore reads `state: queued` with `stage_id`/`stage_name` both `null`, which orchestrators polling `status` observe as `queued - (attempt N)` with no pending work (§4).
+
+#### 13.26.4 `--keep-stage` preserved vs cleared field set
+
+With `--keep-stage` (`Stage.clear_terminal(keep_stage=True)`), the stage re-queues under the same identity instead of returning to idle:
+
+- `state` still becomes `"queued"`.
+- Every field in `CLEAR_TERMINAL_KEEP_STAGE_PRESERVED_FIELDS` keeps its pre-clear value: `stage_id`, `stage_name`, `session_id`, `pid`, `pid_token`, `started_at`, `heartbeat_at`, `heartbeat_note`, `artifacts`, and `meta` are all preserved (so `pid`/`pid_token` claim identity survives, matching §4 rule 8).
+- Every field in `CLEAR_TERMINAL_ALWAYS_CLEARED_FIELDS` is still cleared: `result`, `error`, and `proof` become `null` even with `--keep-stage`.
+- The §13.26.3 preserved-in-both-modes set (`attempt`, `notes`, `model`, `variant`, `repo_path`, `git_branch`, `git_head`) is likewise preserved.
+- `updated_at` is bumped by the standard mutation path.
+
+`reclaim --keep-failed` (owned by §13.25) likewise preserves stage identity; only the direct `clear-terminal` path is frozen here.
+
+#### 13.26.5 Audit event shape
+
+Each `clear-terminal` call appends exactly one `clear_terminal` event (§5; no new event type is introduced):
+
+- `type` is exactly `"clear_terminal"` (a member of `EVENT_TYPES`; §13.5) with the standard record keys (`EVENT_RECORD_KEYS`; §13.6).
+- `message` is exactly `CLEAR_TERMINAL_MESSAGE_IDLE` (`"cleared to idle queued"`) by default, or exactly `CLEAR_TERMINAL_MESSAGE_KEEP_STAGE` (`"cleared to queued"`) with `--keep-stage` — byte-for-byte, no affixes.
+- `detail` carries exactly the `CLEAR_TERMINAL_DETAIL_KEYS`: `{"keep_stage": bool}` reflecting the flag value (`false` by default, `true` with `--keep-stage`).
+- The `clear_terminal` event emitted as the second half of a default `reclaim` (owned by §13.25) instead carries `detail: {"keep_stage": false, "reclaim": true}`; readers MUST tolerate that additive `reclaim` key without failing (§13.1).
+
+Readers MUST tolerate additive unknown keys on the `clear_terminal` `detail` object without failing (§13.1).
+
+#### 13.26.6 Cross-links
+
+- **§4 (States & transitions, rule 8, Idle vs. Queued):** normative transition rules, the queued abandon path, and the idle-vs-named queued orchestrator contract.
+- **§5 (events.jsonl) + §13.5/§13.6:** the `clear_terminal` event type and required record keys; audit-trail reads via `events`.
+- **§6 (CLI contract):** `stage-signal clear-terminal [--keep-stage]` usage line and the `--keep-stage` flag.
+- **§13.12 (states freeze):** `done`/`blocked`/`failed` terminal partition vs `queued`/`running`.
+- **§13.19 (transition matrix freeze):** the eight frozen `clear-terminal`/`clear_terminal` edges and the `running` guard.
+- **§13.20 (Stage method surface freeze):** `clear_terminal(*, keep_stage=False) -> dict[str, Any]` signature and CLI equivalence.
+
+#### 13.26.7 Additive-only evolution policy
+
+Under `schema_version: 1`, the clear-terminal reset and audit contract is strictly **additive-only** (§13.1):
+
+- The frozen allowed sources, idle reset fields, `--keep-stage` preserved fields, always-cleared fields, detail keys, and message strings MUST NOT be removed, renamed, reworded, or change semantic meaning.
+- No new event type is introduced for clearing: the audit record stays a `clear_terminal` event (§13.5).
+- New detail keys or modes MAY be added in minor or patch releases only as additional constants; existing frozen values MUST keep their exact values.
+- Readers MUST tolerate unknown future `clear_terminal` detail keys and unknown future message strings without failing.
 

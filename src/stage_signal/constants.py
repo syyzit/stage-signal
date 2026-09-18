@@ -150,6 +150,53 @@ def supervise_signal_exit(signum: int) -> int:
     """Map a terminating signal number to the supervise exit code 128 + SIGNUM (SPEC §13.24)."""
     return SUPERVISE_SIGNAL_EXIT_BASE + int(signum)
 
+# Frozen clear-terminal reset + audit contract (SPEC §13.26)
+CLEAR_TERMINAL_ALLOWED_SOURCES = (
+    "done",
+    "blocked",
+    "failed",
+    "queued",
+)
+
+CLEAR_TERMINAL_IDLE_RESET_FIELDS = (
+    "stage_id",
+    "stage_name",
+    "session_id",
+    "pid",
+    "pid_token",
+    "started_at",
+    "heartbeat_at",
+    "heartbeat_note",
+    "artifacts",
+    "meta",
+)
+
+CLEAR_TERMINAL_KEEP_STAGE_PRESERVED_FIELDS = (
+    "stage_id",
+    "stage_name",
+    "session_id",
+    "pid",
+    "pid_token",
+    "started_at",
+    "heartbeat_at",
+    "heartbeat_note",
+    "artifacts",
+    "meta",
+)
+
+CLEAR_TERMINAL_ALWAYS_CLEARED_FIELDS = (
+    "result",
+    "error",
+    "proof",
+)
+
+CLEAR_TERMINAL_DETAIL_KEYS = (
+    "keep_stage",
+)
+
+CLEAR_TERMINAL_MESSAGE_IDLE = "cleared to idle queued"
+CLEAR_TERMINAL_MESSAGE_KEEP_STAGE = "cleared to queued"
+
 # Frozen schema_version 1 key sets (SPEC §13)
 STATUS_REQUIRED_KEYS = (
     "schema_version",
@@ -367,6 +414,13 @@ PUBLIC_EXPORTS: tuple[str, ...] = (
     "ALLOWED_TRANSITIONS",
     "ARTIFACT_ENTRY_KEYS",
     "BadArgsError",
+    "CLEAR_TERMINAL_ALLOWED_SOURCES",
+    "CLEAR_TERMINAL_ALWAYS_CLEARED_FIELDS",
+    "CLEAR_TERMINAL_DETAIL_KEYS",
+    "CLEAR_TERMINAL_IDLE_RESET_FIELDS",
+    "CLEAR_TERMINAL_KEEP_STAGE_PRESERVED_FIELDS",
+    "CLEAR_TERMINAL_MESSAGE_IDLE",
+    "CLEAR_TERMINAL_MESSAGE_KEEP_STAGE",
     "CLI_SUBCOMMANDS",
     "CorruptStatusError",
     "DEFAULT_DIR_NAME",
