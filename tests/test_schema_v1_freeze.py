@@ -47,6 +47,7 @@ from stage_signal import (
     NOTE_ENTRY_KEYS,
     PROOF_KEYS,
     PROOF_VERIFIED_VALUES,
+    PUBLIC_EXPORTS,
     RESULT_KEYS,
     SCHEMA_VERSION,
     STATE_BLOCKED,
@@ -3715,3 +3716,254 @@ def test_diagnose_doctor_json_summary_null_on_problems(
         expected_ok=False,
         expected_exit=EXIT_ERROR,
     )
+
+# 19. Top-level public export inventory freeze (SPEC §13.21, issue #137)
+# =============================================================================
+
+
+def test_public_exports_constant_freeze() -> None:
+    """PUBLIC_EXPORTS matches the frozen 93-element tuple in SPEC §13.21."""
+    expected = (
+        "ALLOWED_TRANSITIONS",
+        "ARTIFACT_ENTRY_KEYS",
+        "BadArgsError",
+        "CLI_SUBCOMMANDS",
+        "CorruptStatusError",
+        "DEFAULT_DIR_NAME",
+        "DEFAULT_MIRROR_DIRNAME",
+        "DEFAULT_STALE_THRESHOLD",
+        "DOCTOR_JSON_KEYS",
+        "DOCTOR_SUMMARY_OK_FORMAT",
+        "DOCTOR_SUMMARY_RECLAIM_NEEDED",
+        "DOCTOR_WARNING_KEYS",
+        "ENV_DIR",
+        "ENV_PROJECT",
+        "ENV_PROOF_REF",
+        "ENV_STATUS_MIRROR",
+        "ENV_VARS",
+        "ERROR_KEYS",
+        "ERROR_KINDS",
+        "EVENTS_DEFAULT_TAIL",
+        "EVENTS_FILENAME",
+        "EVENT_RECORD_KEYS",
+        "EVENT_TYPES",
+        "EXIT_BAD_ARGS",
+        "EXIT_BLOCKED",
+        "EXIT_CODES",
+        "EXIT_ERROR",
+        "EXIT_FAILED",
+        "EXIT_ILLEGAL_TRANSITION",
+        "EXIT_NOT_INITIALIZED",
+        "EXIT_OK",
+        "EXIT_QUEUED",
+        "EXIT_RUNNING",
+        "EXIT_WAIT_TIMEOUT",
+        "IllegalTransition",
+        "LOCKS_DIRNAME",
+        "LOCK_FILENAME",
+        "MAX_NOTES",
+        "NOTE_ENTRY_KEYS",
+        "NotInitialized",
+        "PROOF_KEYS",
+        "PROOF_REQUIRED_KEYS",
+        "PROOF_VERIFIED_VALUES",
+        "PUBLIC_EXPORTS",
+        "RESULT_KEYS",
+        "SCHEMA_VERSION",
+        "STAGE_PUBLIC_METHODS",
+        "STATES",
+        "STATE_BLOCKED",
+        "STATE_DONE",
+        "STATE_EXIT_CODES",
+        "STATE_FAILED",
+        "STATE_QUEUED",
+        "STATE_RUNNING",
+        "STATUS_FILENAME",
+        "STATUS_JSON_KEYS",
+        "STATUS_MD_FILENAME",
+        "STATUS_MD_HEADINGS",
+        "STATUS_MD_OPTIONAL_HEADINGS",
+        "STATUS_MD_REQUIRED_HEADINGS",
+        "STATUS_MD_TITLE",
+        "STATUS_REQUIRED_KEYS",
+        "SUPERVISE_DEFAULT_EVERY",
+        "Stage",
+        "StageError",
+        "StageStore",
+        "TERMINAL_STATES",
+        "WAIT_DEFAULT_POLL",
+        "WAIT_DEFAULT_TIMEOUT",
+        "WAIT_JSON_KEYS",
+        "WAIT_OUTCOMES",
+        "WAIT_OUTCOME_MET",
+        "WAIT_OUTCOME_MISMATCH",
+        "WAIT_OUTCOME_TIMEOUT",
+        "WARNING_CODES",
+        "WARNING_CODE_DEAD_PID",
+        "WARNING_CODE_STALE_HEARTBEAT",
+        "WARNING_CODE_UNPARSEABLE_HEARTBEAT",
+        "WARNING_KEYS",
+        "WARNING_REQUIRED_KEYS",
+        "WaitTimeout",
+        "__version__",
+        "allowed_source_states",
+        "doctor_summary_ok",
+        "is_transition_allowed",
+        "render_status_md",
+        "resolve_dir",
+        "state_exit_code",
+        "transition_target",
+        "verify_proof",
+        "wait_condition_met",
+        "want_matches",
+        "write_status_mirror",
+    )
+    assert PUBLIC_EXPORTS == expected
+    assert isinstance(PUBLIC_EXPORTS, tuple)
+    assert len(PUBLIC_EXPORTS) == 93
+    assert PUBLIC_EXPORTS == tuple(sorted(PUBLIC_EXPORTS))
+    assert len(PUBLIC_EXPORTS) == len(set(PUBLIC_EXPORTS))
+
+
+def test_public_exports_exported_from_top_level() -> None:
+    """PUBLIC_EXPORTS is exported from top-level stage_signal (SPEC §13.21)."""
+    import stage_signal
+
+    assert hasattr(stage_signal, "PUBLIC_EXPORTS")
+    assert "PUBLIC_EXPORTS" in stage_signal.__all__
+    assert stage_signal.PUBLIC_EXPORTS is PUBLIC_EXPORTS
+
+
+def test_public_exports_all_set_equality() -> None:
+    """set(PUBLIC_EXPORTS) matches set(stage_signal.__all__) with zero divergence (SPEC §13.21)."""
+    import stage_signal
+
+    assert set(PUBLIC_EXPORTS) == set(stage_signal.__all__)
+    assert len(PUBLIC_EXPORTS) == len(stage_signal.__all__)
+    assert list(PUBLIC_EXPORTS) == stage_signal.__all__
+
+
+def test_public_exports_importability() -> None:
+    """Every name in PUBLIC_EXPORTS is importable and exists on stage_signal (SPEC §13.21)."""
+    import importlib
+    import stage_signal
+
+    for name in PUBLIC_EXPORTS:
+        assert hasattr(stage_signal, name), f"stage_signal missing export {name!r}"
+        val = getattr(stage_signal, name)
+        assert val is not None or name in ("__version__",), f"Export {name!r} resolved to None"
+
+        # Verify dynamic import via importlib
+        mod = importlib.import_module("stage_signal")
+        assert getattr(mod, name) is val, f"importlib getattr failed for {name!r}"
+
+
+def test_public_exports_no_accidental_private_leakage() -> None:
+    """No private or internal helper names leak into PUBLIC_EXPORTS (SPEC §13.21)."""
+    for name in PUBLIC_EXPORTS:
+        if name.startswith("_"):
+            assert name == "__version__", f"Prohibited private symbol {name!r} leaked into PUBLIC_EXPORTS"
+
+
+def test_public_exports_category_coverage() -> None:
+    """PUBLIC_EXPORTS contains all required classes, exceptions, helpers, and constants (SPEC §13.21)."""
+    import inspect
+    import stage_signal
+
+    # 1. Classes (§11, §13.20)
+    classes = {"Stage", "StageStore"}
+    for cls_name in classes:
+        assert cls_name in PUBLIC_EXPORTS
+        cls = getattr(stage_signal, cls_name)
+        assert inspect.isclass(cls)
+        assert not issubclass(cls, BaseException)
+
+    # 2. Exceptions (§13.17)
+    exceptions = {
+        "StageError",
+        "BadArgsError",
+        "IllegalTransition",
+        "NotInitialized",
+        "CorruptStatusError",
+        "WaitTimeout",
+    }
+    for exc_name in exceptions:
+        assert exc_name in PUBLIC_EXPORTS
+        exc = getattr(stage_signal, exc_name)
+        assert inspect.isclass(exc)
+        assert issubclass(exc, stage_signal.StageError)
+
+    # 3. Top-level helper functions (§11, §13.19, §13.20.4)
+    helpers = {
+        "resolve_dir",
+        "render_status_md",
+        "state_exit_code",
+        "allowed_source_states",
+        "is_transition_allowed",
+        "transition_target",
+        "verify_proof",
+        "wait_condition_met",
+        "want_matches",
+        "write_status_mirror",
+    }
+    for fn_name in helpers:
+        assert fn_name in PUBLIC_EXPORTS
+        fn = getattr(stage_signal, fn_name)
+        assert callable(fn)
+        assert not inspect.isclass(fn)
+
+    # 4. Core frozen constants (§13.1-§13.20)
+    core_constants = {
+        "SCHEMA_VERSION",
+        "__version__",
+        "STATES",
+        "TERMINAL_STATES",
+        "ALLOWED_TRANSITIONS",
+        "CLI_SUBCOMMANDS",
+        "STAGE_PUBLIC_METHODS",
+        "EXIT_CODES",
+        "STATE_EXIT_CODES",
+        "DEFAULT_DIR_NAME",
+        "STATUS_FILENAME",
+        "STATUS_MD_FILENAME",
+        "EVENTS_FILENAME",
+        "LOCKS_DIRNAME",
+        "LOCK_FILENAME",
+        "DEFAULT_MIRROR_DIRNAME",
+        "ENV_VARS",
+        "STATUS_REQUIRED_KEYS",
+        "STATUS_JSON_KEYS",
+        "EVENT_RECORD_KEYS",
+        "EVENT_TYPES",
+        "DOCTOR_JSON_KEYS",
+        "WARNING_CODES",
+        "WAIT_JSON_KEYS",
+        "WAIT_OUTCOMES",
+        "STATUS_MD_REQUIRED_HEADINGS",
+        "STATUS_MD_HEADINGS",
+        "PUBLIC_EXPORTS",
+    }
+    for const_name in core_constants:
+        assert const_name in PUBLIC_EXPORTS
+
+
+def test_public_exports_cross_links() -> None:
+    """Verify cross-links to §11 (Stage), §13.17 (Exceptions), and §13.20 (Stage methods) in SPEC §13.21."""
+    import stage_signal
+
+    # Cross-link §11 & §13.20: Stage methods are defined in STAGE_PUBLIC_METHODS which is in PUBLIC_EXPORTS
+    assert "STAGE_PUBLIC_METHODS" in PUBLIC_EXPORTS
+    for method in STAGE_PUBLIC_METHODS:
+        assert hasattr(stage_signal.Stage, method)
+
+    # Cross-link §13.17: All frozen exception hierarchy types are in PUBLIC_EXPORTS
+    frozen_exceptions = (
+        "StageError",
+        "BadArgsError",
+        "IllegalTransition",
+        "NotInitialized",
+        "CorruptStatusError",
+        "WaitTimeout",
+    )
+    for exc_name in frozen_exceptions:
+        assert exc_name in PUBLIC_EXPORTS
