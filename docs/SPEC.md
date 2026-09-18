@@ -3351,4 +3351,172 @@ Under `schema_version: 1`, the doctor / diagnose read contract is strictly **add
 - New diagnosis keys MAY be added in minor or patch releases only as additional trailing entries of `DOCTOR_JSON_KEYS` (with `PUBLIC_EXPORTS` growing additively); existing frozen keys and values MUST keep their exact values and order.
 - Readers MUST tolerate unknown future diagnosis keys, unknown future warning codes, and unknown future summary strings without failing; orchestrators MUST keep branching on `needs_reclaim`, not on `summary` text.
 
+### 13.38 Wait observer and poll loop contract freeze (no new constants)
+
+`Stage.wait` / `stage-signal wait [--state <choice>] [--needs-reclaim] [--timeout SEC] [--poll SEC] [--json]` (§6, §11, §13.20) is the polling observer: it polls `STATUS.json` until the requested target state or reclaim condition is met, early-terminating on unexpected terminal mismatch or raising `WaitTimeout` (exit 14) on deadline expiry, without mutating stage state. Under `schema_version: 1`, the poll loop defaults (`WAIT_DEFAULT_TIMEOUT`, `WAIT_DEFAULT_POLL`), argument validation and mutual exclusivity, exception-to-exit-code mapping, machine-readable JSON schema (`WAIT_JSON_KEYS`, `WAIT_OUTCOMES`), human messages, and observer exit table via `STATE_EXIT_CODES` are frozen so orchestrators can reliably synchronize process lifecycles and pipeline stages. This section introduces **no new constants**: the timing defaults are frozen in §13.14 (`WAIT_DEFAULT_TIMEOUT`, `WAIT_DEFAULT_POLL`), the target vocabulary and predicate helpers in §13.23 (`WAIT_CHOICES`, `WAIT_WANT_NEEDS_RECLAIM`, `want_matches`, `wait_condition_met`), the outcomes enum in §13.11 (`WAIT_OUTCOMES`), the JSON schema in §13.3.3 (`WAIT_JSON_KEYS`), the observer exit mapping in §13.16 (`STATE_EXIT_CODES`), the timeout error in §13.17 (`WaitTimeout`, `EXIT_WAIT_TIMEOUT`), and the base exit codes in §13.4 (`EXIT_CODES`). No audit event is emitted by a wait invocation: there is no `wait` event type in `EVENT_TYPES` (§13.5), and `STATUS.md` and `.orch/` mirrors are never rewritten by wait.
+
+#### 13.38.1 Frozen constants and exact values (existing symbols only)
+
+The single sources of truth are the already-frozen, already-exported symbols (defined in `stage_signal.constants`, exported from `stage_signal` and `__all__`, inventoried in `PUBLIC_EXPORTS`; §13.21):
+
+```python
+WAIT_DEFAULT_TIMEOUT = 3600.0
+WAIT_DEFAULT_POLL = 5.0
+WAIT_CHOICES = ("done", "blocked", "failed", "terminal")
+WAIT_WANT_NEEDS_RECLAIM = "needs_reclaim"
+WAIT_JSON_KEYS = (
+    "outcome",
+    "wanted",
+    "observed_state",
+    "state",
+    "exit_code",
+    "timeout",
+    "stage_id",
+    "dir",
+    "reason",
+    "needs_reclaim",
+    "status",
+)
+WAIT_OUTCOMES = ("met", "mismatch", "timeout")
+EXIT_WAIT_TIMEOUT = 14
+```
+
+- `WAIT_DEFAULT_TIMEOUT` (`3600.0`): default wait timeout in seconds (1 hour; §13.14) when `--timeout` or `timeout` parameter is omitted.
+- `WAIT_DEFAULT_POLL` (`5.0`): default poll interval in seconds (5 seconds; §13.14) when `--poll` or `poll` parameter is omitted.
+- `WAIT_CHOICES`: exactly `("done", "blocked", "failed", "terminal")` (§13.23). The default wanted target is `"terminal"`.
+- `WAIT_WANT_NEEDS_RECLAIM` (`"needs_reclaim"`): the canonical string token placed in the `wanted` field of `wait --json` when polling for reclaim via `--needs-reclaim` (§13.23).
+- `WAIT_JSON_KEYS`: exactly the 11 guaranteed keys in order (§13.3.3). Every `wait --json` payload contains all 11 keys across all three outcomes (`met`, `mismatch`, `timeout`).
+- `WAIT_OUTCOMES`: exactly `("met", "mismatch", "timeout")` (§13.11), with individual aliases `WAIT_OUTCOME_MET`, `WAIT_OUTCOME_MISMATCH`, and `WAIT_OUTCOME_TIMEOUT`.
+- `EXIT_WAIT_TIMEOUT` (`14`) and `WaitTimeout` (§13.17): the timeout exit code and library exception class.
+- `STATE_EXIT_CODES` / `state_exit_code(state)` (§13.16): the observer exit codes reused on mismatch (`blocked` → 11, `failed` → 12, `queued` → 13, `running` → 10).
+- `PUBLIC_EXPORTS` stays at 134 symbols: this section adds no entry (§13.21).
+
+#### 13.38.2 Shared-lock pure read poll loop with no mutation
+
+From the exact implementation in `Stage.wait` (`src/stage_signal/stage.py`):
+
+```python
+def wait(
+    self,
+    want: str = "terminal",
+    *,
+    timeout: float = 3600,
+    poll: float = 5,
+    needs_reclaim: bool = False,
+) -> dict[str, Any]:
+    """Poll until want matches, or until needs_reclaim if that flag is set."""
+    ...
+```
+
+- **Precondition:** `self.status()` is called before entering the poll loop. If the stage directory or `STATUS.json` is missing, `NotInitialized` (`exit_code = EXIT_NOT_INITIALIZED = 15`) is raised immediately (§13.17, §13.35.4). If `STATUS.json` is corrupt or invalid JSON, `CorruptStatusError` (`exit_code = EXIT_ERROR = 1`) is raised immediately.
+- **Poll loop iteration:** on each loop turn:
+  1. `wait_condition_met(last, want=want, needs_reclaim=needs_reclaim)` (§13.23) is evaluated. If `True`, the condition is satisfied and `last` is returned immediately.
+  2. If the condition is not met, but `last["state"]` is in `TERMINAL_STATES` (`("done", "blocked", "failed")`; §13.12), the wait early-terminates: `last` is returned immediately without waiting for timeout. A terminal state cannot transition further, so hanging until timeout would be wasteful; the caller maps this snapshot to a non-zero mismatch exit code (§13.38.7).
+  3. Otherwise, the remaining deadline `remaining = deadline - time.monotonic()` is computed. If `remaining <= 0`, `WaitTimeout` is raised carrying `last_status=copy.deepcopy(last)`.
+  4. If time remains, the loop sleeps `min(poll, remaining)` via `time.sleep` and re-reads the snapshot via `self.status()`.
+- **Pure observation guarantee:** each poll iteration invokes `Stage.status()`, which holds POSIX shared lock `store.locked(exclusive=False)` (`LOCK_SH`), reads `STATUS.json`, enriches it with `needs_reclaim` and `heartbeat_age_seconds`, and returns a deep copy (§13.35.2). The poll loop performs zero `write_status` calls, appends zero events to `events.jsonl`, rewrites neither `STATUS.md` nor `.orch/` mirrors (§10, §13.18), and never mutates `state` or bumps `updated_at`. Caller mutation of returned snapshots never reaches disk.
+- **Event-free observer:** there is no `wait` entry in `EVENT_TYPES` (§13.5); polling stays entirely event-free like `status` (§13.35.2) and `doctor` (§13.37.2).
+
+#### 13.38.3 Argument validation and mutual exclusivity
+
+Both `Stage.wait` and the CLI validate arguments upfront before polling, rejecting invalid configurations with `BadArgsError` (`exit_code = EXIT_BAD_ARGS = 2`; §13.17) and performing no file or lock operations:
+
+- **Mutual exclusivity of `--needs-reclaim` and `--state`:**
+  - Library: `Stage.wait(want, needs_reclaim=True)` requires `want == "terminal"` (the default). If `want != "terminal"`, it raises `BadArgsError("wait needs_reclaim=True cannot be combined with a --state want")` (§13.23.2).
+  - CLI: `stage-signal wait --needs-reclaim --state <choice>` with any explicit `--state` other than the default `"terminal"` raises `BadArgsError("wait --needs-reclaim cannot be combined with --state")`.
+- **Target choice validation:** if `needs_reclaim` is `False`, `want` MUST be an element of `WAIT_CHOICES` (`"done"`, `"blocked"`, `"failed"`, `"terminal"`; §13.23). In the library, an unlisted want raises `BadArgsError(f"invalid wait state {want!r} (choose from {', '.join(WAIT_CHOICES)})")`. In the CLI, `argparse` enforces `choices=list(WAIT_CHOICES)` exiting 2.
+- **Positive timeout constraint:** `timeout <= 0` raises `BadArgsError("wait --timeout must be > 0")`.
+- **Positive poll constraint:** `poll <= 0` raises `BadArgsError("wait --poll must be > 0")`.
+
+#### 13.38.4 Library `WaitTimeout` vs CLI exit 14
+
+- **Library (`Stage.wait`):** when `time.monotonic()` crosses the deadline without observing the wanted condition or a terminating mismatch, `Stage.wait` raises `WaitTimeout(message, last_status=copy.deepcopy(last))` (§13.17).
+  - The exception message format is `f"wait timed out after {timeout:g}s (state={state}{extra})"` where `extra = f", needs_reclaim={needs_reclaim}"` when `needs_reclaim=True`, else `""`.
+  - `exc.last_status` holds a deep copy of the last observed status snapshot (with `STATUS_JSON_KEYS`).
+  - `WaitTimeout.exit_code == EXIT_WAIT_TIMEOUT == 14`.
+- **CLI (`stage-signal wait`):**
+  - **Human mode (default):** `WaitTimeout` propagates to `cli.main`, which prints `f"stage-signal: error: {exc}"` to `stderr` and returns exit code 14 (`EXIT_WAIT_TIMEOUT`).
+  - **`--json` mode:** `WaitTimeout` is caught in `cmd_wait`, emitting the complete 11-key JSON object with `outcome: "timeout"`, `timeout: true`, `exit_code: 14`, `status: exc.last_status`, and `reason: str(exc)`, and returning exit code 14.
+
+#### 13.38.5 Machine-readable `--json` payload contract (`WAIT_JSON_KEYS`, `WAIT_OUTCOMES`)
+
+From the exact implementation in `_wait_json_payload` (`src/stage_signal/cli.py`): passing `--json` prints exactly one JSON object (`json.dumps(payload, indent=2)`) across all outcomes (`met`, `mismatch`, `timeout`). Human output is omitted entirely. The payload contains all 11 guaranteed keys of `WAIT_JSON_KEYS` in order (§13.3.3):
+
+1. **`outcome` (str):** one of the frozen `WAIT_OUTCOMES` (§13.11):
+   - `"met"`: wanted state target (or reclaim condition) was observed; `exit_code == 0`.
+   - `"mismatch"`: unexpected terminal state reached, or `--needs-reclaim` reached terminal without reclaim; `exit_code != 0`.
+   - `"timeout"`: deadline expired; `exit_code == 14`.
+2. **`wanted` (str):** target state choice (`"terminal"`, `"done"`, `"blocked"`, `"failed"`), or `WAIT_WANT_NEEDS_RECLAIM` (`"needs_reclaim"`) when `--needs-reclaim` is set (§13.23).
+3. **`observed_state` (str | null):** state string observed on the final status snapshot (`status["state"]`), or `null` if no snapshot.
+4. **`state` (str | null):** exact alias of `observed_state`.
+5. **`exit_code` (int):** process exit code matching the CLI return value (0, 1, 11, 12, 14; §13.38.7).
+6. **`timeout` (bool):** strictly boolean; `true` if and only if `outcome == "timeout"`, `false` for `"met"` and `"mismatch"` (§13.11).
+7. **`stage_id` (str | null):** stage identifier from the final status snapshot (`status["stage_id"]`).
+8. **`dir` (str):** string path to the stage directory (`str(stage_obj.dir)`).
+9. **`reason` (str | null):** short failure reason from `status["error"]["reason"]` when `observed_state` is `blocked` or `failed`, timeout error message when `outcome == "timeout"`, otherwise `null`.
+10. **`needs_reclaim` (bool):** boolean from `bool(status.get("needs_reclaim"))` (agrees with `status --json` / `doctor --json`; §13.35.3, §13.37.3).
+11. **`status` (object | null):** complete detached status snapshot dict containing all `STATUS_JSON_KEYS` (§13.3.1, §13.35.1), or `null` if unavailable.
+
+#### 13.38.6 Human CLI output contract
+
+In human mode (default, when `--json` is omitted), `stage-signal wait` formats output according to the observed outcome:
+
+- **Condition met (exit 0):** prints to `stdout`:
+  ```
+  wait met: {label} {state} {stage_name or '-'} (attempt {attempt})
+  ```
+  where `{label}` is `wanted` when `--needs-reclaim` is set (i.e. `"needs_reclaim"`), else `{state}`. The trailing portion matches `_one_line(status)`.
+- **Mismatch (exit 1, 11, 12):** prints to `stderr`:
+  ```
+  wait ended in {state} (wanted {wanted})
+  ```
+- **Timeout (exit 14):** prints to `stderr` via `cli.main`:
+  ```
+  stage-signal: error: wait timed out after {timeout:g}s (state={state}[, needs_reclaim={needs_reclaim}])
+  ```
+
+#### 13.38.7 Observer exit code table
+
+The complete exit code table for `stage-signal wait` across all invocations:
+
+| Condition | Exit Code | Constant | Meaning |
+|-----------|-----------|----------|---------|
+| Condition met (`outcome == "met"`) | 0 | `EXIT_OK` | Wanted state target observed, or `needs_reclaim` became `true` under `--needs-reclaim`. |
+| Mismatch: stage reached `done` without reclaim under `--needs-reclaim` | 1 | `EXIT_ERROR` | Stage reached terminal `done` without needing reclaim; fails closed (cannot reuse 0 for success). |
+| Mismatch: stage reached `blocked` | 11 | `EXIT_BLOCKED` | Terminal state `blocked` reached when wanted was `"done"`, `"failed"`, or `--needs-reclaim` (`STATE_EXIT_CODES`). |
+| Mismatch: stage reached `failed` | 12 | `EXIT_FAILED` | Terminal state `failed` reached when wanted was `"done"`, `"blocked"`, or `--needs-reclaim` (`STATE_EXIT_CODES`). |
+| Timeout (`outcome == "timeout"`) | 14 | `EXIT_WAIT_TIMEOUT` | Wait deadline elapsed before condition met or terminal mismatch (§13.17). |
+| Uninitialized stage dir | 15 | `EXIT_NOT_INITIALIZED` | Stage directory or `STATUS.json` does not exist before wait begins (§13.17). |
+| Bad CLI args | 2 | `EXIT_BAD_ARGS` | `timeout <= 0`, `poll <= 0`, invalid `--state` choice, or `--needs-reclaim` combined with non-default `--state` (§13.17). |
+| Corrupt STATUS | 1 | `EXIT_ERROR` | `STATUS.json` is unreadable, invalid JSON, or fails schema validation during poll read (§13.17). |
+
+- Note on non-zero mismatch codes: mismatch codes reuse `STATE_EXIT_CODES` (§13.16) for `blocked` (11) and `failed` (12). For `wait --needs-reclaim`, a terminal `done` without reclaim cannot reuse `0` (which signifies condition met), so it maps to `EXIT_ERROR` (1) to fail closed and prevent orchestrators from misinterpreting completed execution as a reclaimable failure.
+- Healthy `running` keeps polling: healthy running never exits 10 during `wait` (unlike `status`, which reflects current running state as 10 immediately).
+- Non-running states never reclaim: `queued` keeps polling until `start` claims the stage or timeout expires.
+
+#### 13.38.8 Cross-links
+
+- **§6 (CLI contract):** `stage-signal wait` synopsis, defaults (`--state terminal --timeout 3600 --poll 5`), fail-closed reclaim behavior, and orchestrator reclaim loop (`wait --needs-reclaim` → `reclaim --reason ... --kill` → `start`).
+- **§7 (Exit codes):** exit codes 0, 1, 2, 10, 11, 12, 13, 14, 15.
+- **§13.3.3 (`wait --json` `WAIT_JSON_KEYS`):** the 11-key guaranteed payload shape frozen here.
+- **§13.4 (Exit-code table freeze `EXIT_CODES`):** exit code constants and descriptions.
+- **§13.11 (Wait outcomes enum freeze `WAIT_OUTCOMES`):** `WAIT_OUTCOMES` tuple, individual aliases, and boolean `timeout` consistency.
+- **§13.14 (Timing defaults freeze):** `WAIT_DEFAULT_TIMEOUT` (`3600.0`) and `WAIT_DEFAULT_POLL` (`5.0`).
+- **§13.16 (State-to-exit-code mapping freeze `STATE_EXIT_CODES`):** mapping from lifecycle states to observer exit codes, and distinction between observer commands and mutator commands.
+- **§13.17 (Public exception hierarchy and exit mapping freeze):** `WaitTimeout` and `BadArgsError` definitions and CLI boundary mapping.
+- **§13.20 (Stage method surface freeze):** `wait(want="terminal", *, timeout=3600, poll=5, needs_reclaim=False) -> dict[str, Any]` signature.
+- **§13.21 (Top-level public export inventory):** no addition — `WAIT_CHOICES`, `WAIT_DEFAULT_POLL`, `WAIT_DEFAULT_TIMEOUT`, `WAIT_JSON_KEYS`, `WAIT_OUTCOMES`, `WAIT_OUTCOME_MET`, `WAIT_OUTCOME_MISMATCH`, `WAIT_OUTCOME_TIMEOUT`, `WAIT_WANT_NEEDS_RECLAIM`, `WaitTimeout`, `want_matches`, and `wait_condition_met` are already inventoried; `PUBLIC_EXPORTS` stays at 134 symbols.
+- **§13.23 (Wait want vocabulary and predicate freeze):** target vocabulary, `want_matches`, and `wait_condition_met` predicate semantics consumed here.
+- **§13.35 (Status read snapshot freeze):** the underlying status read observer whose detached snapshots and `needs_reclaim` / `heartbeat_age_seconds` fields are returned by each wait poll.
+
+#### 13.38.9 Additive-only evolution policy
+
+Under `schema_version: 1`, the wait observer and poll loop contract is strictly **additive-only** (§13.1):
+
+- The shared-lock non-mutating read, the poll loop defaults (`WAIT_DEFAULT_TIMEOUT = 3600.0`, `WAIT_DEFAULT_POLL = 5.0`), the guaranteed 11-key `WAIT_JSON_KEYS` shape, the `WAIT_OUTCOMES` enum (`"met"`, `"mismatch"`, `"timeout"`), the mutual exclusivity of `--needs-reclaim` with explicit non-default `--state`, the `WaitTimeout` exception with `last_status` and exit code 14, the human stdout/stderr messages, and the observer exit table MUST NOT be removed, renamed, reworded, or change semantic meaning.
+- No new event type is introduced for wait invocations: observing stage transitions remains event-free (§13.5).
+- New payload keys MAY be added in minor or patch releases only as additional trailing entries of `WAIT_JSON_KEYS` (with `PUBLIC_EXPORTS` growing additively); existing frozen keys and values MUST keep their exact values and order.
+- Readers and orchestrators MUST tolerate unknown future wait payload keys and unknown future outcome values without failing.
+
+
 
