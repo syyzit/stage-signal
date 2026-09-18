@@ -122,6 +122,8 @@ Heartbeat age is available only when `state == "running"`; for `done`, `failed`,
         └──────────┘ └──────────┘ └──────────┘
 ```
 
+The canonical stage lifecycle states and terminal partition are frozen in §13.12 (`STATES`, `TERMINAL_STATES`).
+
 Rules:
 
 1. `init` — creates dir/files if missing (idempotent). Never overwrites an
@@ -573,7 +575,7 @@ The following 23 keys are strictly required on disk in `STATUS.json` (`STATUS_RE
 | `project` | str | Project identifier. |
 | `stage_id` | str\|null | Stable identifier for an attempt-series. |
 | `stage_name` | str\|null | Human stage name. |
-| `state` | enum | One of `queued`, `running`, `done`, `blocked`, `failed`. |
+| `state` | enum | One of `queued`, `running`, `done`, `blocked`, `failed` (frozen `STATES`, §4, §13.12). |
 | `attempt` | int ≥ 1 | Attempt counter (1-based). |
 | `session_id` | str\|null | Claiming agent session identifier. |
 | `pid` | int\|null | Claiming process PID. |
@@ -788,6 +790,25 @@ Readers MUST tolerate unknown additional keys on the `proof` object.
 Composition and verification semantics remain defined in §9 and `docs/COMPOSE.md`;
 this section freezes the on-wire dictionary keys and closed verified enum under schema version 1.
 
+### 13.12 Stage states and terminal states freeze (`STATES`, `TERMINAL_STATES`)
+The canonical stage lifecycle states and their terminal classification are frozen under `schema_version: 1`:
 
+| State | Constant | Terminal | Meaning |
+|-------|----------|----------|---------|
+| `queued` | `STATE_QUEUED` | No | Stage initialized or reclaimed; awaiting execution. |
+| `running` | `STATE_RUNNING` | No | Stage actively executing an attempt. |
+| `done` | `STATE_DONE` | Yes | Stage execution succeeded. |
+| `blocked` | `STATE_BLOCKED` | Yes | Stage paused awaiting external input or resolution. |
+| `failed` | `STATE_FAILED` | Yes | Stage aborted or exited with unrecoverable failure. |
 
+The single sources of truth for these sets are:
+- `STATES = ("queued", "running", "done", "blocked", "failed")`
+- `TERMINAL_STATES = ("done", "blocked", "failed")`
 
+defined in `stage_signal.constants` and exported from `stage_signal`. The individual `STATE_*` constants (`STATE_QUEUED`, `STATE_RUNNING`, `STATE_DONE`, `STATE_BLOCKED`, `STATE_FAILED`) remain defined and exported.
+
+The non-terminal states are `queued` and `running`. The terminal states are `done`, `blocked`, and `failed`. Terminal states signify completion of an attempt series; transitioning out of a terminal state requires an intervening `start` (or `clear-terminal` / `--accept-failure`) per the state machine in §4.
+
+Under `schema_version: 1`, stage state evolution is **additive-only** (§13.1): existing states and terminal classifications MUST NOT be removed, renamed, or change semantic meaning. Any future state introduced under schema version 1 MUST specify its terminal or non-terminal classification, and observers/readers MUST tolerate unknown states without crashing.
+
+State machine transitions and lifecycle rules remain defined in §4; the `state` field contract on `STATUS.json` is defined in §13.2.

@@ -6,6 +6,10 @@ See `docs/RELEASE.md` for the release procedure.
 
 ## [Unreleased]
 
+- Froze stage state machine enums in SPEC §13.12 via exported `STATES` and
+  `TERMINAL_STATES`, cross-linking §4 and §13.2, with regression tests covering
+  constant freeze, non-terminal/terminal partitions, and lifecycle state assertions
+  across on-disk `STATUS.json` and `status --json` (#118).
 - Froze `STATUS.json` `result`/`error` object required keys in SPEC §13.9 via
   exported `RESULT_KEYS` / `ERROR_KEYS` / `ERROR_KINDS`, with regression coverage
   for `done` / `blocked` / `fail` / `done --accept-failure` on disk and

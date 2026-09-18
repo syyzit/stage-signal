@@ -40,6 +40,11 @@ from stage_signal import (
     PROOF_VERIFIED_VALUES,
     RESULT_KEYS,
     SCHEMA_VERSION,
+    STATE_BLOCKED,
+    STATE_DONE,
+    STATE_FAILED,
+    STATE_QUEUED,
+    STATE_RUNNING,
     STATES,
     STATUS_JSON_KEYS,
     STATUS_REQUIRED_KEYS,
@@ -1121,4 +1126,168 @@ def test_result_error_tolerates_additive_keys(tmp_path: Path) -> None:
     }
     _assert_error_contract(error_with_extra, "failed")
     assert error_with_extra.get("future_code") == "E42"
+
+
+# ============================================================================
+# 9. STATES and TERMINAL_STATES freeze (SPEC §13.12, issue #118)
+# ============================================================================
+
+
+def test_states_and_terminal_states_constants_freeze() -> None:
+    """STATES and TERMINAL_STATES tuples must match SPEC §13.12 exactly."""
+    assert STATES == ("queued", "running", "done", "blocked", "failed")
+    assert isinstance(STATES, tuple)
+    assert len(STATES) == 5
+
+    assert TERMINAL_STATES == ("done", "blocked", "failed")
+    assert isinstance(TERMINAL_STATES, tuple)
+    assert len(TERMINAL_STATES) == 3
+
+    # All terminal states must be in STATES
+    for s in TERMINAL_STATES:
+        assert s in STATES
+
+    # Non-terminal partition must be exactly queued and running
+    non_terminal = tuple(s for s in STATES if s not in TERMINAL_STATES)
+    assert non_terminal == ("queued", "running")
+
+    # Individual state constants must match exact string values
+    assert STATE_QUEUED == "queued"
+    assert STATE_RUNNING == "running"
+    assert STATE_DONE == "done"
+    assert STATE_BLOCKED == "blocked"
+    assert STATE_FAILED == "failed"
+
+    # Confirm exports from stage_signal
+    import stage_signal
+
+    assert getattr(stage_signal, "STATES") is STATES
+    assert getattr(stage_signal, "TERMINAL_STATES") is TERMINAL_STATES
+    assert getattr(stage_signal, "STATE_QUEUED") == "queued"
+    assert getattr(stage_signal, "STATE_RUNNING") == "running"
+    assert getattr(stage_signal, "STATE_DONE") == "done"
+    assert getattr(stage_signal, "STATE_BLOCKED") == "blocked"
+    assert getattr(stage_signal, "STATE_FAILED") == "failed"
+    assert "STATES" in stage_signal.__all__
+    assert "TERMINAL_STATES" in stage_signal.__all__
+    assert "STATE_QUEUED" in stage_signal.__all__
+    assert "STATE_RUNNING" in stage_signal.__all__
+    assert "STATE_DONE" in stage_signal.__all__
+    assert "STATE_BLOCKED" in stage_signal.__all__
+    assert "STATE_FAILED" in stage_signal.__all__
+
+
+def test_states_lifecycle_membership_and_terminal_checks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Lifecycle asserts every on-disk / status --json state in STATES;
+
+    after done/blocked/fail, state in TERMINAL_STATES;
+    after start, state == running and not in TERMINAL_STATES.
+    """
+    stage_dir = tmp_path / ".stage-signal"
+    monkeypatch.setenv("STAGE_SIGNAL_DIR", str(stage_dir))
+    status_file = stage_dir / "STATUS.json"
+    stage = Stage(str(stage_dir))
+
+    expected_exit = {
+        STATE_DONE: EXIT_OK,
+        STATE_RUNNING: EXIT_RUNNING,
+        STATE_BLOCKED: EXIT_BLOCKED,
+        STATE_FAILED: EXIT_FAILED,
+        STATE_QUEUED: EXIT_QUEUED,
+    }
+
+    def verify_state(expected: str, *, terminal: bool) -> None:
+        assert expected in STATES
+        if terminal:
+            assert expected in TERMINAL_STATES
+        else:
+            assert expected not in TERMINAL_STATES
+
+        capsys.readouterr()
+        rc = main(["status", "--json"])
+        assert rc == expected_exit[expected]
+        cli_data = json.loads(capsys.readouterr().out)
+        disk_data = json.loads(status_file.read_text(encoding="utf-8"))
+        lib_status = stage.status()
+
+        for data in (cli_data, disk_data, lib_status):
+            observed = data["state"]
+            assert observed == expected
+            assert observed in STATES
+            if terminal:
+                assert observed in TERMINAL_STATES
+            else:
+                assert observed not in TERMINAL_STATES
+            assert state_exit_code(observed) == expected_exit[expected]
+
+    # 1. init: queued (non-terminal)
+    stage.init(project="states-freeze-test")
+    verify_state(STATE_QUEUED, terminal=False)
+
+    # 2. start: running (non-terminal, exactly running)
+    stage.start(stage="stage-a", pid=os.getpid())
+    verify_state(STATE_RUNNING, terminal=False)
+
+    # 3. heartbeat: running (non-terminal)
+    stage.heartbeat(note="heartbeat check")
+    verify_state(STATE_RUNNING, terminal=False)
+
+    # 4. note: running (non-terminal)
+    stage.note("noting progress")
+    verify_state(STATE_RUNNING, terminal=False)
+
+    # 5. done: done (terminal)
+    stage.done(summary="stage-a finished")
+    verify_state(STATE_DONE, terminal=True)
+
+    # 6. clear_terminal: queued (non-terminal)
+    stage.clear_terminal()
+    verify_state(STATE_QUEUED, terminal=False)
+
+    # 7. start again: running (non-terminal)
+    stage.start(stage="stage-b", pid=os.getpid())
+    verify_state(STATE_RUNNING, terminal=False)
+
+    # 8. blocked: blocked (terminal)
+    stage.blocked(reason="waiting on reviewer")
+    verify_state(STATE_BLOCKED, terminal=True)
+
+    # 9. start again: running (non-terminal)
+    stage.start(stage="stage-c", pid=os.getpid())
+    verify_state(STATE_RUNNING, terminal=False)
+
+    # 10. fail: failed (terminal)
+    stage.fail(reason="process crashed")
+    verify_state(STATE_FAILED, terminal=True)
+
+    # 11. done --accept-failure: done (terminal)
+    stage.done(summary="failure accepted by human", accept_failure=True)
+    verify_state(STATE_DONE, terminal=True)
+
+
+def test_unknown_state_rejected_by_validator(tmp_path: Path) -> None:
+    """validate_status and Stage.status() reject states not in STATES."""
+    stage_dir = tmp_path / ".stage-signal"
+    stage = Stage(str(stage_dir))
+    stage.init(project="invalid-state-test")
+
+    status_file = stage_dir / "STATUS.json"
+    data = json.loads(status_file.read_text(encoding="utf-8"))
+
+    # Valid state works
+    assert data["state"] in STATES
+    validate_status(data)
+
+    # State not in STATES must raise CorruptStatusError
+    data["state"] = "unknown_state"
+    status_file.write_text(json.dumps(data), encoding="utf-8")
+
+    with pytest.raises(CorruptStatusError, match="unknown state 'unknown_state'"):
+        validate_status(data)
+
+    with pytest.raises(CorruptStatusError, match="unknown state 'unknown_state'"):
+        stage.status()
+
 
