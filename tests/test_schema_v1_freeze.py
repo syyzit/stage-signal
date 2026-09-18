@@ -17,6 +17,7 @@ from typing import Any
 import pytest
 
 from stage_signal import (
+    ALLOWED_TRANSITIONS,
     ARTIFACT_ENTRY_KEYS,
     CLI_SUBCOMMANDS,
     DEFAULT_DIR_NAME,
@@ -86,6 +87,9 @@ from stage_signal import (
     render_status_md,
     resolve_dir,
     state_exit_code,
+    allowed_source_states,
+    is_transition_allowed,
+    transition_target,
     write_status_mirror,
     DEFAULT_STALE_THRESHOLD,
     ENV_DIR,
@@ -2871,6 +2875,449 @@ def test_status_md_on_disk_lifecycle_smoke(tmp_path: Path) -> None:
     assert "state: failed" in content_failed
     assert "error:" in content_failed
     assert '"reason": "fatal failure encountered"' in content_failed
+
+
+# ============================================================================
+# 19. Allowed transition matrix freeze (SPEC §13.19, issue #133)
+# ============================================================================
+
+
+def test_allowed_transitions_constant_freeze() -> None:
+    """ALLOWED_TRANSITIONS dict and helpers match SPEC §13.19 exactly."""
+    expected_transitions = {
+        # start: allowed from any state -> running (SPEC §4.2, §13.19)
+        ("queued", "start"): "running",
+        ("running", "start"): "running",
+        ("done", "start"): "running",
+        ("blocked", "start"): "running",
+        ("failed", "start"): "running",
+
+        # heartbeat, note, artifact: stay running (SPEC §4.3, §4.4, §13.19)
+        ("running", "heartbeat"): "running",
+        ("running", "note"): "running",
+        ("running", "artifact"): "running",
+
+        # done: allowed from queued, running, or idempotent done -> done (SPEC §4.5, §13.19)
+        ("queued", "done"): "done",
+        ("running", "done"): "done",
+        ("done", "done"): "done",
+
+        # done --accept-failure: allowed only from failed -> done (SPEC §4.5, §13.19)
+        ("failed", "done --accept-failure"): "done",
+        ("failed", "done_accept_failure"): "done",
+
+        # blocked: allowed from queued, running, or idempotent blocked -> blocked (SPEC §4.6, §13.19)
+        ("queued", "blocked"): "blocked",
+        ("running", "blocked"): "blocked",
+        ("blocked", "blocked"): "blocked",
+
+        # fail: allowed from queued, running, or idempotent failed -> failed (SPEC §4.6, §13.19)
+        ("queued", "fail"): "failed",
+        ("running", "fail"): "failed",
+        ("failed", "fail"): "failed",
+        ("queued", "fail --if-dead-pid"): "failed",
+        ("running", "fail --if-dead-pid"): "failed",
+        ("failed", "fail --if-dead-pid"): "failed",
+        ("running", "fail --if-needs-reclaim"): "failed",
+
+        # clear-terminal: allowed from terminal states or queued -> idle queued (SPEC §4.8, §13.19)
+        ("done", "clear-terminal"): "queued",
+        ("blocked", "clear-terminal"): "queued",
+        ("failed", "clear-terminal"): "queued",
+        ("queued", "clear-terminal"): "queued",
+        ("done", "clear_terminal"): "queued",
+        ("blocked", "clear_terminal"): "queued",
+        ("failed", "clear_terminal"): "queued",
+        ("queued", "clear_terminal"): "queued",
+
+        # reclaim: running with needs_reclaim -> failed [+ optional clear_terminal] (SPEC §4.7, §13.19)
+        ("running", "reclaim"): "queued",
+        ("running", "reclaim --keep-failed"): "failed",
+        ("running", "reclaim_keep_failed"): "failed",
+    }
+
+    assert isinstance(ALLOWED_TRANSITIONS, dict)
+    assert ALLOWED_TRANSITIONS == expected_transitions
+
+    # Every from_state and to_state must be a valid state in STATES
+    for (from_state, cmd), to_state in ALLOWED_TRANSITIONS.items():
+        assert from_state in STATES, f"Unknown from_state: {from_state!r}"
+        assert to_state in STATES, f"Unknown to_state: {to_state!r}"
+        assert isinstance(cmd, str) and len(cmd) > 0
+
+    # Top-level exports from stage_signal
+    import stage_signal
+
+    assert getattr(stage_signal, "ALLOWED_TRANSITIONS") is ALLOWED_TRANSITIONS
+    assert "ALLOWED_TRANSITIONS" in stage_signal.__all__
+    assert "is_transition_allowed" in stage_signal.__all__
+    assert "transition_target" in stage_signal.__all__
+    assert "allowed_source_states" in stage_signal.__all__
+
+    # Test helper functions
+    assert allowed_source_states("heartbeat") == ("running",)
+    assert allowed_source_states("note") == ("running",)
+    assert allowed_source_states("artifact") == ("running",)
+    assert set(allowed_source_states("start")) == set(STATES)
+    assert set(allowed_source_states("done")) == {"queued", "running", "done"}
+    assert allowed_source_states("done --accept-failure") == ("failed",)
+    assert set(allowed_source_states("blocked")) == {"queued", "running", "blocked"}
+    assert set(allowed_source_states("fail")) == {"queued", "running", "failed"}
+    assert set(allowed_source_states("clear-terminal")) == {"done", "blocked", "failed", "queued"}
+    assert set(allowed_source_states("clear_terminal")) == {"done", "blocked", "failed", "queued"}
+    assert allowed_source_states("reclaim") == ("running",)
+
+    assert is_transition_allowed("queued", "start") is True
+    assert is_transition_allowed("running", "heartbeat") is True
+    assert is_transition_allowed("done", "clear-terminal") is True
+    assert is_transition_allowed("failed", "done --accept-failure") is True
+    assert is_transition_allowed("running", "reclaim") is True
+
+    assert transition_target("queued", "start") == "running"
+    assert transition_target("running", "done") == "done"
+    assert transition_target("running", "heartbeat") == "running"
+    assert transition_target("failed", "done --accept-failure") == "done"
+    assert transition_target("done", "clear-terminal") == "queued"
+    assert transition_target("running", "reclaim") == "queued"
+    assert transition_target("running", "reclaim --keep-failed") == "failed"
+
+    with pytest.raises(ValueError, match="illegal transition"):
+        transition_target("done", "blocked")
+    with pytest.raises(ValueError, match="illegal transition"):
+        transition_target("running", "clear-terminal")
+
+
+def test_allowed_transitions_matrix_exhaustive_checks() -> None:
+    """Exhaustive check across all (state, command) pairs matches ALLOWED_TRANSITIONS (SPEC §13.19)."""
+    core_commands = (
+        "start",
+        "heartbeat",
+        "note",
+        "artifact",
+        "done",
+        "done --accept-failure",
+        "blocked",
+        "fail",
+        "clear-terminal",
+        "reclaim",
+    )
+
+    for state in STATES:
+        for cmd in core_commands:
+            allowed = is_transition_allowed(state, cmd)
+            if allowed:
+                target = transition_target(state, cmd)
+                assert target in STATES
+                assert (state, cmd) in ALLOWED_TRANSITIONS
+                assert ALLOWED_TRANSITIONS[(state, cmd)] == target
+            else:
+                assert (state, cmd) not in ALLOWED_TRANSITIONS
+                with pytest.raises(ValueError):
+                    transition_target(state, cmd)
+
+
+def test_representative_legal_transitions_lifecycle(tmp_path: Path) -> None:
+    """Representative legal lifecycle paths execute cleanly and match ALLOWED_TRANSITIONS (SPEC §4, §13.19)."""
+    stage_dir = tmp_path / ".stage-signal"
+    st = Stage(str(stage_dir))
+
+    # 1. init -> queued
+    status = st.init(project="trans-lifecycle")
+    assert status["state"] == "queued"
+    assert is_transition_allowed("queued", "start")
+
+    # 2. queued -> start -> running
+    status = st.start(stage="task-1", pid=os.getpid())
+    assert status["state"] == "running"
+    assert status["stage_name"] == "task-1"
+    assert status["attempt"] == 1
+
+    # 3. running -> heartbeat / note / artifact -> running
+    st.heartbeat(note="working")
+    st.note("note 1")
+    st.artifact(str(tmp_path / "art.txt"), label="test-artifact")
+    curr = st.status()
+    assert curr["state"] == "running"
+    assert curr["heartbeat_note"] == "working"
+    assert len(curr["notes"]) == 1
+    assert len(curr["artifacts"]) == 1
+
+    # 4. running -> done -> done (terminal)
+    status = st.done(summary="task-1 success")
+    assert status["state"] == "done"
+    assert status["result"]["summary"] == "task-1 success"
+
+    # 5. done -> done (idempotent repeat)
+    status = st.done(summary="task-1 success updated")
+    assert status["state"] == "done"
+    assert status["result"]["summary"] == "task-1 success updated"
+
+    # 6. done -> clear-terminal -> queued (idle reset)
+    status = st.clear_terminal()
+    assert status["state"] == "queued"
+    assert status["stage_id"] is None
+    assert status["stage_name"] is None
+
+    # 7. queued -> start -> running (new stage)
+    status = st.start(stage="task-2", pid=os.getpid())
+    assert status["state"] == "running"
+    assert status["stage_name"] == "task-2"
+
+    # 8. running -> blocked -> blocked (terminal)
+    status = st.blocked(reason="waiting on lock")
+    assert status["state"] == "blocked"
+    assert status["error"]["reason"] == "waiting on lock"
+
+    # 9. blocked -> blocked (idempotent repeat)
+    status = st.blocked(reason="still waiting on lock")
+    assert status["state"] == "blocked"
+    assert status["error"]["reason"] == "still waiting on lock"
+
+    # 10. blocked -> clear-terminal (keep_stage=True) -> queued
+    status = st.clear_terminal(keep_stage=True)
+    assert status["state"] == "queued"
+    assert status["stage_name"] == "task-2"
+
+    # 11. queued -> start -> running
+    status = st.start(stage="task-3", pid=os.getpid())
+    assert status["state"] == "running"
+
+    # 12. running -> fail -> failed (terminal)
+    status = st.fail(reason="compile error")
+    assert status["state"] == "failed"
+    assert status["error"]["reason"] == "compile error"
+
+    # 13. failed -> fail (idempotent repeat)
+    status = st.fail(reason="compile error updated")
+    assert status["state"] == "failed"
+
+    # 14. failed -> done --accept-failure -> done
+    status = st.done(summary="accepted compile failure", accept_failure=True)
+    assert status["state"] == "done"
+    assert status["result"]["accepted_failure"] is True
+
+    # 15. done -> start -> running, then dead PID -> reclaim --keep-failed -> failed
+    dead_proc = subprocess.Popen([sys.executable, "-c", "pass"])
+    dead_proc.wait(timeout=5)
+    st.start(stage="task-4", pid=dead_proc.pid)
+    status = st.reclaim(reason="worker died", keep_failed=True)
+    assert status["state"] == "failed"
+    assert status["error"]["reason"] == "worker died"
+
+    # 16. failed -> clear-terminal -> queued
+    status = st.clear_terminal()
+    assert status["state"] == "queued"
+
+    # 17. queued -> start -> running, then dead PID -> reclaim -> queued (default)
+    dead_proc2 = subprocess.Popen([sys.executable, "-c", "pass"])
+    dead_proc2.wait(timeout=5)
+    st.start(stage="task-5", pid=dead_proc2.pid)
+    status = st.reclaim(reason="worker died again")
+    assert status["state"] == "queued"
+    events = st.events()
+    assert events[-2]["type"] == "failed"
+    assert events[-1]["type"] == "clear_terminal"
+
+
+def test_representative_illegal_transitions_raise_and_cli_exit(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Representative illegal transitions raise IllegalTransition and exit 3 on CLI without mutating status (SPEC §13.17, §13.19)."""
+    stage_dir = tmp_path / ".stage-signal"
+    st = Stage(str(stage_dir))
+    st.init(project="illegal-trans-paths")
+    status_file = stage_dir / "STATUS.json"
+    initial_content = status_file.read_text(encoding="utf-8")
+
+    def assert_no_mutation() -> None:
+        assert status_file.read_text(encoding="utf-8") == initial_content
+
+    # ------------------------------------------------------------------------
+    # A. From queued
+    # ------------------------------------------------------------------------
+    # 1. queued -> heartbeat (illegal)
+    with pytest.raises(IllegalTransition):
+        st.heartbeat()
+    assert_no_mutation()
+    assert main(["--dir", str(stage_dir), "heartbeat"]) == EXIT_ILLEGAL_TRANSITION
+    capsys.readouterr()
+    assert_no_mutation()
+
+    # 2. queued -> note (illegal)
+    with pytest.raises(IllegalTransition):
+        st.note("note on queued")
+    assert_no_mutation()
+    assert main(["--dir", str(stage_dir), "note", "note on queued"]) == EXIT_ILLEGAL_TRANSITION
+    capsys.readouterr()
+    assert_no_mutation()
+
+    # 3. queued -> artifact (illegal)
+    with pytest.raises(IllegalTransition):
+        st.artifact("art.txt")
+    assert_no_mutation()
+    assert main(["--dir", str(stage_dir), "artifact", "art.txt"]) == EXIT_ILLEGAL_TRANSITION
+    capsys.readouterr()
+    assert_no_mutation()
+
+    # 4. queued -> done --accept-failure (illegal)
+    with pytest.raises(IllegalTransition, match="only allowed from state 'failed'"):
+        st.done(accept_failure=True)
+    assert_no_mutation()
+    assert main(["--dir", str(stage_dir), "done", "--accept-failure"]) == EXIT_ILLEGAL_TRANSITION
+    capsys.readouterr()
+    assert_no_mutation()
+
+    # 5. queued -> reclaim (illegal)
+    with pytest.raises(IllegalTransition, match="needs_reclaim is false"):
+        st.reclaim(reason="reclaim queued")
+    assert_no_mutation()
+    assert main(["--dir", str(stage_dir), "reclaim", "--reason", "reclaim queued"]) == EXIT_ILLEGAL_TRANSITION
+    capsys.readouterr()
+    assert_no_mutation()
+
+    # ------------------------------------------------------------------------
+    # B. From running
+    # ------------------------------------------------------------------------
+    st.start(stage="live-run", pid=os.getpid())
+    running_content = status_file.read_text(encoding="utf-8")
+
+    # 1. running -> clear-terminal (illegal)
+    with pytest.raises(IllegalTransition, match="only terminal states"):
+        st.clear_terminal()
+    assert status_file.read_text(encoding="utf-8") == running_content
+    assert main(["--dir", str(stage_dir), "clear-terminal"]) == EXIT_ILLEGAL_TRANSITION
+    capsys.readouterr()
+    assert status_file.read_text(encoding="utf-8") == running_content
+
+    # 2. running -> done --accept-failure (illegal)
+    with pytest.raises(IllegalTransition, match="only allowed from state 'failed'"):
+        st.done(accept_failure=True)
+    assert status_file.read_text(encoding="utf-8") == running_content
+    assert main(["--dir", str(stage_dir), "done", "--accept-failure"]) == EXIT_ILLEGAL_TRANSITION
+    capsys.readouterr()
+    assert status_file.read_text(encoding="utf-8") == running_content
+
+    # 3. running (healthy live PID) -> reclaim (illegal)
+    with pytest.raises(IllegalTransition, match="needs_reclaim is false"):
+        st.reclaim(reason="premature reclaim")
+    assert status_file.read_text(encoding="utf-8") == running_content
+    assert main(["--dir", str(stage_dir), "reclaim", "--reason", "premature reclaim"]) == EXIT_ILLEGAL_TRANSITION
+    capsys.readouterr()
+    assert status_file.read_text(encoding="utf-8") == running_content
+
+    # 4. running (healthy live PID) -> fail --if-needs-reclaim (illegal)
+    with pytest.raises(IllegalTransition, match="needs_reclaim is false"):
+        st.fail(reason="premature fail", if_needs_reclaim=True)
+    assert status_file.read_text(encoding="utf-8") == running_content
+    assert main(["--dir", str(stage_dir), "fail", "--reason", "premature fail", "--if-needs-reclaim"]) == EXIT_ILLEGAL_TRANSITION
+    capsys.readouterr()
+    assert status_file.read_text(encoding="utf-8") == running_content
+
+    # 5. running (healthy live PID) -> fail --if-dead-pid (illegal)
+    with pytest.raises(IllegalTransition, match="is alive"):
+        st.fail(reason="alive fail", if_dead_pid=True)
+    assert status_file.read_text(encoding="utf-8") == running_content
+    assert main(["--dir", str(stage_dir), "fail", "--reason", "alive fail", "--if-dead-pid"]) == EXIT_ILLEGAL_TRANSITION
+    capsys.readouterr()
+    assert status_file.read_text(encoding="utf-8") == running_content
+
+    # ------------------------------------------------------------------------
+    # C. From terminal done
+    # ------------------------------------------------------------------------
+    st.done(summary="finished task")
+    done_content = status_file.read_text(encoding="utf-8")
+
+    # 1. done -> heartbeat (illegal)
+    with pytest.raises(IllegalTransition):
+        st.heartbeat()
+    assert status_file.read_text(encoding="utf-8") == done_content
+    assert main(["--dir", str(stage_dir), "heartbeat"]) == EXIT_ILLEGAL_TRANSITION
+    capsys.readouterr()
+
+    # 2. done -> blocked (illegal terminal-to-terminal)
+    with pytest.raises(IllegalTransition, match="blocked not allowed from terminal state 'done'"):
+        st.blocked(reason="cannot block after done")
+    assert status_file.read_text(encoding="utf-8") == done_content
+    assert main(["--dir", str(stage_dir), "blocked", "--reason", "cannot block"]) == EXIT_ILLEGAL_TRANSITION
+    capsys.readouterr()
+
+    # 3. done -> fail (illegal terminal-to-terminal)
+    with pytest.raises(IllegalTransition, match="fail not allowed from terminal state 'done'"):
+        st.fail(reason="cannot fail after done")
+    assert status_file.read_text(encoding="utf-8") == done_content
+    assert main(["--dir", str(stage_dir), "fail", "--reason", "cannot fail"]) == EXIT_ILLEGAL_TRANSITION
+    capsys.readouterr()
+
+    # 4. done -> done --accept-failure (illegal)
+    with pytest.raises(IllegalTransition, match="only allowed from state 'failed'"):
+        st.done(accept_failure=True)
+    assert status_file.read_text(encoding="utf-8") == done_content
+    assert main(["--dir", str(stage_dir), "done", "--accept-failure"]) == EXIT_ILLEGAL_TRANSITION
+    capsys.readouterr()
+
+    # 5. done -> reclaim (illegal)
+    with pytest.raises(IllegalTransition, match="needs_reclaim is false"):
+        st.reclaim(reason="cannot reclaim done")
+    assert status_file.read_text(encoding="utf-8") == done_content
+    assert main(["--dir", str(stage_dir), "reclaim", "--reason", "cannot reclaim done"]) == EXIT_ILLEGAL_TRANSITION
+    capsys.readouterr()
+
+    # ------------------------------------------------------------------------
+    # D. From terminal blocked
+    # ------------------------------------------------------------------------
+    st.start(stage="blocked-task", pid=os.getpid())
+    st.blocked(reason="need manual intervention")
+    blocked_content = status_file.read_text(encoding="utf-8")
+
+    # 1. blocked -> done (illegal terminal-to-terminal)
+    with pytest.raises(IllegalTransition, match="done not allowed from terminal state 'blocked'"):
+        st.done(summary="cannot done after blocked")
+    assert status_file.read_text(encoding="utf-8") == blocked_content
+    assert main(["--dir", str(stage_dir), "done", "--summary", "cannot done"]) == EXIT_ILLEGAL_TRANSITION
+    capsys.readouterr()
+
+    # 2. blocked -> fail (illegal terminal-to-terminal)
+    with pytest.raises(IllegalTransition, match="fail not allowed from terminal state 'blocked'"):
+        st.fail(reason="cannot fail after blocked")
+    assert status_file.read_text(encoding="utf-8") == blocked_content
+    assert main(["--dir", str(stage_dir), "fail", "--reason", "cannot fail"]) == EXIT_ILLEGAL_TRANSITION
+    capsys.readouterr()
+
+    # 3. blocked -> done --accept-failure (illegal)
+    with pytest.raises(IllegalTransition, match="only allowed from state 'failed'"):
+        st.done(accept_failure=True)
+    assert status_file.read_text(encoding="utf-8") == blocked_content
+    assert main(["--dir", str(stage_dir), "done", "--accept-failure"]) == EXIT_ILLEGAL_TRANSITION
+    capsys.readouterr()
+
+    # ------------------------------------------------------------------------
+    # E. From terminal failed
+    # ------------------------------------------------------------------------
+    st.start(stage="failed-task", pid=os.getpid())
+    st.fail(reason="unhandled exception")
+    failed_content = status_file.read_text(encoding="utf-8")
+
+    # 1. failed -> done without accept_failure (illegal terminal-to-terminal)
+    with pytest.raises(IllegalTransition, match="done not allowed from terminal state 'failed'"):
+        st.done(summary="cannot done after failed without accept_failure")
+    assert status_file.read_text(encoding="utf-8") == failed_content
+    assert main(["--dir", str(stage_dir), "done", "--summary", "cannot done"]) == EXIT_ILLEGAL_TRANSITION
+    capsys.readouterr()
+
+    # 2. failed -> blocked (illegal terminal-to-terminal)
+    with pytest.raises(IllegalTransition, match="blocked not allowed from terminal state 'failed'"):
+        st.blocked(reason="cannot block after failed")
+    assert status_file.read_text(encoding="utf-8") == failed_content
+    assert main(["--dir", str(stage_dir), "blocked", "--reason", "cannot block"]) == EXIT_ILLEGAL_TRANSITION
+    capsys.readouterr()
+
+    # 3. failed -> reclaim (illegal)
+    with pytest.raises(IllegalTransition, match="needs_reclaim is false"):
+        st.reclaim(reason="cannot reclaim failed")
+    assert status_file.read_text(encoding="utf-8") == failed_content
+    assert main(["--dir", str(stage_dir), "reclaim", "--reason", "cannot reclaim failed"]) == EXIT_ILLEGAL_TRANSITION
+    capsys.readouterr()
+    assert status_file.read_text(encoding="utf-8") == failed_content
 
 
 # =============================================================================

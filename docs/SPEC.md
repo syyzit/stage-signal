@@ -126,7 +126,7 @@ Heartbeat age is available only when `state == "running"`; for `done`, `failed`,
         └──────────┘ └──────────┘ └──────────┘
 ```
 
-The canonical stage lifecycle states and terminal partition are frozen in §13.12 (`STATES`, `TERMINAL_STATES`).
+The canonical stage lifecycle states and terminal partition are frozen in §13.12 (`STATES`, `TERMINAL_STATES`). The normative lifecycle allowed transition matrix is frozen in §13.19 (`ALLOWED_TRANSITIONS`).
 
 Rules:
 
@@ -1147,6 +1147,152 @@ Under `schema_version: 1`, the human mirror format is strictly **additive-only**
 - Writers MUST continue guaranteeing that write failures never raise exceptions, preserving the best-effort nature of the mirror.
 
 Distinction from orchestrator mirror: The optional `<repo>/.orch/STATUS.md` mirror (§10, `write_status_mirror`) is an independent repository-level convenience mirror that includes an extra `source:` line and touches `.orch/DONE` on completion; both mirrors adhere to non-normative, best-effort principles.
+
+### 13.19 Allowed lifecycle transition matrix freeze (`ALLOWED_TRANSITIONS`)
+
+The lifecycle state machine transitions between stage states (§4, §13.12) via CLI subcommands (§6, §13.15) and library methods are governed by a normative, frozen allowed transition matrix under `schema_version: 1`.
+
+#### 13.19.1 Normative matrix rules and coverage
+
+Orchestrators and embedders can rely on the exact legality of `(from_state → command → to_state)` edges:
+
+1. **Initialization flow (`init` / idle `queued` → `start` → `running`):**
+   - Uninitialized stages transition to idle `queued` via `init` (emitting an `init` event).
+   - From `queued` (whether clean idle `queued` or named queued), invoking `start --stage NAME` transitions to `running` (attempt 1, emitting a `start` event).
+   - `start` is permitted from **any** state (`queued`, `running`, `done`, `blocked`, `failed`), always transitioning to `running` (incrementing `attempt` on same series or resetting to 1 on new stage ID).
+2. **Progress within running (`running` → `heartbeat` / `note` / `artifact`):**
+   - Commands `heartbeat [--note]`, `note TEXT`, and `artifact PATH [--label]` are permitted **only** when `state == "running"`.
+   - Each operation keeps the stage in `running` without resetting attempt, claims, or terminal payloads.
+   - Invoking `heartbeat`, `note`, or `artifact` from any non-running state (`queued`, `done`, `blocked`, `failed`) is illegal and MUST raise `IllegalTransition` (exit 3; §13.4, §13.17).
+3. **Completion to terminal (`running` / `queued` → `done` / `blocked` / `fail` → terminal):**
+   - Standard `done` transitions from `queued` or `running` to `done`. Idempotent repeat from `done` is legal.
+   - Standard `blocked` transitions from `queued` or `running` to `blocked`. Idempotent repeat from `blocked` is legal.
+   - Standard `fail` transitions from `queued` or `running` to `failed`. Idempotent repeat from `failed` is legal.
+   - Transitioning from one terminal state to a different terminal state without an intervening `start` (or without `--accept-failure` on `failed`) is strictly illegal (exit 3).
+4. **Accepting failure (`failed` → `done --accept-failure`):**
+   - `done --accept-failure` is permitted **only** from state `failed`, transitioning the stage to `done` and recording `"accepted_failure": true` in `result` (§4 rule 5).
+   - Invoking `done --accept-failure` from any non-failed state (`queued`, `running`, `done`, `blocked`) is illegal and MUST raise `IllegalTransition` (exit 3).
+5. **Reclaim edges (`running` + `needs_reclaim` → `failed` [+ optional `clear_terminal`]):**
+   - `reclaim` requires `needs_reclaim` to be true (`state == "running"` and either a `DEAD_PID` or `STALE_HEARTBEAT` warning applies; §4 rule 7, §13.8).
+   - When `needs_reclaim` is true:
+     - With `--keep-failed`: transitions `running` → `failed` (emitting a `failed` event with `detail: {"reclaim": True, "keep_failed": True}`).
+     - Default (without `--keep-failed`): atomically transitions `running` → `failed` then `failed` → `queued` (emitting a `failed` event followed by a `clear_terminal` event with stage identity reset to idle `queued`).
+   - When `needs_reclaim` is false (healthy `running` or non-running states): `reclaim` and `fail --if-needs-reclaim` are illegal and MUST raise `IllegalTransition` (exit 3) with no mutation.
+6. **Resetting to idle (`clear-terminal` from terminal / queued → idle `queued`):**
+   - `clear-terminal` is permitted from all terminal states (`done`, `blocked`, `failed`) and from `queued` (abandoning an idle or pending queued stage).
+   - It transitions the stage to `queued` (idle by default, resetting stage identity to `null`, or preserving stage identity when `--keep-stage` is given).
+   - `clear-terminal` from `running` is strictly illegal and MUST raise `IllegalTransition` (exit 3); stuck running stages must be reclaimed first.
+7. **Strict failure on illegal edges (`IllegalTransition` / exit 3):**
+   - Any transition attempt outside the allowed matrix MUST raise `IllegalTransition` (§13.17) in Python and exit with code 3 (`EXIT_ILLEGAL_TRANSITION`; §13.4) at the CLI boundary.
+   - Status, events, and mirrors MUST NOT be mutated on rejected transitions.
+
+#### 13.19.2 Allowed transition matrix table
+
+| From State | Command / Operation | Resulting State | Condition / Guard | Audit Event |
+|---|---|---|---|---|
+| `queued` | `start` | `running` | Stage name required | `start` |
+| `queued` | `done` | `done` | Optional summary / proof | `done` |
+| `queued` | `blocked` | `blocked` | Non-empty reason required | `blocked` |
+| `queued` | `fail` | `failed` | Non-empty reason required | `failed` |
+| `queued` | `clear-terminal` | `queued` | Resets to idle queued (abandon) | `clear_terminal` |
+| `running` | `start` | `running` | Retries stage (bumps attempt) or new stage | `start` |
+| `running` | `heartbeat` | `running` | Bumps heartbeat timestamp, optional note | `heartbeat` |
+| `running` | `note` | `running` | Appends note entry | `note` |
+| `running` | `artifact` | `running` | Appends artifact record | `artifact` |
+| `running` | `done` | `done` | Optional summary / proof | `done` |
+| `running` | `blocked` | `blocked` | Non-empty reason required | `blocked` |
+| `running` | `fail` | `failed` | Non-empty reason required | `failed` |
+| `running` | `fail --if-dead-pid` | `failed` | Recorded PID confirmed dead | `failed` |
+| `running` | `fail --if-needs-reclaim` | `failed` | `needs_reclaim` is True | `failed` |
+| `running` | `reclaim` | `queued` | `needs_reclaim` is True; clears to idle queued | `failed` + `clear_terminal` |
+| `running` | `reclaim --keep-failed` | `failed` | `needs_reclaim` is True; leaves in failed | `failed` |
+| `done` | `start` | `running` | Starts new attempt / stage | `start` |
+| `done` | `done` | `done` | Idempotent same-stage repeat | `done` |
+| `done` | `clear-terminal` | `queued` | Clears terminal stage to queued | `clear_terminal` |
+| `blocked` | `start` | `running` | Starts new attempt / stage | `start` |
+| `blocked` | `blocked` | `blocked` | Idempotent same-stage repeat | `blocked` |
+| `blocked` | `clear-terminal` | `queued` | Clears terminal stage to queued | `clear_terminal` |
+| `failed` | `start` | `running` | Starts new attempt / stage | `start` |
+| `failed` | `fail` | `failed` | Idempotent same-stage repeat | `failed` |
+| `failed` | `done --accept-failure` | `done` | Allowed ONLY from `failed` | `done` |
+| `failed` | `clear-terminal` | `queued` | Clears terminal stage to queued | `clear_terminal` |
+
+All other `(from_state, command)` combinations are illegal and MUST raise `IllegalTransition` (exit 3; §13.4, §13.17).
+
+#### 13.19.3 Frozen structure export (`ALLOWED_TRANSITIONS`)
+
+The single source of truth for the legal transition matrix is frozen in `stage_signal.constants` and exported from top-level `stage_signal` and `__all__`:
+
+```python
+ALLOWED_TRANSITIONS: dict[tuple[str, str], str] = {
+    # start: allowed from any state -> running (SPEC §4.2)
+    (STATE_QUEUED, "start"): STATE_RUNNING,
+    (STATE_RUNNING, "start"): STATE_RUNNING,
+    (STATE_DONE, "start"): STATE_RUNNING,
+    (STATE_BLOCKED, "start"): STATE_RUNNING,
+    (STATE_FAILED, "start"): STATE_RUNNING,
+
+    # heartbeat, note, artifact: stay running (SPEC §4.3, §4.4)
+    (STATE_RUNNING, "heartbeat"): STATE_RUNNING,
+    (STATE_RUNNING, "note"): STATE_RUNNING,
+    (STATE_RUNNING, "artifact"): STATE_RUNNING,
+
+    # done: allowed from queued, running, or idempotent done -> done (SPEC §4.5)
+    (STATE_QUEUED, "done"): STATE_DONE,
+    (STATE_RUNNING, "done"): STATE_DONE,
+    (STATE_DONE, "done"): STATE_DONE,
+
+    # done --accept-failure: allowed only from failed -> done (SPEC §4.5)
+    (STATE_FAILED, "done --accept-failure"): STATE_DONE,
+    (STATE_FAILED, "done_accept_failure"): STATE_DONE,
+
+    # blocked: allowed from queued, running, or idempotent blocked -> blocked (SPEC §4.6)
+    (STATE_QUEUED, "blocked"): STATE_BLOCKED,
+    (STATE_RUNNING, "blocked"): STATE_BLOCKED,
+    (STATE_BLOCKED, "blocked"): STATE_BLOCKED,
+
+    # fail: allowed from queued, running, or idempotent failed -> failed (SPEC §4.6)
+    (STATE_QUEUED, "fail"): STATE_FAILED,
+    (STATE_RUNNING, "fail"): STATE_FAILED,
+    (STATE_FAILED, "fail"): STATE_FAILED,
+    (STATE_QUEUED, "fail --if-dead-pid"): STATE_FAILED,
+    (STATE_RUNNING, "fail --if-dead-pid"): STATE_FAILED,
+    (STATE_FAILED, "fail --if-dead-pid"): STATE_FAILED,
+    (STATE_RUNNING, "fail --if-needs-reclaim"): STATE_FAILED,
+
+    # clear-terminal: allowed from terminal states or queued -> idle queued (SPEC §4.8)
+    (STATE_DONE, "clear-terminal"): STATE_QUEUED,
+    (STATE_BLOCKED, "clear-terminal"): STATE_QUEUED,
+    (STATE_FAILED, "clear-terminal"): STATE_QUEUED,
+    (STATE_QUEUED, "clear-terminal"): STATE_QUEUED,
+    (STATE_DONE, "clear_terminal"): STATE_QUEUED,
+    (STATE_BLOCKED, "clear_terminal"): STATE_QUEUED,
+    (STATE_FAILED, "clear_terminal"): STATE_QUEUED,
+    (STATE_QUEUED, "clear_terminal"): STATE_QUEUED,
+
+    # reclaim: running with needs_reclaim -> failed [+ optional clear_terminal] (SPEC §4.7)
+    (STATE_RUNNING, "reclaim"): STATE_QUEUED,
+    (STATE_RUNNING, "reclaim --keep-failed"): STATE_FAILED,
+    (STATE_RUNNING, "reclaim_keep_failed"): STATE_FAILED,
+}
+```
+
+Helper functions exported alongside `ALLOWED_TRANSITIONS`:
+- `is_transition_allowed(from_state: str, command: str) -> bool`: returns `True` if `(from_state, command)` is a legal transition edge.
+- `transition_target(from_state: str, command: str) -> str`: returns the resulting `to_state` string for a legal transition, or raises `ValueError` if the transition is illegal.
+- `allowed_source_states(command: str) -> tuple[str, ...]`: returns the tuple of legal `from_state` source states for the given command.
+
+#### 13.19.4 Library gate alignment
+
+The library gates in `Stage` (`_require_terminal_source`, `_require_state`, and transition methods) derive directly from `ALLOWED_TRANSITIONS` and `allowed_source_states`, guaranteeing exact alignment between the specification, exported metadata, and runtime enforcement without duplicate or divergent logic.
+
+#### 13.19.5 Additive-only evolution policy
+
+Under `schema_version: 1`, the allowed transition matrix is strictly **additive-only** (§13.1):
+- Existing legal transitions MUST NOT be removed or made illegal in future minor/patch releases.
+- Existing resulting target states for legal transitions MUST NOT change semantic meaning.
+- New commands, optional transition flags, or new edges MAY be added in future releases under schema version 1, provided they remain compatible with the core lifecycle state machine (§4).
+
 
 ### 13.20 Stage public method surface freeze (`STAGE_PUBLIC_METHODS`)
 

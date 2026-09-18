@@ -246,3 +246,82 @@ def state_exit_code(state: str) -> int:
         return STATE_EXIT_CODES[state]
     except KeyError:
         raise ValueError(f"unknown state: {state!r}") from None
+
+
+# Allowed lifecycle transition matrix under schema_version 1 (SPEC §13.19)
+ALLOWED_TRANSITIONS: dict[tuple[str, str], str] = {
+    # start: allowed from any state -> running (SPEC §4.2, §13.19)
+    (STATE_QUEUED, "start"): STATE_RUNNING,
+    (STATE_RUNNING, "start"): STATE_RUNNING,
+    (STATE_DONE, "start"): STATE_RUNNING,
+    (STATE_BLOCKED, "start"): STATE_RUNNING,
+    (STATE_FAILED, "start"): STATE_RUNNING,
+
+    # heartbeat, note, artifact: allowed only from running -> running (SPEC §4.3, §4.4, §13.19)
+    (STATE_RUNNING, "heartbeat"): STATE_RUNNING,
+    (STATE_RUNNING, "note"): STATE_RUNNING,
+    (STATE_RUNNING, "artifact"): STATE_RUNNING,
+
+    # done: allowed from queued, running, or idempotent done -> done (SPEC §4.5, §13.19)
+    (STATE_QUEUED, "done"): STATE_DONE,
+    (STATE_RUNNING, "done"): STATE_DONE,
+    (STATE_DONE, "done"): STATE_DONE,
+
+    # done --accept-failure: allowed only from failed -> done (SPEC §4.5, §13.19)
+    (STATE_FAILED, "done --accept-failure"): STATE_DONE,
+    (STATE_FAILED, "done_accept_failure"): STATE_DONE,
+
+    # blocked: allowed from queued, running, or idempotent blocked -> blocked (SPEC §4.6, §13.19)
+    (STATE_QUEUED, "blocked"): STATE_BLOCKED,
+    (STATE_RUNNING, "blocked"): STATE_BLOCKED,
+    (STATE_BLOCKED, "blocked"): STATE_BLOCKED,
+
+    # fail: allowed from queued, running, or idempotent failed -> failed (SPEC §4.6, §13.19)
+    (STATE_QUEUED, "fail"): STATE_FAILED,
+    (STATE_RUNNING, "fail"): STATE_FAILED,
+    (STATE_FAILED, "fail"): STATE_FAILED,
+    (STATE_QUEUED, "fail --if-dead-pid"): STATE_FAILED,
+    (STATE_RUNNING, "fail --if-dead-pid"): STATE_FAILED,
+    (STATE_FAILED, "fail --if-dead-pid"): STATE_FAILED,
+    (STATE_RUNNING, "fail --if-needs-reclaim"): STATE_FAILED,
+
+    # clear-terminal: allowed from terminal states or queued -> idle queued (SPEC §4.8, §13.19)
+    (STATE_DONE, "clear-terminal"): STATE_QUEUED,
+    (STATE_BLOCKED, "clear-terminal"): STATE_QUEUED,
+    (STATE_FAILED, "clear-terminal"): STATE_QUEUED,
+    (STATE_QUEUED, "clear-terminal"): STATE_QUEUED,
+    (STATE_DONE, "clear_terminal"): STATE_QUEUED,
+    (STATE_BLOCKED, "clear_terminal"): STATE_QUEUED,
+    (STATE_FAILED, "clear_terminal"): STATE_QUEUED,
+    (STATE_QUEUED, "clear_terminal"): STATE_QUEUED,
+
+    # reclaim: running with needs_reclaim -> failed [+ optional clear_terminal] (SPEC §4.7, §13.19)
+    (STATE_RUNNING, "reclaim"): STATE_QUEUED,
+    (STATE_RUNNING, "reclaim --keep-failed"): STATE_FAILED,
+    (STATE_RUNNING, "reclaim_keep_failed"): STATE_FAILED,
+}
+
+
+def is_transition_allowed(from_state: str, command: str) -> bool:
+    """Check whether a (from_state, command) transition edge is legal under schema_version 1 (SPEC §13.19)."""
+    return (from_state, command) in ALLOWED_TRANSITIONS
+
+
+def transition_target(from_state: str, command: str) -> str:
+    """Return the resulting target state for a legal transition, or raise ValueError if unknown/illegal (SPEC §13.19)."""
+    try:
+        return ALLOWED_TRANSITIONS[(from_state, command)]
+    except KeyError:
+        raise ValueError(
+            f"illegal transition from state {from_state!r} via command {command!r}"
+        ) from None
+
+
+def allowed_source_states(command: str) -> tuple[str, ...]:
+    """Return tuple of allowed source states for command from ALLOWED_TRANSITIONS (SPEC §13.19)."""
+    states: list[str] = []
+    for from_state, cmd in ALLOWED_TRANSITIONS:
+        if cmd == command and from_state not in states:
+            states.append(from_state)
+    return tuple(states)
+
