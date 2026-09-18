@@ -476,7 +476,7 @@ stage-signal supervise [--every SEC] [--dir DIR] [--summary SUMMARY] [--reason R
 | 15 | Not initialized (missing dir/STATUS) |
 
 `done`/`blocked`/`failed` terminal commands exit 0 on success (they *perform*
-the transition); the 10–13 codes are for *observing* (`status`/`wait`) only (and exit 10 for `doctor --exit-reclaim` when reclaim is needed). The canonical state-to-exit-code mapping is frozen in §13.16 (`STATE_EXIT_CODES`).
+the transition); the 10–13 codes are for *observing* (`status`/`wait`) only (and exit 10 for `doctor --exit-reclaim` when reclaim is needed). The canonical state-to-exit-code mapping is frozen in §13.16 (`STATE_EXIT_CODES`). The public exception hierarchy and error exit mapping is frozen in §13.17.
 `supervise` returns the child process exit code (or `128 + SIGNUM` on signal termination, 127 when not found, 126 on permission denied; standard error exit codes 2, 3, 15 apply on setup/precondition failures).
 
 ## 8. Concurrency & atomicity
@@ -657,7 +657,7 @@ The CLI exit codes are locked as part of the observer and runner contract:
 | 14 | `EXIT_WAIT_TIMEOUT` | Wait timeout elapsed |
 | 15 | `EXIT_NOT_INITIALIZED` | Stage directory or STATUS.json missing |
 
-The mapping from lifecycle states to observer exit codes (`queued` → 13, `running` → 10, `done` → 0, `blocked` → 11, `failed` → 12) is frozen in §13.16 (`STATE_EXIT_CODES`).
+The mapping from lifecycle states to observer exit codes (`queued` → 13, `running` → 10, `done` → 0, `blocked` → 11, `failed` → 12) is frozen in §13.16 (`STATE_EXIT_CODES`). The public exception hierarchy and CLI exit mapping is frozen in §13.17.
 
 ### 13.5 Event types freeze (`EVENT_TYPES`)
 The canonical event types recorded in `events.jsonl` are frozen:
@@ -1001,4 +1001,71 @@ Under `schema_version: 1`, the `STATE_EXIT_CODES` mapping is strictly **additive
 - Existing state-to-exit-code mappings (`queued` → 13, `running` → 10, `done` → 0, `blocked` → 11, `failed` → 12) MUST NOT be removed, renamed, or assigned different exit codes.
 - Any future lifecycle state introduced under schema version 1 MUST define its assigned observer exit code.
 - Readers and observers MUST NOT crash on unknown future states. Behavior for unmapped or unknown states is implementation-defined (for example, raising `ValueError` in the Python lookup helper or emitting a non-zero exit in the CLI), but must never remove or mutate existing mappings.
+
+### 13.17 Public exception hierarchy and exit mapping freeze
+
+Python embedders and orchestrators interacting with `stage-signal` via its library API can catch stable, structured exception classes. The complete public exception hierarchy and its mapping to CLI exit codes (§7, §13.4) is frozen under `schema_version: 1`:
+
+```
+Exception (built-in)
+└── StageError (exit_code = EXIT_ERROR = 1)
+    ├── BadArgsError (exit_code = EXIT_BAD_ARGS = 2)
+    ├── IllegalTransition (exit_code = EXIT_ILLEGAL_TRANSITION = 3)
+    ├── NotInitialized (exit_code = EXIT_NOT_INITIALIZED = 15)
+    ├── CorruptStatusError (exit_code = EXIT_ERROR = 1)
+    └── WaitTimeout (exit_code = EXIT_WAIT_TIMEOUT = 14)
+```
+
+| Exception Class | Base Class | Exit Code Constant | Exit Code | Description & Usage |
+|-----------------|------------|-------------------|-----------|---------------------|
+| `StageError` | `Exception` | `EXIT_ERROR` | 1 | Base exception for all `stage-signal` operational errors. Carries class attribute `exit_code` (typically 1) and optional `detail` attribute (§7, §13.4). |
+| `BadArgsError` | `StageError` | `EXIT_BAD_ARGS` | 2 | Invalid CLI arguments, schema misuse, or missing mandatory inputs (e.g. invalid `--pid`, empty `--stage`, invalid `--meta`; §6, §13.4). |
+| `IllegalTransition` | `StageError` | `EXIT_ILLEGAL_TRANSITION` | 3 | Disallowed lifecycle transition attempt (e.g. `done` from `queued`, reclaiming un-reclaimable stage) or failed `--require-proof` verification gate (§4, §6, §13.4). |
+| `NotInitialized` | `StageError` | `EXIT_NOT_INITIALIZED` | 15 | Stage directory does not exist or `STATUS.json` is missing when executing commands that require an initialized stage (§6, §7, §13.4). |
+| `CorruptStatusError` | `StageError` | `EXIT_ERROR` | 1 | `STATUS.json` or `events.jsonl` unreadable, invalid JSON, or failing schema validation (§4, §13.3, §13.4). |
+| `WaitTimeout` | `StageError` | `EXIT_WAIT_TIMEOUT` | 14 | `wait` operation timed out before target condition was satisfied (§6, §13.4, §13.11). Carries `last_status` dict when available. |
+
+#### CLI boundary exit code mapping
+
+When invoked via the CLI entry point (`stage-signal` or `python -m stage_signal`; §13.15), unhandled `StageError` exceptions are caught at the top-level boundary (`stage_signal.cli.main`), emitting an error message to `stderr` and returning `exc.exit_code`:
+
+```python
+try:
+    return func(args)
+except StageError as exc:
+    print(f"stage-signal: error: {exc}", file=sys.stderr)
+    return exc.exit_code
+```
+
+This guarantees an exact 1:1 correspondence between Python exceptions raised during library/command execution and the CLI exit codes documented in §7 and §13.4.
+
+#### Top-level export guarantee
+
+All six exception classes are exported from the top-level `stage_signal` package and enumerated in `__all__`:
+- `StageError`
+- `BadArgsError`
+- `IllegalTransition`
+- `NotInitialized`
+- `CorruptStatusError`
+- `WaitTimeout`
+
+Embedders can import them directly:
+
+```python
+from stage_signal import (
+    BadArgsError,
+    CorruptStatusError,
+    IllegalTransition,
+    NotInitialized,
+    StageError,
+    WaitTimeout,
+)
+```
+
+#### Additive-only evolution policy
+
+Under `schema_version: 1`, the public exception hierarchy and exit mapping is strictly **additive-only** (§13.1):
+- Existing exception types (`StageError`, `BadArgsError`, `IllegalTransition`, `NotInitialized`, `CorruptStatusError`, `WaitTimeout`) MUST NOT be removed, renamed, or assigned different `exit_code` values.
+- Existing inheritance relationships MUST NOT be broken: each subclass MUST remain an `issubclass` of `StageError` (and `Exception`).
+- New exception subclasses MAY be added in future minor or patch releases, expanding the hierarchy, provided each new class inherits from `StageError` (or an existing subclass) and carries an `exit_code` consistent with §7 and §13.4.
 

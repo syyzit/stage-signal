@@ -12,6 +12,15 @@ from .constants import (
     EXIT_WAIT_TIMEOUT,
 )
 
+__all__ = [
+    "StageError",
+    "BadArgsError",
+    "IllegalTransition",
+    "NotInitialized",
+    "CorruptStatusError",
+    "WaitTimeout",
+]
+
 
 class StageError(Exception):
     """Base error for stage-signal. Carries a stable ``exit_code``."""

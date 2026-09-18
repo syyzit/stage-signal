@@ -6,6 +6,7 @@ See `docs/RELEASE.md` for the release procedure.
 
 ## [Unreleased]
 
+- Froze public exception hierarchy and exit mapping in SPEC §13.17 (`StageError`→1, `BadArgsError`→2, `IllegalTransition`→3, `NotInitialized`→15, `CorruptStatusError`→1, `WaitTimeout`→14), cross-linking §7 and §13.4, asserting top-level package exports, and guaranteeing additive-only evolution under `schema_version: 1` (#129).
 - Froze state-to-exit-code mapping in SPEC §13.16 via exported `STATE_EXIT_CODES` (`queued`→13, `running`→10, `done`→0, `blocked`→11, `failed`→12), cross-linking §13.4 and §6, documenting distinction from mutation command exits and guaranteeing additive-only observer mapping under `schema_version: 1` (#126).
 - Froze CLI subcommand inventory in SPEC §13.15 via exported `CLI_SUBCOMMANDS`, cross-linking §6, documenting `stage-signal == python -m stage_signal` entry point equivalence, and guaranteeing additive-only command surface under `schema_version: 1` (#125).
 - Froze environment variable names (`ENV_DIR`, `ENV_PROJECT`, `ENV_PROOF_REF`, `ENV_STATUS_MIRROR`, `ENV_VARS`) and timing/capacity defaults (`WAIT_DEFAULT_TIMEOUT`, `WAIT_DEFAULT_POLL`, `EVENTS_DEFAULT_TAIL`, `DEFAULT_STALE_THRESHOLD`, `SUPERVISE_DEFAULT_EVERY`, `MAX_NOTES`) in SPEC §13.14, documenting precedence (`--dir` wins over `STAGE_SIGNAL_DIR`) and exporting missing constants from `stage_signal` (#122).
