@@ -3627,9 +3627,125 @@ Under `schema_version: 1`, the `.orch` mirror write contract is strictly **addit
 - `STATUS.json` stays the sole normative state: orchestrators MUST NOT treat the `.orch/` mirror as authoritative and MUST fall back to `status --json` (§13.35) when the mirror is absent or stale.
 
 
-### 13.40 Reserved: concurrency locking contract (parallel lane, issue #175)
+### 13.40 Concurrency, atomicity, and `StageStore.locked` contract freeze (no new constants)
 
-`§13.40` is reserved for the locking freeze owned by the parallel lane (issue #175) and is intentionally left undefined here. This section (`§13.41`) MUST NOT define, constrain, or assume any locking behavior beyond what `§13.30` already states (verify-before-mutate runs before any mutation; a refused gate mutates nothing).
+Stage lifecycle state mutations and observations synchronize concurrent access through `StageStore.locked` (`src/stage_signal/store.py`), atomic file replacement for `STATUS.json`, and durable appends for `events.jsonl` (§2, §5, §8). Under `schema_version: 1`, the concurrency model guarantees that concurrent stage modifications from distinct processes or threads never corrupt stage state, produce torn reads, or lose audit events. This section introduces **no new constants and no new exports**: filesystem layout constants remain frozen in §13.13 (`LOCKS_DIRNAME`, `LOCK_FILENAME`, `STATUS_FILENAME`, `EVENTS_FILENAME`), exception classes in §13.17 (`CorruptStatusError`, `NotInitialized`), and `StageStore` in §13.21. `PUBLIC_EXPORTS` stays at 134 symbols.
+
+#### 13.40.1 Frozen constants and primitives (existing symbols only)
+
+```python
+LOCKS_DIRNAME = "locks"
+LOCK_FILENAME = "stage.lock"
+STATUS_FILENAME = "STATUS.json"
+EVENTS_FILENAME = "events.jsonl"
+```
+
+```python
+class StageStore:
+    """Filesystem paths + locking + atomic IO for one stage dir."""
+    def locked(self, exclusive: bool = True) -> Iterator[None]: ...
+    def read_status(self) -> dict[str, Any]: ...
+    def write_status(self, data: dict[str, Any]) -> None: ...
+    def append_event(self, event: dict[str, Any]) -> None: ...
+    def read_events(self) -> list[dict[str, Any]]: ...
+```
+
+- `LOCKS_DIRNAME` (`"locks"`; §13.13): canonical lock directory name under the stage root.
+- `LOCK_FILENAME` (`"stage.lock"`; §13.13): canonical lock file name under `locks/`.
+- `STATUS_FILENAME` (`"STATUS.json"`; §13.13): canonical normative state file.
+- `EVENTS_FILENAME` (`"events.jsonl"`; §13.13): canonical audit event append log.
+- `StageStore` (§13.21): normative storage, locking, and atomic I/O interface.
+- `StageStore.locked(exclusive=True)`: context manager holding the lock on `locks/stage.lock` for the block duration (§8).
+- `PUBLIC_EXPORTS` stays at 134 symbols: this section adds no new export (§13.21).
+
+#### 13.40.2 Same-process thread synchronization (`_THREAD_LOCKS`)
+
+`StageStore.locked()` synchronizes concurrent threads within the same Python process prior to acquiring filesystem locks:
+
+- Each resolved lock path (`self.lock_path.resolve()`) is mapped to a process-wide `threading.RLock` stored in internal registry `_THREAD_LOCKS`.
+- Access to `_THREAD_LOCKS` is serialized by a global `threading.Lock` (`_THREAD_LOCKS_GUARD`).
+- Using reentrant locks (`threading.RLock`) ensures nested or re-entrant lock acquisitions within the same thread do not deadlock.
+- Thread locks ensure that multiple threads within the same process accessing the same stage directory serialize their operations before filesystem-level locks are invoked, preventing undefined behaviors in platform file locking APIs when multiple threads in a single process target the same file descriptor.
+
+#### 13.40.3 Platform locking primitives: POSIX, Windows msvcrt, non-locking fallback
+
+Platform-specific inter-process locking is coordinated on `locks/stage.lock` (§8):
+
+1. **Pre-lock layout verification:**
+   Before acquiring the file lock, `StageStore.ensure_layout()` ensures that `locks/` directory exists and that `locks/stage.lock` exists with at least 1 byte (writing `b"\0"` if the file is newly created or empty, satisfying Windows `msvcrt.locking` requirements). The file is opened in `"a+b"` mode.
+
+2. **POSIX (`fcntl.flock`):**
+   When `fcntl` is available:
+   - **Exclusive locks (`exclusive=True`):** acquired via `fcntl.flock(fh.fileno(), fcntl.LOCK_EX)` for all state mutations (`init`, `start`, `heartbeat`, `note`, `artifact`, `done`, `blocked`, `fail`, `clear_terminal`, `reclaim`).
+   - **Shared locks (`exclusive=False`):** acquired via `fcntl.flock(fh.fileno(), fcntl.LOCK_SH)` for non-mutating observers (`status`, `events`, `diagnose`, `wait`).
+   - **Release:** released unconditionally in a `finally` block via `fcntl.flock(fh.fileno(), fcntl.LOCK_UN)`.
+
+3. **Windows (`msvcrt.locking`):**
+   When `fcntl` is unavailable and `msvcrt` is available (standard Windows CPython runtime):
+   - Windows stdlib lacks POSIX shared locks (`LOCK_SH`); all lock requests (both exclusive and shared) fall back to exclusive byte-0 locking.
+   - The file pointer is rewound to byte 0 (`fh.seek(0)`).
+   - Locking is attempted via non-blocking mode: `msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)`.
+   - If `msvcrt.locking` raises `OSError` (indicating lock contention), the acquire loop retries with a 20ms sleep (`time.sleep(0.02)`) until acquired or until a 10.0-second deadline (`time.monotonic() >= deadline`) is exceeded. If the deadline expires, the `OSError` is re-raised.
+   - **Release:** rewinds to byte 0 (`fh.seek(0)`) and releases via `msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)` inside a `finally` block, suppressing any `OSError`.
+
+4. **Non-locking fallback (neither `fcntl` nor `msvcrt` available):**
+   - When neither primitive is importable, `StageStore.locked()` is a best-effort no-op that yields without inter-process locking.
+   - State integrity on such platforms relies strictly on atomic file replacement (`os.replace`) for `STATUS.json`.
+
+#### 13.40.4 Atomic `STATUS.json` writes & torn-read retry
+
+State writes and reads enforce atomicity and resilience to concurrent reader/writer interleavings (§2, §8):
+
+1. **Atomic write pipeline (`write_status`):**
+   - The status dictionary is validated against the frozen schema rules (`validate_status`; §3, §13.2).
+   - A temporary file is created in the target stage directory via `tempfile.mkstemp(dir=str(self.dir), prefix=".STATUS.", suffix=".tmp")`, ensuring the temporary file resides on the same filesystem volume as `STATUS.json` so that replacement is atomic.
+   - The JSON payload is written formatted (`indent=2, ensure_ascii=False`), followed by a newline `\n`.
+   - The file buffer is explicitly flushed (`fh.flush()`) and committed to disk storage via `os.fsync(fh.fileno())` before renaming.
+   - The temporary file is atomically moved to `STATUS.json` via `os.replace(tmp, self.status_path)`.
+   - If any exception occurs during writing or syncing, the temporary file is unlinked in an exception handler and the exception is propagated.
+
+2. **Torn-read retry-once tolerance (`read_status`):**
+   - Reading `STATUS.json` requires initialization (`require_initialized()`; missing file raises `NotInitialized`, exit 15).
+   - If reading fails with `OSError`, `CorruptStatusError` is raised immediately.
+   - If parsing fails with `json.JSONDecodeError` (which can happen if a non-locking reader observes a concurrent atomic replacement in progress), the reader retries reading and parsing `STATUS.json` exactly once.
+   - If the second attempt also fails with `json.JSONDecodeError`, `CorruptStatusError` is raised (exit 1).
+   - Parsed data is passed to `validate_status` to ensure schema conformance; validation failures raise `CorruptStatusError` (exit 1).
+
+#### 13.40.5 `events.jsonl` append and durability under lock
+
+The append-only event log (`events.jsonl`; §5) records chronological state transitions and lifecycle audits:
+
+1. **Durability and flushing (`append_event`):**
+   - All event appends are executed while holding `StageStore.locked(exclusive=True)` within mutating operations.
+   - Each event record is serialized as a single JSON object line (`json.dumps(event, ensure_ascii=False) + "\n"`).
+   - Appended to `events.jsonl` in append mode (`open(..., "a", encoding="utf-8")`).
+   - The file handle is explicitly flushed (`fh.flush()`) and synchronized to disk (`os.fsync(fh.fileno())`, with `OSError` suppressed if not supported by the underlying filesystem).
+
+2. **Fail-closed event reading (`read_events`):**
+   - Readers access `events.jsonl` under a shared lock (`locked(exclusive=False)`).
+   - An unreadable file (`OSError`) raises `CorruptStatusError` (exit 1).
+   - Blank and whitespace-only lines are skipped.
+   - Any unparseable line raises `CorruptStatusError` identifying the offending line number (exit 1).
+   - Successful reads return all parsed JSON event objects in chronological order (oldest first).
+
+#### 13.40.6 Cross-links
+
+- **§2 (On-disk layout):** `STATUS.json`, `events.jsonl`, and `locks/stage.lock` layout, atomic replacement, and torn-read retry rationale.
+- **§5 (events.jsonl):** append-only format, chronological ordering, and fail-closed corruption handling.
+- **§8 (Concurrency & atomicity):** normative locking requirements, POSIX `flock`, Windows `msvcrt.locking`, and torn-read tolerance.
+- **§13.13 (On-disk layout path constants freeze):** `LOCKS_DIRNAME`, `LOCK_FILENAME`, `STATUS_FILENAME`, `EVENTS_FILENAME`.
+- **§13.17 (Public exception hierarchy and exit mapping freeze):** `CorruptStatusError` (exit 1), `NotInitialized` (exit 15).
+- **§13.21 (Top-level public export inventory):** `StageStore`, `LOCKS_DIRNAME`, `LOCK_FILENAME`, `STATUS_FILENAME`, `EVENTS_FILENAME` already exported; `PUBLIC_EXPORTS` stays at 134 symbols.
+
+#### 13.40.7 Additive-only evolution policy
+
+Under `schema_version: 1`, the concurrency and locking contract is strictly **additive-only** (§13.1):
+
+- The canonical lock path (`locks/stage.lock`), the thread lock registry (`_THREAD_LOCKS`), the POSIX `flock` operations (`LOCK_EX` for mutations, `LOCK_SH` for reads), the Windows `msvcrt.locking` byte-0 exclusive fallback with ≤10s retry loop, the non-locking no-op fallback, the atomic tempfile + `os.replace` pipeline, and the torn-read retry-once behavior MUST NOT be removed, renamed, or change semantic meaning.
+- New locking mechanisms or performance optimizations MAY be introduced in future minor releases only if they preserve full backward compatibility with the filesystem and lockfile contracts defined herein.
+- `PUBLIC_EXPORTS` stays at 134 symbols: no existing export is removed or renamed.
+
+
 
 
 ### 13.41 Proof composition gate freeze (`--proof-ref` / `--require-proof`, no new constants)

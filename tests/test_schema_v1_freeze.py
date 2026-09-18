@@ -9281,6 +9281,395 @@ def test_mirror_cross_links_freeze() -> None:
 
 
 # ---------------------------------------------------------------------------
+# §13.40: Concurrency, atomicity, and StageStore.locked contract freeze
+# ---------------------------------------------------------------------------
+
+
+def test_locking_frozen_constants_and_primitives() -> None:
+    """Locks path constants, StageStore methods, and export inventory (SPEC §13.40.1)."""
+    import inspect
+    import stage_signal
+    import stage_signal.store as store_mod
+    from stage_signal.constants import (
+        EVENTS_FILENAME,
+        LOCK_FILENAME,
+        LOCKS_DIRNAME,
+        PUBLIC_EXPORTS,
+        STATUS_FILENAME,
+    )
+    from stage_signal.errors import CorruptStatusError, NotInitialized
+    from stage_signal.store import StageStore
+
+    # Frozen constants
+    assert LOCKS_DIRNAME == "locks"
+    assert LOCK_FILENAME == "stage.lock"
+    assert STATUS_FILENAME == "STATUS.json"
+    assert EVENTS_FILENAME == "events.jsonl"
+
+    # StageStore method surface and signatures
+    assert inspect.isclass(StageStore)
+    store = StageStore("/tmp/dummy-stage")
+    assert store.locks_dir.name == "locks"
+    assert store.lock_path.name == "stage.lock"
+    assert store.status_path.name == "STATUS.json"
+    assert store.events_path.name == "events.jsonl"
+
+    sig_locked = inspect.signature(StageStore.locked)
+    assert "exclusive" in sig_locked.parameters
+    assert sig_locked.parameters["exclusive"].default is True
+
+    for meth in (
+        "read_status",
+        "write_status",
+        "append_event",
+        "read_events",
+        "ensure_layout",
+        "require_initialized",
+    ):
+        assert callable(getattr(StageStore, meth))
+
+    # Thread lock registry
+    assert hasattr(store_mod, "_THREAD_LOCKS")
+    assert isinstance(store_mod._THREAD_LOCKS, dict)
+    assert hasattr(store_mod, "_THREAD_LOCKS_GUARD")
+
+    # Exports check
+    for name in (
+        "StageStore",
+        "LOCKS_DIRNAME",
+        "LOCK_FILENAME",
+        "STATUS_FILENAME",
+        "EVENTS_FILENAME",
+        "CorruptStatusError",
+        "NotInitialized",
+    ):
+        assert hasattr(stage_signal, name), f"stage_signal missing {name!r}"
+        assert name in stage_signal.__all__, f"{name!r} not in stage_signal.__all__"
+        assert name in PUBLIC_EXPORTS, f"{name!r} not in PUBLIC_EXPORTS"
+
+    # §13.40 adds no export: the inventory stays at 134 frozen symbols.
+    assert len(PUBLIC_EXPORTS) == 134
+
+
+def test_locking_same_process_thread_synchronization_freeze(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Same-process thread serialization via _THREAD_LOCKS and RLock reentrancy (SPEC §13.40.2)."""
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+    from unittest.mock import MagicMock
+    import stage_signal.store as store_mod
+    from stage_signal.store import StageStore
+
+    mock_fcntl = MagicMock()
+    monkeypatch.setattr(store_mod, "fcntl", mock_fcntl)
+
+    stage_dir = tmp_path / ".stage-signal"
+    store = StageStore(stage_dir)
+    alias_store = StageStore(tmp_path / "subdir" / ".." / ".stage-signal")
+    (tmp_path / "subdir").mkdir()
+
+    # 1. RLock reentrancy on the same thread: nested locked calls must not deadlock
+    with store.locked(exclusive=True):
+        with store.locked(exclusive=True):
+            with store.locked(exclusive=False):
+                assert store.lock_path.is_file()
+
+    # 2. Cross-thread serialization using resolved lock path
+    started = threading.Event()
+    acquired = threading.Event()
+
+    def worker() -> None:
+        started.set()
+        with alias_store.locked(exclusive=True):
+            acquired.set()
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        with store.locked(exclusive=True):
+            fut = executor.submit(worker)
+            assert started.wait(timeout=2.0)
+            # Worker cannot acquire while store.locked is held
+            assert not acquired.wait(timeout=0.05)
+        # Once released, worker acquires and finishes
+        fut.result(timeout=2.0)
+        assert acquired.is_set()
+
+
+def test_locking_posix_flock_freeze(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """POSIX fcntl.flock exclusive/shared locking and unlock in finally (SPEC §13.40.3)."""
+    from unittest.mock import MagicMock
+    import stage_signal.store as store_mod
+    from stage_signal.store import StageStore
+
+    store = StageStore(tmp_path / ".stage-signal")
+    mock_fcntl = MagicMock()
+    mock_fcntl.LOCK_EX = 2
+    mock_fcntl.LOCK_SH = 1
+    mock_fcntl.LOCK_UN = 8
+    monkeypatch.setattr(store_mod, "fcntl", mock_fcntl)
+
+    # Exclusive acquire -> LOCK_EX, release -> LOCK_UN
+    with store.locked(exclusive=True):
+        pass
+    assert mock_fcntl.flock.call_count == 2
+    assert mock_fcntl.flock.call_args_list[0][0][1] == mock_fcntl.LOCK_EX
+    assert mock_fcntl.flock.call_args_list[1][0][1] == mock_fcntl.LOCK_UN
+
+    mock_fcntl.reset_mock()
+
+    # Shared acquire -> LOCK_SH, release -> LOCK_UN
+    with store.locked(exclusive=False):
+        pass
+    assert mock_fcntl.flock.call_count == 2
+    assert mock_fcntl.flock.call_args_list[0][0][1] == mock_fcntl.LOCK_SH
+    assert mock_fcntl.flock.call_args_list[1][0][1] == mock_fcntl.LOCK_UN
+
+    mock_fcntl.reset_mock()
+
+    # Exception inside context releases lock via finally
+    with pytest.raises(ZeroDivisionError):
+        with store.locked(exclusive=True):
+            _ = 1 / 0
+    assert mock_fcntl.flock.call_count == 2
+    assert mock_fcntl.flock.call_args_list[1][0][1] == mock_fcntl.LOCK_UN
+
+    # Ensure empty lockfile is seeded with b"\0"
+    empty_store = StageStore(tmp_path / "empty-lock" / ".stage-signal")
+    empty_store.locks_dir.mkdir(parents=True, exist_ok=True)
+    empty_store.lock_path.touch()
+    assert empty_store.lock_path.stat().st_size == 0
+    with empty_store.locked(exclusive=True):
+        assert empty_store.lock_path.read_bytes() == b"\0"
+
+
+def test_locking_windows_msvcrt_freeze(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Windows msvcrt byte-0 exclusive fallback with retry and timeout (SPEC §13.40.3)."""
+    import types
+    from unittest.mock import MagicMock
+    import stage_signal.store as store_mod
+    from stage_signal.store import StageStore
+
+    store = StageStore(tmp_path / ".stage-signal")
+    mock_msvcrt = types.SimpleNamespace(
+        LK_NBLCK=1,
+        LK_UNLCK=2,
+        locking=MagicMock(),
+    )
+    monkeypatch.setattr(store_mod, "fcntl", None)
+    monkeypatch.setattr(store_mod, "msvcrt", mock_msvcrt)
+
+    # 1. Exclusive lock: acquires LK_NBLCK on byte 0, unlocks LK_UNLCK
+    with store.locked(exclusive=True):
+        pass
+    assert mock_msvcrt.locking.call_count == 2
+    fd1, mode1, nbytes1 = mock_msvcrt.locking.call_args_list[0][0]
+    assert mode1 == mock_msvcrt.LK_NBLCK
+    assert nbytes1 == 1
+    fd2, mode2, nbytes2 = mock_msvcrt.locking.call_args_list[1][0]
+    assert fd2 == fd1
+    assert mode2 == mock_msvcrt.LK_UNLCK
+    assert nbytes2 == 1
+
+    mock_msvcrt.locking.reset_mock()
+
+    # 2. Shared lock falls back to exclusive byte-0 locking on Windows
+    with store.locked(exclusive=False):
+        pass
+    assert mock_msvcrt.locking.call_count == 2
+    assert mock_msvcrt.locking.call_args_list[0][0][1] == mock_msvcrt.LK_NBLCK
+    assert mock_msvcrt.locking.call_args_list[1][0][1] == mock_msvcrt.LK_UNLCK
+
+    mock_msvcrt.locking.reset_mock()
+
+    # 3. Exception in block still releases lock
+    with pytest.raises(KeyError):
+        with store.locked(exclusive=True):
+            raise KeyError("test")
+    assert mock_msvcrt.locking.call_count == 2
+    assert mock_msvcrt.locking.call_args_list[1][0][1] == mock_msvcrt.LK_UNLCK
+
+    # 4. Retry polling on contention
+    contend_calls = 0
+
+    def fake_contended(fd: int, mode: int, nbytes: int) -> None:
+        nonlocal contend_calls
+        if mode == 1:
+            contend_calls += 1
+            if contend_calls < 3:
+                raise OSError(13, "Permission denied")
+
+    mock_msvcrt.locking = fake_contended
+    monkeypatch.setattr(store_mod.time, "sleep", lambda s: None)
+    with store.locked(exclusive=True):
+        assert contend_calls == 3
+
+    # 5. Deadline timeout (10.0s) re-raises OSError
+    def fake_always_busy(fd: int, mode: int, nbytes: int) -> None:
+        if mode == 1:
+            raise OSError(13, "Permission denied")
+
+    mock_msvcrt.locking = fake_always_busy
+    now = 0.0
+
+    def fake_monotonic() -> float:
+        nonlocal now
+        now += 15.0
+        return now
+
+    monkeypatch.setattr(store_mod.time, "monotonic", fake_monotonic)
+    with pytest.raises(OSError, match="Permission denied"):
+        with store.locked(exclusive=True):
+            pass
+
+
+def test_locking_non_locking_fallback_freeze(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """When neither fcntl nor msvcrt is present, locked() is a best-effort no-op (SPEC §13.40.3)."""
+    import stage_signal.store as store_mod
+    from stage_signal.store import StageStore
+
+    store = StageStore(tmp_path / ".stage-signal")
+    monkeypatch.setattr(store_mod, "fcntl", None)
+    monkeypatch.setattr(store_mod, "msvcrt", None)
+
+    ran_exclusive = False
+    with store.locked(exclusive=True):
+        ran_exclusive = True
+    assert ran_exclusive
+
+    ran_shared = False
+    with store.locked(exclusive=False):
+        ran_shared = True
+    assert ran_shared
+
+
+def test_locking_atomic_status_write_and_torn_read_retry_freeze(tmp_path: Path) -> None:
+    """Atomic STATUS.json replacement and reader torn-read retry-once (SPEC §13.40.4)."""
+    import unittest.mock as mock
+    from stage_signal import Stage
+    from stage_signal.errors import CorruptStatusError, NotInitialized
+    from stage_signal.store import StageStore
+
+    stage_dir = tmp_path / ".stage-signal"
+    store = StageStore(stage_dir)
+
+    # 1. Uninitialized read raises NotInitialized
+    with pytest.raises(NotInitialized):
+        store.read_status()
+
+    # 2. Write valid status via Stage.init
+    stage = Stage(str(stage_dir))
+    stage.init(project="test-proj")
+    status = store.read_status()
+    assert status["project"] == "test-proj"
+    assert status["schema_version"] == 1
+
+    # 3. Simulate torn read on first attempt, recovering on second attempt
+    original_read_text = store.status_path.read_text
+    attempts = 0
+
+    def torn_read_first(*args, **kwargs) -> str:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            return '{"schema_version": 1, "state": "running", "proj'  # truncated / torn JSON
+        return original_read_text(*args, **kwargs)
+
+    with mock.patch.object(type(store.status_path), "read_text", side_effect=torn_read_first):
+        recovered = store.read_status()
+        assert recovered["project"] == "test-proj"
+        assert attempts == 2
+
+    # 4. If second attempt is also torn/invalid, raises CorruptStatusError (exit 1)
+    def torn_read_always(*args, **kwargs) -> str:
+        return '{"incomplete":'
+
+    with mock.patch.object(type(store.status_path), "read_text", side_effect=torn_read_always):
+        with pytest.raises(CorruptStatusError, match="corrupt STATUS.json"):
+            store.read_status()
+
+    # 5. OSError on read raises CorruptStatusError
+    def read_oserror(*args, **kwargs) -> str:
+        raise OSError("Disk I/O failure")
+
+    with mock.patch.object(type(store.status_path), "read_text", side_effect=read_oserror):
+        with pytest.raises(CorruptStatusError, match="cannot read"):
+            store.read_status()
+
+
+def test_locking_events_append_and_read_durability_freeze(tmp_path: Path) -> None:
+    """events.jsonl append durability and fail-closed corrupt line handling (SPEC §13.40.5)."""
+    from stage_signal import Stage
+    from stage_signal.errors import CorruptStatusError
+    from stage_signal.store import StageStore
+
+    stage_dir = tmp_path / ".stage-signal"
+    store = StageStore(stage_dir)
+    stage = Stage(str(stage_dir))
+    stage.init(project="audit-proj")
+
+    # Initial events from init
+    events = store.read_events()
+    assert len(events) == 1
+    assert events[0]["type"] == "init"
+
+    # Append custom event
+    store.append_event({
+        "ts": "2026-09-18T12:00:00+00:00",
+        "type": "heartbeat",
+        "stage_id": "test-stage",
+        "stage_name": "test-stage",
+        "state": "running",
+        "attempt": 1,
+        "message": "custom hb",
+        "detail": {},
+    })
+    events2 = store.read_events()
+    assert len(events2) == 2
+    assert events2[1]["message"] == "custom hb"
+
+    # Blank lines are skipped
+    with open(store.events_path, "a", encoding="utf-8") as fh:
+        fh.write("\n   \n\n")
+    assert len(store.read_events()) == 2
+
+    # Corrupt line causes fail-closed CorruptStatusError
+    with open(store.events_path, "a", encoding="utf-8") as fh:
+        fh.write("{not valid json\n")
+    with pytest.raises(CorruptStatusError, match="corrupt .* line"):
+        store.read_events()
+
+
+def test_locking_cross_links_and_export_inventory_freeze() -> None:
+    """Concurrency & locking freeze reuses existing exports; PUBLIC_EXPORTS unchanged (SPEC §13.40.6)."""
+    import stage_signal
+    from stage_signal.constants import (
+        DEFAULT_DIR_NAME,
+        EVENTS_FILENAME,
+        LOCK_FILENAME,
+        LOCKS_DIRNAME,
+        PUBLIC_EXPORTS,
+        STATUS_FILENAME,
+    )
+    from stage_signal.errors import CorruptStatusError, NotInitialized
+    from stage_signal.store import StageStore
+
+    for name in (
+        "StageStore",
+        "DEFAULT_DIR_NAME",
+        "LOCKS_DIRNAME",
+        "LOCK_FILENAME",
+        "STATUS_FILENAME",
+        "EVENTS_FILENAME",
+        "CorruptStatusError",
+        "NotInitialized",
+    ):
+        assert hasattr(stage_signal, name), f"stage_signal missing {name!r}"
+        assert name in stage_signal.__all__, f"{name!r} not in stage_signal.__all__"
+        assert name in PUBLIC_EXPORTS, f"{name!r} not in PUBLIC_EXPORTS"
+
+    assert set(PUBLIC_EXPORTS) == set(stage_signal.__all__)
+    assert len(PUBLIC_EXPORTS) == 134
+
+
+# ---------------------------------------------------------------------------
 # §13.41: Proof composition gate freeze (--proof-ref / --require-proof)
 # ---------------------------------------------------------------------------
 
