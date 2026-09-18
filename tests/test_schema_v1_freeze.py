@@ -9280,6 +9280,359 @@ def test_mirror_cross_links_freeze() -> None:
     assert len(PUBLIC_EXPORTS) == 134
 
 
+# ---------------------------------------------------------------------------
+# §13.41: Proof composition gate freeze (--proof-ref / --require-proof)
+# ---------------------------------------------------------------------------
+
+
+def _make_verifier_bin(bin_dir: Path, *, exit_code: int, stderr_text: str = "") -> None:
+    """Create a fake `agent-done-or-not` executable (POSIX sh + Windows cmd shim).
+
+    Synchronous test helper with zero network access.
+    """
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    fake_sh = bin_dir / "agent-done-or-not"
+    if exit_code == 0:
+        fake_sh.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    else:
+        safe_err = stderr_text.replace('"', "")
+        fake_sh.write_text(f'#!/bin/sh\necho "{safe_err}" >&2\nexit {exit_code}\n', encoding="utf-8")
+    try:
+        fake_sh.chmod(0o755)
+    except OSError:
+        pass
+    fake_cmd = bin_dir / "agent-done-or-not.cmd"
+    fake_cmd.write_text(f"@echo off\nexit /b {exit_code}\n", encoding="utf-8")
+
+
+def test_proof_gate_resolution_order_freeze(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Explicit --proof-ref beats ENV_PROOF_REF; falsy flag falls back; both missing records nothing (SPEC §13.41.3).
+
+    Synchronous test with zero sleeps/threads/network.
+    """
+    assert ENV_PROOF_REF == "STAGE_SIGNAL_PROOF_REF"
+    assert ENV_PROOF_REF in ENV_VARS
+
+    stage_dir = tmp_path / ".stage-signal"
+    stage = Stage(str(stage_dir))
+    stage.init(project="proof-gate-resolution-freeze")
+    prefix = ["--dir", str(stage_dir)]
+
+    # Explicit flag wins over the environment (record-only mode, no verification).
+    monkeypatch.setenv(ENV_PROOF_REF, "env-ledger/run-env")
+    monkeypatch.setenv("PATH", "")
+    assert main(prefix + ["start", "--stage", "resolve-explicit", "--pid", str(os.getpid())]) == EXIT_OK
+    capsys.readouterr()
+    assert (
+        main(prefix + ["done", "--summary", "explicit wins", "--proof-ref", "flag-ledger/run-flag"])
+        == EXIT_OK
+    )
+    capsys.readouterr()
+    proof = Stage(str(stage_dir)).status()["proof"]
+    assert proof == {"tool": "agent-done-or-not", "ref": "flag-ledger/run-flag", "verified": None}
+
+    # Empty-string flag is falsy and falls back to the environment value as-is.
+    assert main(prefix + ["start", "--stage", "resolve-env", "--pid", str(os.getpid())]) == EXIT_OK
+    capsys.readouterr()
+    assert main(prefix + ["done", "--summary", "env fallback", "--proof-ref", ""]) == EXIT_OK
+    capsys.readouterr()
+    proof = Stage(str(stage_dir)).status()["proof"]
+    assert proof == {"tool": "agent-done-or-not", "ref": "env-ledger/run-env", "verified": None}
+
+    # Env-only resolution (flag omitted entirely) records the env string byte-for-byte.
+    assert main(prefix + ["start", "--stage", "resolve-env-only", "--pid", str(os.getpid())]) == EXIT_OK
+    capsys.readouterr()
+    assert main(prefix + ["done", "--summary", "env only"]) == EXIT_OK
+    capsys.readouterr()
+    proof = Stage(str(stage_dir)).status()["proof"]
+    assert proof == {"tool": "agent-done-or-not", "ref": "env-ledger/run-env", "verified": None}
+
+    # Both missing: record-only records nothing (proof stays null), exit 0.
+    monkeypatch.delenv(ENV_PROOF_REF, raising=False)
+    assert main(prefix + ["start", "--stage", "resolve-none", "--pid", str(os.getpid())]) == EXIT_OK
+    capsys.readouterr()
+    assert main(prefix + ["done", "--summary", "no proof"]) == EXIT_OK
+    capsys.readouterr()
+    assert Stage(str(stage_dir)).status()["proof"] is None
+
+
+def test_proof_gate_record_only_never_verifies_freeze(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Record-only --proof-ref performs zero verification: dangling refs record exit 0 (SPEC §13.41.2).
+
+    Synchronous test with zero sleeps/threads/network (PATH emptied so no verifier exists).
+    """
+    import stage_signal.stage as stage_mod
+
+    monkeypatch.delenv(ENV_PROOF_REF, raising=False)
+    monkeypatch.setenv("PATH", "")
+    called = []
+
+    def _no_which(*args: Any, **kwargs: Any) -> Any:
+        called.append((args, kwargs))
+        raise AssertionError("record-only done must not consult the verifier")
+
+    monkeypatch.setattr(stage_mod.shutil, "which", _no_which)
+
+    stage_dir = tmp_path / ".stage-signal"
+    stage = Stage(str(stage_dir))
+    stage.init(project="proof-gate-record-only-freeze")
+    prefix = ["--dir", str(stage_dir)]
+    assert main(prefix + ["start", "--stage", "record-only", "--pid", str(os.getpid())]) == EXIT_OK
+    capsys.readouterr()
+
+    # Dangling ref (neither a file nor backed by any verifier binary) still records exit 0.
+    dangling = "ledger/does-not-exist-0000"
+    assert main(prefix + ["done", "--summary", "record only", "--proof-ref", dangling]) == EXIT_OK
+    capsys.readouterr()
+    assert called == []
+    status_file = stage_dir / STATUS_FILENAME
+    disk = json.loads(status_file.read_text(encoding="utf-8"))
+    assert disk["proof"] == {"tool": "agent-done-or-not", "ref": dangling, "verified": None}
+    assert disk["proof"]["verified"] in PROOF_VERIFIED_VALUES
+    assert set(PROOF_KEYS) <= disk["proof"].keys()
+
+    # Library path agrees: no subprocess, verified None.
+    stage.start(stage="record-only-lib", pid=os.getpid())
+    st = stage.done(summary="record only lib", proof_ref="ledger/lib-dangling")
+    assert called == []
+    assert st["proof"] == {"tool": "agent-done-or-not", "ref": "ledger/lib-dangling", "verified": None}
+
+
+def test_proof_gate_file_gate_freeze(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """File gate: non-empty file -> verified=file; empty file -> exit 3; directory falls to verifier (SPEC §13.41.4).
+
+    Synchronous test with zero sleeps/threads/network.
+    """
+    monkeypatch.delenv(ENV_PROOF_REF, raising=False)
+    monkeypatch.setenv("PATH", "")
+    stage_dir = tmp_path / ".stage-signal"
+    stage = Stage(str(stage_dir))
+    stage.init(project="proof-gate-file-freeze")
+    prefix = ["--dir", str(stage_dir)]
+
+    # Non-empty file passes with verified="file" (recorded ref is the as-passed string).
+    receipt = tmp_path / "receipt.json"
+    receipt.write_text('{"tests": "passed"}\n', encoding="utf-8")
+    assert main(prefix + ["start", "--stage", "file-ok", "--pid", str(os.getpid())]) == EXIT_OK
+    capsys.readouterr()
+    assert (
+        main(prefix + ["done", "--summary", "file gate ok", "--proof-ref", str(receipt), "--require-proof"])
+        == EXIT_OK
+    )
+    capsys.readouterr()
+    proof = Stage(str(stage_dir)).status()["proof"]
+    assert proof == {"tool": "agent-done-or-not", "ref": str(receipt), "verified": "file"}
+    assert proof["verified"] in PROOF_VERIFIED_VALUES
+
+    # Empty file refuses with exit 3 (IllegalTransition), recorded ref untouched by the failure.
+    empty = tmp_path / "empty.json"
+    empty.write_text("", encoding="utf-8")
+    assert main(prefix + ["start", "--stage", "file-empty", "--pid", str(os.getpid())]) == EXIT_OK
+    capsys.readouterr()
+    capsys.readouterr()
+    rc = main(prefix + ["done", "--summary", "file gate empty", "--proof-ref", str(empty), "--require-proof"])
+    assert rc == EXIT_ILLEGAL_TRANSITION == 3
+    err = capsys.readouterr().err
+    assert "empty/unreadable" in err
+    with pytest.raises(IllegalTransition, match="empty/unreadable"):
+        stage.done(summary="x", proof_ref=str(empty), require_proof=True)
+
+    # A directory at ref is not a file-gate hit: with no verifier on PATH it fails closed (exit 3).
+    subdir = tmp_path / "a-directory"
+    subdir.mkdir()
+    with pytest.raises(IllegalTransition, match="fail closed"):
+        stage.done(summary="x", proof_ref=str(subdir), require_proof=True)
+    capsys.readouterr()
+    rc = main(prefix + ["done", "--summary", "dir ref", "--proof-ref", str(subdir), "--require-proof"])
+    assert rc == EXIT_ILLEGAL_TRANSITION == 3
+    assert "fail closed" in capsys.readouterr().err
+
+    # Missing ref entirely refuses with the needs-ref message (exit 3).
+    with pytest.raises(IllegalTransition, match="needs --proof-ref"):
+        stage.done(summary="x", require_proof=True)
+
+
+def test_proof_gate_external_verifier_freeze(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """External verifier gate: exit 0 -> verified=verify; non-zero/OSError -> exit 3; file gate wins (SPEC §13.41.4).
+
+    Synchronous test with zero sleeps/threads/network (mocked PATH only).
+    """
+    import stage_signal.stage as stage_mod
+
+    monkeypatch.delenv(ENV_PROOF_REF, raising=False)
+    stage_dir = tmp_path / ".stage-signal"
+    stage = Stage(str(stage_dir))
+    stage.init(project="proof-gate-verifier-freeze")
+    prefix = ["--dir", str(stage_dir)]
+
+    # Passing verifier (exit 0) yields verified="verify"; stdout/stderr ignored on success.
+    bin_ok = tmp_path / "bin-ok"
+    _make_verifier_bin(bin_ok, exit_code=0)
+    monkeypatch.setenv("PATH", str(bin_ok) + os.pathsep + os.environ.get("PATH", ""))
+    assert main(prefix + ["start", "--stage", "verify-ok", "--pid", str(os.getpid())]) == EXIT_OK
+    capsys.readouterr()
+    verify_ref = "external-ledger/run-4242"
+    assert (
+        main(prefix + ["done", "--summary", "verify ok", "--proof-ref", verify_ref, "--require-proof"])
+        == EXIT_OK
+    )
+    capsys.readouterr()
+    proof = Stage(str(stage_dir)).status()["proof"]
+    assert proof == {"tool": "agent-done-or-not", "ref": verify_ref, "verified": "verify"}
+
+    # Failing verifier (non-zero) refuses exit 3 with the exit code and verifier stderr in the message.
+    bin_bad = tmp_path / "bin-bad"
+    _make_verifier_bin(bin_bad, exit_code=1, stderr_text="rejection reason")
+    monkeypatch.setenv("PATH", str(bin_bad))
+    assert main(prefix + ["start", "--stage", "verify-bad", "--pid", str(os.getpid())]) == EXIT_OK
+    capsys.readouterr()
+    capsys.readouterr()
+    rc = main(
+        prefix + ["done", "--summary", "verify bad", "--proof-ref", "external-ledger/run-1", "--require-proof"]
+    )
+    assert rc == EXIT_ILLEGAL_TRANSITION == 3
+    assert "exited 1" in capsys.readouterr().err
+    with pytest.raises(IllegalTransition, match="verify exited 1"):
+        stage.done(summary="x", proof_ref="external-ledger/run-1", require_proof=True)
+
+    # Neither file nor binary on PATH fails closed with exit 3.
+    monkeypatch.setenv("PATH", "")
+    with pytest.raises(IllegalTransition, match="fail closed"):
+        stage.done(summary="x", proof_ref="external-ledger/run-9", require_proof=True)
+
+    # Verifier launch errors (OSError) map to IllegalTransition, never a bare OSError.
+    bin_ok2 = tmp_path / "bin-ok2"
+    _make_verifier_bin(bin_ok2, exit_code=0)
+    monkeypatch.setenv("PATH", str(bin_ok2) + os.pathsep + os.environ.get("PATH", ""))
+    monkeypatch.setattr(
+        stage_mod.subprocess,
+        "run",
+        lambda *a, **k: (_ for _ in ()).throw(OSError("exec failed")),
+    )
+    with pytest.raises(IllegalTransition, match="agent-done-or-not error"):
+        stage.done(summary="x", proof_ref="external-ledger/run-err", require_proof=True)
+    monkeypatch.undo()
+
+    # File gate wins over the verifier: non-empty file + passing binary -> verified="file".
+    bin_ok3 = tmp_path / "bin-ok3"
+    _make_verifier_bin(bin_ok3, exit_code=0)
+    monkeypatch.setenv("PATH", str(bin_ok3) + os.pathsep + os.environ.get("PATH", ""))
+    receipt = tmp_path / "winner.json"
+    receipt.write_text("ok\n", encoding="utf-8")
+    assert main(prefix + ["start", "--stage", "file-wins", "--pid", str(os.getpid())]) == EXIT_OK
+    capsys.readouterr()
+    assert (
+        main(prefix + ["done", "--summary", "file wins", "--proof-ref", str(receipt), "--require-proof"])
+        == EXIT_OK
+    )
+    capsys.readouterr()
+    assert Stage(str(stage_dir)).status()["proof"]["verified"] == "file"
+
+
+def test_proof_gate_verify_before_mutate_freeze(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A refused --require-proof gate performs zero writes: STATUS.json, events, STATUS.md untouched (SPEC §13.41.5).
+
+    Synchronous test with zero sleeps/threads/network.
+    """
+    monkeypatch.delenv(ENV_PROOF_REF, raising=False)
+    monkeypatch.setenv("PATH", "")
+    stage_dir = tmp_path / ".stage-signal"
+    stage = Stage(str(stage_dir))
+    stage.init(project="proof-gate-atomic-freeze")
+    stage.start(stage="atomic-step", pid=os.getpid())
+    prefix = ["--dir", str(stage_dir)]
+    status_file = stage_dir / STATUS_FILENAME
+    events_file = stage_dir / EVENTS_FILENAME
+    md_file = stage_dir / STATUS_MD_FILENAME
+
+    before_status = status_file.read_bytes()
+    before_events = events_file.read_bytes() if events_file.is_file() else b""
+    before_md = md_file.read_bytes() if md_file.is_file() else b""
+    before_event_count = len(stage.events())
+
+    # Refused gate via CLI: exit 3 and every artifact byte-identical.
+    capsys.readouterr()
+    rc = main(prefix + ["done", "--summary", "must not land", "--proof-ref", "ledger/missing-1", "--require-proof"])
+    assert rc == EXIT_ILLEGAL_TRANSITION == 3
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "proof gate failed" in captured.err
+    assert status_file.read_bytes() == before_status
+    assert (events_file.read_bytes() if events_file.is_file() else b"") == before_events
+    assert (md_file.read_bytes() if md_file.is_file() else b"") == before_md
+    assert len(Stage(str(stage_dir)).events()) == before_event_count
+    assert Stage(str(stage_dir)).status()["state"] == "running"
+
+    # Refused gate via library: IllegalTransition with exit_code 3, still zero writes.
+    with pytest.raises(IllegalTransition) as exc_info:
+        stage.done(summary="must not land either", proof_ref="ledger/missing-2", require_proof=True)
+    assert exc_info.value.exit_code == EXIT_ILLEGAL_TRANSITION == 3
+    assert status_file.read_bytes() == before_status
+    assert len(Stage(str(stage_dir)).events()) == before_event_count
+
+
+def test_proof_gate_cli_library_shapes_and_cross_links_freeze() -> None:
+    """done CLI flags / Stage.done signature / reused export inventory; adds no export (SPEC §13.41.6).
+
+    Synchronous test with zero sleeps/threads.
+    """
+    import inspect
+
+    import stage_signal
+    import stage_signal.stage as stage_mod
+
+    # CLI: done accepts --proof-ref (default None) and --require-proof (store_true, default False).
+    parser = build_parser()
+    ns = parser.parse_args(["done"])
+    assert ns.proof_ref is None
+    assert ns.require_proof is False
+    ns = parser.parse_args(["done", "--proof-ref", "ledger/r", "--require-proof"])
+    assert ns.proof_ref == "ledger/r"
+    assert ns.require_proof is True
+
+    # Library: Stage.done carries proof_ref=None / require_proof=False keywords.
+    sig = inspect.signature(stage_mod.Stage.done)
+    assert "proof_ref" in sig.parameters
+    assert sig.parameters["proof_ref"].default is None
+    assert "require_proof" in sig.parameters
+    assert sig.parameters["require_proof"].default is False
+
+    # verify_proof is the single shared gate entry point.
+    assert callable(stage_mod.verify_proof)
+    assert getattr(stage_signal, "verify_proof") is stage_mod.verify_proof
+
+    for name in (
+        "PROOF_KEYS",
+        "PROOF_REQUIRED_KEYS",
+        "PROOF_VERIFIED_VALUES",
+        "ENV_PROOF_REF",
+        "ENV_VARS",
+        "EXIT_ILLEGAL_TRANSITION",
+        "IllegalTransition",
+        "verify_proof",
+    ):
+        assert hasattr(stage_signal, name), f"stage_signal missing {name!r}"
+        assert name in stage_signal.__all__, f"{name!r} not in stage_signal.__all__"
+        assert name in PUBLIC_EXPORTS, f"{name!r} not in PUBLIC_EXPORTS"
+
+    # Key enums are referenced, never redefined by §13.41.
+    assert PROOF_KEYS == ("tool", "ref", "verified")
+    assert PROOF_VERIFIED_VALUES == (None, "file", "verify")
+
+    # §13.41 adds no export: the inventory stays at the 134 frozen symbols.
+    assert len(PUBLIC_EXPORTS) == 134
+
+
 
 
 
