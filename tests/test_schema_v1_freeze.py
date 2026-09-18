@@ -50,6 +50,8 @@ from stage_signal import (
     EXIT_QUEUED,
     EXIT_RUNNING,
     EXIT_WAIT_TIMEOUT,
+    HEARTBEAT_ALLOWED_SOURCES,
+    HEARTBEAT_DETAIL_KEYS,
     LOCK_FILENAME,
     LOCKS_DIRNAME,
     NOTE_ENTRY_KEYS,
@@ -3744,7 +3746,7 @@ def test_diagnose_doctor_json_summary_null_on_problems(
 
 
 def test_public_exports_constant_freeze() -> None:
-    """PUBLIC_EXPORTS matches the frozen 112-element tuple in SPEC §13.21."""
+    """PUBLIC_EXPORTS matches the frozen 114-element tuple in SPEC §13.21."""
     expected = (
         "ALLOWED_TRANSITIONS",
         "ARTIFACT_ENTRY_KEYS",
@@ -3787,6 +3789,8 @@ def test_public_exports_constant_freeze() -> None:
         "EXIT_QUEUED",
         "EXIT_RUNNING",
         "EXIT_WAIT_TIMEOUT",
+        "HEARTBEAT_ALLOWED_SOURCES",
+        "HEARTBEAT_DETAIL_KEYS",
         "IllegalTransition",
         "LOCKS_DIRNAME",
         "LOCK_FILENAME",
@@ -3861,7 +3865,7 @@ def test_public_exports_constant_freeze() -> None:
     )
     assert PUBLIC_EXPORTS == expected
     assert isinstance(PUBLIC_EXPORTS, tuple)
-    assert len(PUBLIC_EXPORTS) == 112
+    assert len(PUBLIC_EXPORTS) == 114
     assert PUBLIC_EXPORTS == tuple(sorted(PUBLIC_EXPORTS))
     assert len(PUBLIC_EXPORTS) == len(set(PUBLIC_EXPORTS))
 
@@ -3996,6 +4000,8 @@ def test_public_exports_category_coverage() -> None:
         "SUPERVISE_SIGNAL_EXIT_BASE",
         "SUPERVISE_EXIT_NOT_FOUND",
         "SUPERVISE_EXIT_PERMISSION_DENIED",
+        "HEARTBEAT_ALLOWED_SOURCES",
+        "HEARTBEAT_DETAIL_KEYS",
     }
     for const_name in core_constants:
         assert const_name in PUBLIC_EXPORTS
@@ -4682,3 +4688,231 @@ def test_clear_terminal_audit_event_shape_freeze(tmp_path: Path) -> None:
     assert len(events) == events_before + 1
     assert events[-1]["type"] == "clear_terminal"
     assert events[-1]["detail"] == {"keep_stage": False}
+
+
+# =============================================================================
+# 23. Heartbeat liveness contract freeze (SPEC §13.27, issue #148)
+# =============================================================================
+
+
+def test_heartbeat_constants_freeze() -> None:
+    """Heartbeat frozen constants match the exact values in SPEC §13.27.1."""
+    assert HEARTBEAT_ALLOWED_SOURCES == ("running",)
+    assert isinstance(HEARTBEAT_ALLOWED_SOURCES, tuple)
+    assert len(HEARTBEAT_ALLOWED_SOURCES) == 1
+    assert STATE_RUNNING in HEARTBEAT_ALLOWED_SOURCES
+    for terminal in TERMINAL_STATES:
+        assert terminal not in HEARTBEAT_ALLOWED_SOURCES
+    assert STATE_QUEUED not in HEARTBEAT_ALLOWED_SOURCES
+
+    assert HEARTBEAT_DETAIL_KEYS == ()
+    assert isinstance(HEARTBEAT_DETAIL_KEYS, tuple)
+    assert len(HEARTBEAT_DETAIL_KEYS) == 0
+
+    # Allowed sources agree with the frozen transition matrix (SPEC §13.19)
+    assert tuple(allowed_source_states("heartbeat")) == HEARTBEAT_ALLOWED_SOURCES
+    assert is_transition_allowed(STATE_RUNNING, "heartbeat") is True
+    assert transition_target(STATE_RUNNING, "heartbeat") == STATE_RUNNING
+
+
+def test_heartbeat_constants_exported_from_top_level() -> None:
+    """Heartbeat freeze constants are exported from top-level stage_signal (SPEC §13.27)."""
+    import stage_signal
+
+    for name, expected in (
+        ("HEARTBEAT_ALLOWED_SOURCES", HEARTBEAT_ALLOWED_SOURCES),
+        ("HEARTBEAT_DETAIL_KEYS", HEARTBEAT_DETAIL_KEYS),
+    ):
+        assert hasattr(stage_signal, name), f"stage_signal missing {name!r}"
+        assert name in stage_signal.__all__, f"{name!r} not in stage_signal.__all__"
+        assert getattr(stage_signal, name) is expected
+
+
+def test_heartbeat_allowed_source_semantics(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Heartbeat succeeds only from running; queued/terminal refuse exit 3 (SPEC §13.27.2).
+
+    Synchronous state-machine smoke with no sleeps/threads.
+    """
+    stage_dir = tmp_path / ".stage-signal"
+    stage = Stage(str(stage_dir))
+    stage.init(project="heartbeat-sources-freeze")
+    status_file = stage_dir / "STATUS.json"
+
+    def assert_no_mutation(snapshot: str, event_count: int) -> None:
+        assert status_file.read_text(encoding="utf-8") == snapshot
+        assert len(stage.events()) == event_count
+
+    # queued is illegal: library raises, CLI exits 3, no mutation
+    before = status_file.read_text(encoding="utf-8")
+    with pytest.raises(IllegalTransition):
+        stage.heartbeat()
+    assert_no_mutation(before, 1)
+
+    capsys.readouterr()
+    assert main(["--dir", str(stage_dir), "heartbeat"]) == EXIT_ILLEGAL_TRANSITION
+    assert_no_mutation(before, 1)
+
+    # running succeeds via library and CLI (covers both paths)
+    stage.start(stage="hb-step", pid=os.getpid())
+    running_status = stage.heartbeat(note="probe")
+    assert running_status["state"] == STATE_RUNNING
+    capsys.readouterr()
+    assert main(["--dir", str(stage_dir), "heartbeat", "--note", "cli probe"]) == EXIT_OK
+    assert stage.status()["state"] == STATE_RUNNING
+    assert stage.status()["heartbeat_note"] == "cli probe"
+
+    # each terminal source refuses with no mutation
+    for terminal_state, finisher in (
+        (STATE_DONE, lambda: stage.done(summary="finished")),
+        (STATE_BLOCKED, lambda: stage.blocked(reason="waiting")),
+        (STATE_FAILED, lambda: stage.fail(reason="broken")),
+    ):
+        # Re-enter running first when coming from a terminal state
+        if stage.status()["state"] != STATE_RUNNING:
+            stage.start(stage=f"hb-{terminal_state}", pid=os.getpid())
+        finisher()
+        assert stage.status()["state"] == terminal_state
+        before = status_file.read_text(encoding="utf-8")
+        events_before = len(stage.events())
+        with pytest.raises(IllegalTransition):
+            stage.heartbeat(note="should not land")
+        assert_no_mutation(before, events_before)
+
+        capsys.readouterr()
+        assert main(["--dir", str(stage_dir), "heartbeat"]) == EXIT_ILLEGAL_TRANSITION
+        assert_no_mutation(before, events_before)
+
+
+def test_heartbeat_bump_and_note_omit_vs_set_freeze(tmp_path: Path) -> None:
+    """heartbeat_at always bumps; note=None preserves, note=<str> overwrites (SPEC §13.27.3).
+
+    Compares timestamps already recorded (no sleeps/threads).
+    """
+    from datetime import datetime as _datetime
+
+    stage_dir = tmp_path / ".stage-signal"
+    stage = Stage(str(stage_dir))
+    stage.init(project="heartbeat-note-freeze")
+    stage.start(stage="hb-note-step", pid=os.getpid())
+
+    # start leaves heartbeat_note null with a recorded heartbeat_at
+    started = stage.status()
+    assert started["heartbeat_note"] is None
+    assert isinstance(started["heartbeat_at"], str) and started["heartbeat_at"]
+    first_ts = _datetime.fromisoformat(str(started["heartbeat_at"]))
+
+    # Omit (note=None) bumps heartbeat_at and preserves note (still null)
+    omitted = stage.heartbeat()
+    assert omitted["state"] == STATE_RUNNING
+    assert omitted["stage_id"] == "hb-note-step"
+    assert omitted["attempt"] == started["attempt"]
+    assert omitted["heartbeat_note"] is None
+    assert _datetime.fromisoformat(str(omitted["heartbeat_at"])) >= first_ts
+
+    # Set overwrites, including preserving other identity fields
+    noted = stage.heartbeat(note="first progress")
+    assert noted["heartbeat_note"] == "first progress"
+    assert _datetime.fromisoformat(str(noted["heartbeat_at"])) >= _datetime.fromisoformat(
+        str(omitted["heartbeat_at"])
+    )
+
+    # Omit again preserves the previous string byte-for-byte
+    preserved = stage.heartbeat()
+    assert preserved["heartbeat_note"] == "first progress"
+    assert _datetime.fromisoformat(str(preserved["heartbeat_at"])) >= _datetime.fromisoformat(
+        str(noted["heartbeat_at"])
+    )
+
+    # Explicit empty string overwrites (only None preserves)
+    cleared = stage.heartbeat(note="")
+    assert cleared["heartbeat_note"] == ""
+
+
+def test_heartbeat_audit_event_shape_freeze(tmp_path: Path) -> None:
+    """Each heartbeat appends one heartbeat event with passthrough message + empty detail (SPEC §13.27.4)."""
+    stage_dir = tmp_path / ".stage-signal"
+    stage = Stage(str(stage_dir))
+    stage.init(project="heartbeat-audit-freeze")
+    stage.start(stage="hb-audit-step", pid=os.getpid())
+
+    # Omit path: message None, detail {}
+    events_before = len(stage.events())
+    stage.heartbeat()
+    events = stage.events()
+    assert len(events) == events_before + 1
+    last = events[-1]
+    assert last["type"] == "heartbeat"
+    assert last["type"] in EVENT_TYPES
+    assert last["state"] == STATE_RUNNING
+    assert last["stage_id"] == "hb-audit-step"
+    assert last["message"] is None
+    assert set(last["detail"].keys()) == set(HEARTBEAT_DETAIL_KEYS)
+    assert last["detail"] == {}
+    for key in EVENT_RECORD_KEYS:
+        assert key in last
+
+    # Set path: message echoes the note exactly, detail stays {}
+    events_before = len(stage.events())
+    stage.heartbeat(note="audit note")
+    events = stage.events()
+    assert len(events) == events_before + 1
+    last = events[-1]
+    assert last["type"] == "heartbeat"
+    assert last["message"] == "audit note"
+    assert set(last["detail"].keys()) == set(HEARTBEAT_DETAIL_KEYS)
+    assert last["detail"] == {}
+
+
+def test_heartbeat_age_only_while_running_freeze(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """heartbeat_age_seconds is a float>=0 only while running, else null (SPEC §13.27.5).
+
+    No sleeps: asserts on timestamps already recorded by start/heartbeat.
+    """
+    stage_dir = tmp_path / ".stage-signal"
+    stage = Stage(str(stage_dir))
+    stage.init(project="heartbeat-age-freeze")
+
+    # queued: null age even with no heartbeat recorded
+    assert stage.status()["heartbeat_age_seconds"] is None
+
+    # running: float age >= 0 via library and CLI
+    stage.start(stage="hb-age-step", pid=os.getpid())
+    running = stage.status()
+    assert running["state"] == STATE_RUNNING
+    assert isinstance(running["heartbeat_age_seconds"], float)
+    assert running["heartbeat_age_seconds"] >= 0.0
+
+    stage.heartbeat(note="fresh")
+    bumped = stage.status()
+    assert isinstance(bumped["heartbeat_age_seconds"], float)
+    assert bumped["heartbeat_age_seconds"] >= 0.0
+
+    capsys.readouterr()
+    assert main(["--dir", str(stage_dir), "status", "--json"]) == EXIT_RUNNING
+    cli_running = json.loads(capsys.readouterr().out)
+    assert isinstance(cli_running["heartbeat_age_seconds"], float)
+    assert cli_running["heartbeat_age_seconds"] >= 0.0
+
+    # terminal states: null age even though heartbeat_at remains recorded
+    stage.done(summary="age probe done")
+    assert stage.status()["heartbeat_at"] is not None
+    assert stage.status()["heartbeat_age_seconds"] is None
+
+    stage.start(stage="hb-age-blocked", pid=os.getpid())
+    stage.blocked(reason="age probe blocked")
+    assert stage.status()["heartbeat_at"] is not None
+    assert stage.status()["heartbeat_age_seconds"] is None
+
+    stage.start(stage="hb-age-failed", pid=os.getpid())
+    stage.fail(reason="age probe failed")
+    assert stage.status()["heartbeat_at"] is not None
+    assert stage.status()["heartbeat_age_seconds"] is None
+
+    # idle queued after clear-terminal: null age
+    stage.clear_terminal()
+    assert stage.status()["state"] == STATE_QUEUED
+    assert stage.status()["heartbeat_age_seconds"] is None

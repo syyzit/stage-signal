@@ -1387,7 +1387,7 @@ External orchestrators, Python embedders, typing tools, and harnesses interact w
 
 #### 13.21.1 Canonical export inventory
 
-`stage_signal` exports exactly 112 public symbols matching `stage_signal.__all__`. These symbols are structured into four canonical categories:
+`stage_signal` exports exactly 114 public symbols matching `stage_signal.__all__`. These symbols are structured into four canonical categories:
 
 ##### 1. Classes (§11, §13.20)
 - `Stage`: The primary high-level lifecycle orchestrator, embedding context manager, and transition driver (§11, §13.20).
@@ -1428,7 +1428,7 @@ All six structured exceptions inherit from `StageError` and carry a normative `.
 - **Inventories:**
   - `CLI_SUBCOMMANDS`: 15 frozen CLI subcommands (§13.15).
   - `STAGE_PUBLIC_METHODS`: 15 frozen `Stage` public instance methods (§13.20).
-  - `PUBLIC_EXPORTS`: 112 frozen public symbols exported from top-level package namespace (§13.21).
+  - `PUBLIC_EXPORTS`: 114 frozen public symbols exported from top-level package namespace (§13.21).
 - **Exit codes:**
   - `EXIT_CODES`: Tuple of all 10 standard exit codes (§7, §13.4).
   - Individual exit codes: `EXIT_OK` (0), `EXIT_ERROR` (1), `EXIT_BAD_ARGS` (2), `EXIT_ILLEGAL_TRANSITION` (3), `EXIT_RUNNING` (10), `EXIT_BLOCKED` (11), `EXIT_FAILED` (12), `EXIT_QUEUED` (13), `EXIT_WAIT_TIMEOUT` (14), `EXIT_NOT_INITIALIZED` (15) (§7, §13.4).
@@ -1479,6 +1479,9 @@ All six structured exceptions inherit from `StageError` and carry a normative `.
   - `SUPERVISE_ADOPT_MESSAGE_FORMAT` (`"adopted child pid {pid}"`) and helper `supervise_adopt_message(pid)`; `SUPERVISE_ADOPT_DETAIL_KEYS` (`previous_pid`, `pid`, `pid_token`; §13.24).
   - Default terminal templates: `SUPERVISE_DONE_SUMMARY_FORMAT` (`"command succeeded (exit 0): {cmd}"`), `SUPERVISE_FAIL_REASON_FORMAT` (`"command failed with exit code {code}: {cmd}"`), `SUPERVISE_SIGNAL_REASON_FORMAT` (`"command terminated by {signame}: {cmd}"`; §13.24).
   - Exit mapping: `SUPERVISE_SIGNAL_EXIT_BASE` (128) and helper `supervise_signal_exit(signum)`; spawn failures `SUPERVISE_EXIT_NOT_FOUND` (127) and `SUPERVISE_EXIT_PERMISSION_DENIED` (126; §7, §13.24).
+- **Heartbeat liveness:**
+  - `HEARTBEAT_ALLOWED_SOURCES`: Legal source states (`"running"` only; §4, §13.27).
+  - `HEARTBEAT_DETAIL_KEYS`: Audit detail keys (empty — heartbeat carries no detail extras; §5, §13.27).
 - **Clear-terminal reset and audit:**
   - `CLEAR_TERMINAL_ALLOWED_SOURCES`: Legal source states (`"done"`, `"blocked"`, `"failed"`, `"queued"`; §4, §13.26).
   - `CLEAR_TERMINAL_IDLE_RESET_FIELDS`: Ten identity/claim fields reset to idle by default (§4, §13.26).
@@ -1534,6 +1537,8 @@ PUBLIC_EXPORTS: tuple[str, ...] = (
     "EXIT_QUEUED",
     "EXIT_RUNNING",
     "EXIT_WAIT_TIMEOUT",
+    "HEARTBEAT_ALLOWED_SOURCES",
+    "HEARTBEAT_DETAIL_KEYS",
     "IllegalTransition",
     "LOCKS_DIRNAME",
     "LOCK_FILENAME",
@@ -1627,7 +1632,7 @@ Under `schema_version: 1`, the top-level public export inventory is strictly **a
 - Existing symbols in `PUBLIC_EXPORTS` MUST NOT be removed, renamed, or relocated.
 - Existing symbol types, semantics, and contracts MUST NOT undergo breaking changes.
 - Future minor or patch releases under schema version 1 MAY add new classes, helper functions, or frozen constants to `stage_signal`, expanding `PUBLIC_EXPORTS` and `__all__`.
-- External orchestrators, embedders, and typing definitions can safely rely on the uninterrupted presence of all 112 public exports throughout the entire lifecycle of `schema_version: 1`.
+- External orchestrators, embedders, and typing definitions can safely rely on the uninterrupted presence of all 114 public exports throughout the entire lifecycle of `schema_version: 1`.
 
 ### 13.22 Doctor human summary strings freeze (`DOCTOR_SUMMARY_RECLAIM_NEEDED`, `DOCTOR_SUMMARY_OK_FORMAT`)
 
@@ -1930,4 +1935,80 @@ Under `schema_version: 1`, the clear-terminal reset and audit contract is strict
 - No new event type is introduced for clearing: the audit record stays a `clear_terminal` event (§13.5).
 - New detail keys or modes MAY be added in minor or patch releases only as additional constants; existing frozen values MUST keep their exact values.
 - Readers MUST tolerate unknown future `clear_terminal` detail keys and unknown future message strings without failing.
+
+### 13.27 Heartbeat liveness contract freeze (`HEARTBEAT_ALLOWED_SOURCES`, `HEARTBEAT_DETAIL_KEYS`)
+
+`Stage.heartbeat` / `stage-signal heartbeat [--note TEXT]` (§4 rule 3, §6, §13.20) bumps the running liveness timestamp without changing lifecycle state. Under `schema_version: 1`, the allowed source, the `heartbeat_at` / `heartbeat_note` omit-vs-set semantics, the `heartbeat` audit event shape, and the running-only age rule are frozen so orchestrators can poll `status` for freshness and branch on `heartbeat_age_seconds` / `needs_reclaim` without scraping human text. The `heartbeat` event type itself is frozen in §13.5 and the record keys in §13.6; the allowed edge is frozen in §13.19.
+
+#### 13.27.1 Frozen constants and exact values
+
+The single sources of truth are defined in `stage_signal.constants` and exported from `stage_signal` and `__all__`:
+
+```python
+HEARTBEAT_ALLOWED_SOURCES = ("running",)
+
+HEARTBEAT_DETAIL_KEYS: tuple[str, ...] = ()
+```
+
+`HEARTBEAT_ALLOWED_SOURCES` lists the sole legal source state; it MUST equal `allowed_source_states("heartbeat")` (§13.19). `HEARTBEAT_DETAIL_KEYS` is intentionally empty: a direct heartbeat audit record carries no detail extras (`detail == {}`, §13.27.4).
+
+#### 13.27.2 Allowed source and the non-running guard
+
+`heartbeat` is permitted only when `state == "running"` (§4 rule 3, §13.12, §13.19). The target state is always `running` (no lifecycle transition):
+
+| Precondition failure | Library | CLI exit |
+|----------------------|---------|----------|
+| Stage not initialized (missing dir/STATUS) | `NotInitialized` | 15 (`EXIT_NOT_INITIALIZED`; §7, §13.4, §13.17) |
+| Current state is `queued`, `done`, `blocked`, or `failed` | `IllegalTransition` | 3 (`EXIT_ILLEGAL_TRANSITION`; §7, §13.4, §13.17) |
+
+From any non-running state, `heartbeat` is strictly illegal and MUST raise `IllegalTransition` (exit 3) with no mutation of STATUS, events, or mirrors. No child process, signal, or mirror side effect occurs on precondition failure. A stuck running stage keeps heartbeating normally; staleness never auto-mutates (§4 Staleness policy).
+
+#### 13.27.3 `heartbeat_at` / `heartbeat_note` omit-vs-set semantics
+
+On success, from the exact implementation in `Stage.heartbeat` (`src/stage_signal/stage.py`):
+
+- `heartbeat_at` is always bumped to the current ISO-8601 timestamp (`now_iso()`).
+- `updated_at` is bumped by the standard mutation path (§4 rule 9).
+- `state`, `stage_id`, `stage_name`, `attempt`, `session_id`, `pid`, `pid_token`, and all other STATUS fields are preserved unchanged.
+- `heartbeat_note` follows strict omit-vs-set: `if note is not None: current["heartbeat_note"] = note`.
+  - Omitted (`Stage.heartbeat()` / `Stage.heartbeat(note=None)` / CLI `stage-signal heartbeat` without `--note`, whose argparse default is `None`): the previous `heartbeat_note` value is preserved byte-for-byte (including a previous `null` or a previous string).
+  - Set (`note=<str>`, including the empty string `""`): `heartbeat_note` is overwritten with exactly that string, even when empty. There is no empty-means-clear vs empty-means-keep distinction; only `None` preserves.
+- `start` resets `heartbeat_note` to `null` and bumps `heartbeat_at` (§4 rule 2); `clear-terminal` default idle reset clears both to `null` while `--keep-stage` preserves both (§13.26). Those paths are owned by their respective sections, not changed here.
+
+#### 13.27.4 Audit event shape
+
+Each successful `heartbeat` call appends exactly one `heartbeat` event (§5; no new event type is introduced):
+
+- `type` is exactly `"heartbeat"` (a member of `EVENT_TYPES`; §13.5) with the standard record keys (`EVENT_RECORD_KEYS`; §13.6). `state` is `"running"` and `stage_id` / `stage_name` / `attempt` reflect the post-mutation STATUS.
+- `message` is the note passthrough: `None` when the note was omitted, otherwise exactly the supplied note string (including `""` when set explicitly) — byte-for-byte, no affixes.
+- `detail` is exactly `{}`: `set(detail.keys()) == set(HEARTBEAT_DETAIL_KEYS)` (empty). The supervise child-PID adoption record (owned by §13.24) is also a `heartbeat` event but carries the frozen adoption message (`"adopted child pid <N>"`) and `SUPERVISE_ADOPT_DETAIL_KEYS`; readers distinguish direct heartbeats (empty detail) from adoption heartbeats (adoption detail keys) by the detail shape.
+
+Readers MUST tolerate additive unknown keys on the `heartbeat` `detail` object without failing (§13.1).
+
+#### 13.27.5 Age only while running
+
+Freshness is observed, never mutated, via `heartbeat_age_seconds` and the human `status` line (§3, §6, §13.3.1):
+
+- `Stage.status()` / `status --json` reports `heartbeat_age_seconds` as a float `>= 0` (elapsed seconds since `heartbeat_at`) only when `state == "running"` and `heartbeat_at` parses as ISO-8601; otherwise it is `null` — including `done`, `blocked`, `failed`, and `queued` even when `heartbeat_at` remains recorded, and including unparseable or missing `heartbeat_at`.
+- Human `status` prints `heartbeat: <ISO> (age Ns)` only when `state == "running"` with a recorded timestamp and a non-null age; otherwise it prints `heartbeat: <ISO>` with no age suffix.
+- `doctor` / `Stage.diagnose()` staleness evaluation (`STALE_HEARTBEAT` vs `DEFAULT_STALE_THRESHOLD`, §13.8, §13.14) and `supervise --every` auto-heartbeating (§6, §13.14, §13.24) consume the same `heartbeat_at` clock but are owned by their respective sections; this section freezes only that age is exposed exclusively while running.
+
+#### 13.27.6 Cross-links
+
+- **§4 rule 3 (States & transitions):** normative `heartbeat [--note]` allowed-only-from-`running` rule, the `updated_at` bump rule (§4 rule 9), and the never-auto-mutate staleness policy.
+- **§5 (events.jsonl) + §13.5/§13.6:** the `heartbeat` event type and required record keys; audit-trail reads via `events`.
+- **§6 (CLI contract):** `stage-signal heartbeat [--note TEXT]` usage line; `status` human/JSON age display; `supervise` auto-heartbeat (`--every`, default `SUPERVISE_DEFAULT_EVERY`) which reuses this same heartbeat mutation while the child is alive.
+- **§13.12 (states freeze):** `running` as the sole non-terminal live state vs `queued` and terminal `done`/`blocked`/`failed`.
+- **§13.14 (env/timing defaults):** `DEFAULT_STALE_THRESHOLD` (300.0) consumed by `doctor` staleness, `SUPERVISE_DEFAULT_EVERY` (60.0) consumed by supervise auto-heartbeat; neither default is changed here.
+- **§13.19 (transition matrix freeze):** the single frozen `(running, "heartbeat") -> running` edge and the non-running guard.
+- **§13.20 (Stage method surface freeze):** `heartbeat(note=None) -> dict[str, Any]` signature and CLI equivalence.
+
+#### 13.27.7 Additive-only evolution policy
+
+Under `schema_version: 1`, the heartbeat liveness contract is strictly **additive-only** (§13.1):
+
+- The frozen allowed source, the always-bump-`heartbeat_at` rule, the `None`-means-preserve omit-vs-set rule, the `message`-passthrough / empty-`detail` audit shape, and the age-only-while-running rule MUST NOT be removed, renamed, reworded, or change semantic meaning.
+- No new event type is introduced for heartbeating: the audit record stays a `heartbeat` event (§13.5).
+- New heartbeat detail keys or note modes MAY be added in minor or patch releases only as additional constants; existing frozen values MUST keep their exact values.
+- Readers MUST tolerate unknown future `heartbeat` detail keys and unknown future note strings without failing.
 

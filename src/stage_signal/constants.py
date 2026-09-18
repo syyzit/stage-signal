@@ -197,6 +197,13 @@ CLEAR_TERMINAL_DETAIL_KEYS = (
 CLEAR_TERMINAL_MESSAGE_IDLE = "cleared to idle queued"
 CLEAR_TERMINAL_MESSAGE_KEEP_STAGE = "cleared to queued"
 
+# Frozen heartbeat contract (SPEC §13.27)
+HEARTBEAT_ALLOWED_SOURCES = (
+    "running",
+)
+
+HEARTBEAT_DETAIL_KEYS: tuple[str, ...] = ()
+
 # Frozen schema_version 1 key sets (SPEC §13)
 STATUS_REQUIRED_KEYS = (
     "schema_version",
@@ -452,6 +459,8 @@ PUBLIC_EXPORTS: tuple[str, ...] = (
     "EXIT_QUEUED",
     "EXIT_RUNNING",
     "EXIT_WAIT_TIMEOUT",
+    "HEARTBEAT_ALLOWED_SOURCES",
+    "HEARTBEAT_DETAIL_KEYS",
     "IllegalTransition",
     "LOCKS_DIRNAME",
     "LOCK_FILENAME",
