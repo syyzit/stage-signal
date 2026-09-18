@@ -6,6 +6,10 @@ See `docs/RELEASE.md` for the release procedure.
 
 ## [Unreleased]
 
+- Froze on-disk layout path constants in SPEC §13.13 via exported `DEFAULT_DIR_NAME`,
+  `STATUS_FILENAME`, `STATUS_MD_FILENAME`, `EVENTS_FILENAME`, `LOCKS_DIRNAME`,
+  `LOCK_FILENAME`, and `DEFAULT_MIRROR_DIRNAME`, cross-linking §2 and guaranteeing
+  additive-only layout evolution under `schema_version: 1` (#121).
 - Froze `wait --json` outcome enum in SPEC §13.11 via exported `WAIT_OUTCOMES`
   (`"met"`, `"mismatch"`, `"timeout"`), cross-linking §13.3.3 and guaranteeing
   additive-only outcomes and `timeout` boolean consistency under `schema_version: 1` (#117).

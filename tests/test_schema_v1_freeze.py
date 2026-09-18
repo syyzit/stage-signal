@@ -18,12 +18,15 @@ import pytest
 
 from stage_signal import (
     ARTIFACT_ENTRY_KEYS,
+    DEFAULT_DIR_NAME,
+    DEFAULT_MIRROR_DIRNAME,
     DOCTOR_JSON_KEYS,
     DOCTOR_WARNING_KEYS,
     ERROR_KEYS,
     ERROR_KINDS,
     EVENT_RECORD_KEYS,
     EVENT_TYPES,
+    EVENTS_FILENAME,
     EXIT_BAD_ARGS,
     EXIT_BLOCKED,
     EXIT_CODES,
@@ -35,6 +38,8 @@ from stage_signal import (
     EXIT_QUEUED,
     EXIT_RUNNING,
     EXIT_WAIT_TIMEOUT,
+    LOCK_FILENAME,
+    LOCKS_DIRNAME,
     NOTE_ENTRY_KEYS,
     PROOF_KEYS,
     PROOF_VERIFIED_VALUES,
@@ -46,8 +51,11 @@ from stage_signal import (
     STATE_QUEUED,
     STATE_RUNNING,
     STATES,
+    STATUS_FILENAME,
     STATUS_JSON_KEYS,
+    STATUS_MD_FILENAME,
     STATUS_REQUIRED_KEYS,
+    SUPERVISE_DEFAULT_EVERY,
     TERMINAL_STATES,
     WAIT_JSON_KEYS,
     WAIT_OUTCOME_MET,
@@ -63,6 +71,7 @@ from stage_signal import (
     CorruptStatusError,
     Stage,
     state_exit_code,
+    write_status_mirror,
 )
 from stage_signal.cli import main
 from stage_signal.constants import STATE_EXIT_CODES
@@ -1524,3 +1533,150 @@ def test_wait_outcome_tolerates_additive_fields() -> None:
     )
     assert payload_with_extras.get("future_duration_seconds") == 1.23
     assert payload_with_extras.get("future_trace_id") == "trace-456"
+
+
+# ============================================================================
+# 11. On-disk layout path constants freeze (SPEC §13.13, issue #121)
+# ============================================================================
+
+
+def test_layout_path_constants_freeze() -> None:
+    """Canonical on-disk layout path constants must match SPEC §13.13 exactly."""
+    assert DEFAULT_DIR_NAME == ".stage-signal"
+    assert STATUS_FILENAME == "STATUS.json"
+    assert STATUS_MD_FILENAME == "STATUS.md"
+    assert EVENTS_FILENAME == "events.jsonl"
+    assert LOCKS_DIRNAME == "locks"
+    assert LOCK_FILENAME == "stage.lock"
+    assert DEFAULT_MIRROR_DIRNAME == ".orch"
+
+    assert isinstance(DEFAULT_DIR_NAME, str)
+    assert isinstance(STATUS_FILENAME, str)
+    assert isinstance(STATUS_MD_FILENAME, str)
+    assert isinstance(EVENTS_FILENAME, str)
+    assert isinstance(LOCKS_DIRNAME, str)
+    assert isinstance(LOCK_FILENAME, str)
+    assert isinstance(DEFAULT_MIRROR_DIRNAME, str)
+
+    # Confirm exports from stage_signal
+    import stage_signal
+
+    assert getattr(stage_signal, "DEFAULT_DIR_NAME") == ".stage-signal"
+    assert getattr(stage_signal, "STATUS_FILENAME") == "STATUS.json"
+    assert getattr(stage_signal, "STATUS_MD_FILENAME") == "STATUS.md"
+    assert getattr(stage_signal, "EVENTS_FILENAME") == "events.jsonl"
+    assert getattr(stage_signal, "LOCKS_DIRNAME") == "locks"
+    assert getattr(stage_signal, "LOCK_FILENAME") == "stage.lock"
+    assert getattr(stage_signal, "DEFAULT_MIRROR_DIRNAME") == ".orch"
+
+    assert "DEFAULT_DIR_NAME" in stage_signal.__all__
+    assert "STATUS_FILENAME" in stage_signal.__all__
+    assert "STATUS_MD_FILENAME" in stage_signal.__all__
+    assert "EVENTS_FILENAME" in stage_signal.__all__
+    assert "LOCKS_DIRNAME" in stage_signal.__all__
+    assert "LOCK_FILENAME" in stage_signal.__all__
+    assert "DEFAULT_MIRROR_DIRNAME" in stage_signal.__all__
+
+
+def test_init_creates_canonical_layout_paths(tmp_path: Path) -> None:
+    """Stage.init creates all relative layout paths specified in SPEC §13.13."""
+    stage_dir = tmp_path / "custom_stage_dir"
+    stage = Stage(str(stage_dir))
+    stage.init(project="layout-freeze-test")
+
+    status_file = stage_dir / STATUS_FILENAME
+    status_md_file = stage_dir / STATUS_MD_FILENAME
+    events_file = stage_dir / EVENTS_FILENAME
+    locks_dir = stage_dir / LOCKS_DIRNAME
+    lock_file = locks_dir / LOCK_FILENAME
+
+    assert status_file.is_file()
+    assert status_md_file.is_file()
+    assert events_file.is_file()
+    assert locks_dir.is_dir()
+    assert lock_file.is_file()
+
+    # Assert relative paths match frozen constants
+    assert status_file.relative_to(stage_dir) == Path(STATUS_FILENAME)
+    assert status_md_file.relative_to(stage_dir) == Path(STATUS_MD_FILENAME)
+    assert events_file.relative_to(stage_dir) == Path(EVENTS_FILENAME)
+    assert locks_dir.relative_to(stage_dir) == Path(LOCKS_DIRNAME)
+    assert lock_file.relative_to(stage_dir) == Path(LOCKS_DIRNAME) / LOCK_FILENAME
+
+
+def test_cli_init_with_default_dir_creates_canonical_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """stage-signal init without --dir creates DEFAULT_DIR_NAME with canonical layout."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("STAGE_SIGNAL_DIR", raising=False)
+
+    rc = main(["init", "--project", "default-dir-test"])
+    assert rc == EXIT_OK
+
+    default_dir = tmp_path / DEFAULT_DIR_NAME
+    assert default_dir.is_dir()
+
+    assert (default_dir / STATUS_FILENAME).is_file()
+    assert (default_dir / STATUS_MD_FILENAME).is_file()
+    assert (default_dir / EVENTS_FILENAME).is_file()
+    assert (default_dir / LOCKS_DIRNAME).is_dir()
+    assert (default_dir / LOCKS_DIRNAME / LOCK_FILENAME).is_file()
+
+
+def test_status_mirror_uses_default_mirror_dirname(tmp_path: Path) -> None:
+    """write_status_mirror places mirror files under DEFAULT_MIRROR_DIRNAME."""
+    stage_dir = tmp_path / DEFAULT_DIR_NAME
+    stage = Stage(str(stage_dir))
+    stage.init(project="mirror-layout-test")
+    status = stage.status()
+
+    mirror_path = write_status_mirror(stage_dir, status, repo_root=tmp_path)
+    assert mirror_path is not None
+    assert mirror_path == tmp_path / DEFAULT_MIRROR_DIRNAME / STATUS_MD_FILENAME
+    assert mirror_path.is_file()
+    assert mirror_path.relative_to(tmp_path) == Path(DEFAULT_MIRROR_DIRNAME) / STATUS_MD_FILENAME
+
+
+def test_layout_readers_tolerate_unknown_extra_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Readers and observers tolerate unknown extra files and directories under stage dir (SPEC §13.13)."""
+    stage_dir = tmp_path / ".stage-signal"
+    monkeypatch.setenv("STAGE_SIGNAL_DIR", str(stage_dir))
+    stage = Stage(str(stage_dir))
+    stage.init(project="extra-files-test")
+
+    # Introduce unknown extra files and directories
+    (stage_dir / "custom_extra.json").write_text('{"extra": true}', encoding="utf-8")
+    (stage_dir / "notes.txt").write_text("random note", encoding="utf-8")
+    unknown_dir = stage_dir / "unknown_cache"
+    unknown_dir.mkdir()
+    (unknown_dir / "data.bin").write_bytes(b"\x00\x01\x02\x03")
+    (stage_dir / LOCKS_DIRNAME / "extra.lock").write_bytes(b"\x00")
+
+    # Verify status (library and CLI)
+    status = stage.status()
+    assert status["state"] == "queued"
+
+    capsys.readouterr()
+    rc = main(["status", "--json"])
+    assert rc == EXIT_QUEUED
+    data = json.loads(capsys.readouterr().out)
+    assert data["state"] == "queued"
+
+    # Verify doctor (library and CLI)
+    diag = stage.diagnose()
+    assert diag["ok"] is True
+    assert diag["problems"] == []
+
+    capsys.readouterr()
+    rc = main(["doctor", "--json"])
+    assert rc == EXIT_OK
+    diag_cli = json.loads(capsys.readouterr().out)
+    assert diag_cli["ok"] is True
+
+    # Verify events
+    events = stage.events()
+    assert len(events) >= 1
+
