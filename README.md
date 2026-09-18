@@ -108,6 +108,14 @@ stage-signal supervise -- pytest -v
 The `--pid $$` example uses the POSIX shell process ID. On Windows, pass the
 agent process ID instead (for example, `os.getpid()` from Python).
 
+> **Tip — `done` inherits `git_head`:** `done` without `--git-head`
+> inherits the `git_head` recorded at `start` (SPEC §13.30.3). Agents and
+> orchestrators that commit during a stage SHOULD pass
+> `--git-head $(git rev-parse HEAD)` so `result.git_head` matches the
+> finished tip. See [`docs/examples/orchestrator.md`](docs/examples/orchestrator.md)
+> and [`examples/cli-orchestrator-loop.md`](examples/cli-orchestrator-loop.md),
+> which already show the flag.
+
 On-disk layout (default):
 
 ```
@@ -361,6 +369,9 @@ Agent UIs and chat transcripts are for humans. Orchestrators need a stable, bori
 `examples/multi-cli-loop.sh`), CI (`.github/workflows/ci.yml`:
 pytest + both smokes + packaging check via `python -m build` /
 `twine check`, no upload). Contract: SPEC v1.
+
+`main` carries SPEC contract freezes through §13.41 while the published
+package remains soaking at `0.1.6` (no version bump in this change).
 
 ---
 
