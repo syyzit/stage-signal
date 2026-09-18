@@ -553,6 +553,7 @@ with Stage.open(".stage-signal") as s:   # scoped use; use Stage(dir) + context 
 - Errors: `StageError` (code 1) → `BadArgsError` (2), `IllegalTransition` (3),
   `NotInitialized` (15), `CorruptStatusError` (1), `WaitTimeout` (14). Each carries `.exit_code`.
 - `state_exit_code(state) -> int` maps state → 10/11/12/13 (and `done` → 0).
+- The complete public instance method surface of `Stage` is frozen in §13.20 (`STAGE_PUBLIC_METHODS`).
 
 ## 12. Testing strategy
 
@@ -1146,4 +1147,89 @@ Under `schema_version: 1`, the human mirror format is strictly **additive-only**
 - Writers MUST continue guaranteeing that write failures never raise exceptions, preserving the best-effort nature of the mirror.
 
 Distinction from orchestrator mirror: The optional `<repo>/.orch/STATUS.md` mirror (§10, `write_status_mirror`) is an independent repository-level convenience mirror that includes an extra `source:` line and touches `.orch/DONE` on completion; both mirrors adhere to non-normative, best-effort principles.
+
+### 13.20 Stage public method surface freeze (`STAGE_PUBLIC_METHODS`)
+
+Python embedders, workflow engines, and external orchestrators interact with `stage-signal` programmatically via the `Stage` class (§11). Under `schema_version: 1`, the public instance method surface of `Stage` is frozen to ensure embedders can rely on which methods exist, their semantics, and their error behavior.
+
+#### 13.20.1 Canonical method inventory
+
+`Stage` exposes 15 public instance methods, exactly corresponding to the 15 canonical CLI subcommands frozen in §13.15. In alphabetical order:
+
+| Method | Signature Summary | Primary Purpose | CLI Equivalence (§13.15) | SPEC Reference |
+|--------|-------------------|-----------------|--------------------------|----------------|
+| `artifact` | `artifact(path, *, label=None) -> dict[str, Any]` | Record an artifact path in `STATUS.json` (`running` state only). | `stage-signal artifact` | §3, §6, §11, §13.7 |
+| `blocked` | `blocked(reason, *, write_status_mirror=None) -> dict[str, Any]` | Transition stage to terminal `blocked` with reason string. | `stage-signal blocked` | §4, §6, §11 |
+| `clear_terminal` | `clear_terminal(*, keep_stage=False) -> dict[str, Any]` | Reset terminal or queued state back to idle `queued`. | `stage-signal clear-terminal` | §4, §6, §11 |
+| `diagnose` | `diagnose(*, stale_after=DEFAULT_STALE_THRESHOLD) -> dict[str, Any]` | Inspect directory health, validate schema, probe PID liveness, and detect reclaim needs. | `stage-signal doctor` | §4, §6, §11, §13.3.2, §13.8 |
+| `done` | `done(summary=None, *, git_head=None, proof_ref=None, require_proof=False, accept_failure=False, write_status_mirror=None) -> dict[str, Any]` | Mark stage succeeded (`done`); supports optional proof gate and failure acceptance. | `stage-signal done` | §4, §6, §9, §11, §13.9, §13.10 |
+| `events` | `events(*, tail=None, type=None) -> list[dict[str, Any]]` | Read chronological audit records from `events.jsonl` with optional type filter and tail limit. | `stage-signal events` | §5, §6, §11, §13.6 |
+| `fail` | `fail(reason, *, if_dead_pid=False, if_needs_reclaim=False, write_status_mirror=None) -> dict[str, Any]` | Transition stage to terminal `failed` with reason; supports dead-PID or reclaim guards. | `stage-signal fail` | §4, §6, §11, §13.9 |
+| `heartbeat` | `heartbeat(note=None) -> dict[str, Any]` | Bump heartbeat timestamp and optional progress note (`running` state only). | `stage-signal heartbeat` | §3, §4, §6, §11 |
+| `init` | `init(project=None) -> dict[str, Any]` | Create stage directory and initial `queued` state idempotently. | `stage-signal init` | §2, §3, §4, §6, §11 |
+| `note` | `note(text) -> dict[str, Any]` | Append a progress note to `STATUS.json` (`running` state only). | `stage-signal note` | §3, §6, §11, §13.7, §13.14 |
+| `reclaim` | `reclaim(reason, *, keep_failed=False, kill=False, write_status_mirror=None) -> dict[str, Any]` | Atomic fail-and-clear transition when `needs_reclaim` is true; optional process termination (`kill=True`). | `stage-signal reclaim` | §4, §6, §11 |
+| `start` | `start(stage, *, stage_id=None, session_id=None, pid=None, model=None, variant=None, git_head=None, git_branch=None, meta=None, write_status_mirror=None) -> dict[str, Any]` | Claim and start a stage, transition to `running`, capture PID, tokens, and git metadata. | `stage-signal start` | §3, §4, §6, §11 |
+| `status` | `status() -> dict[str, Any]` | Read current status dictionary under shared lock, evaluating reclaim diagnostics. | `stage-signal status` | §6, §7, §11, §13.3.1 |
+| `supervise` | `supervise(cmd, *, every=SUPERVISE_DEFAULT_EVERY, stale_threshold=DEFAULT_STALE_THRESHOLD, summary=None, reason=None, write_status_mirror=None, cwd=None, env=None) -> int` | Supervise a child process command, adopting child PID and auto-heartbeating until exit. | `stage-signal supervise` | §4, §6, §11 |
+| `wait` | `wait(want="terminal", *, timeout=3600, poll=5, needs_reclaim=False) -> dict[str, Any]` | Poll until target state or `needs_reclaim` condition is met; raises `WaitTimeout` on deadline expiry. | `stage-signal wait` | §6, §7, §11, §13.3.3, §13.11 |
+
+The single source of truth for the canonical method inventory is:
+
+```python
+STAGE_PUBLIC_METHODS = (
+    "artifact",
+    "blocked",
+    "clear_terminal",
+    "diagnose",
+    "done",
+    "events",
+    "fail",
+    "heartbeat",
+    "init",
+    "note",
+    "reclaim",
+    "start",
+    "status",
+    "supervise",
+    "wait",
+)
+```
+
+defined in `stage_signal.constants` as a sorted tuple and exported from `stage_signal` and `__all__`.
+
+#### 13.20.2 Construction, scoping, and properties
+
+In addition to the 15 instance methods, `Stage` provides standard construction and scoping mechanisms:
+
+- **Constructor**: `Stage(dir: Optional[str | os.PathLike] = None)` binds a `Stage` instance to a stage directory path (falling back to `STAGE_SIGNAL_DIR` or `.stage-signal` per §2 and §13.14). Each mutation acquires an internal exclusive file lock, ensuring thread- and process-safe operations without manual lock management.
+- **Context manager constructor**: `Stage.open(dir: Optional[str | os.PathLike] = None) -> Stage` provides classmethod construction for `with Stage.open(...) as s:` blocks. Scoping is purely lifecycle convenience; individual method invocations retain one-shot locking rather than holding persistent locks across the `with` block.
+- **Directory property**: `stage.dir -> Path` exposes the resolved `Path` to the underlying stage directory.
+
+#### 13.20.3 Exception contract
+
+All `Stage` public methods raise structured exceptions from the frozen hierarchy defined in §13.17 (`StageError`, `BadArgsError`, `IllegalTransition`, `NotInitialized`, `CorruptStatusError`, `WaitTimeout`). Every exception carries an `.exit_code` integer attribute matching §7 and §13.4, ensuring Python library errors correlate directly with CLI exit behavior.
+
+#### 13.20.4 Top-level helper functions cross-link
+
+The Python library package exports top-level helper functions alongside `Stage` (§11):
+- `resolve_dir(explicit: Optional[str | os.PathLike] = None) -> Path`: resolves stage directory precedence (§2, §13.14).
+- `state_exit_code(state: str) -> int`: maps state strings to observer exit codes using `STATE_EXIT_CODES` (§13.16).
+- `render_status_md(status: dict[str, Any]) -> str`: formats status dictionaries into `STATUS.md` Markdown (§13.18).
+- `write_status_mirror(stage_dir: Path, status: dict[str, Any], *, repo_root: Optional[Path] = None) -> Optional[Path]`: best-effort `.orch/STATUS.md` and `.orch/DONE` mirror (§10).
+- `verify_proof(ref: Optional[str] = None) -> dict[str, Any]`: proof verification logic for `--require-proof` (§9, §13.10).
+- `wait_condition_met(status: dict[str, Any], *, want: str, needs_reclaim: bool = False) -> bool`: predicate evaluating wait satisfaction (§6, §13.11).
+- `want_matches(want: str, state: str) -> bool`: predicate matching wait state wants (§6).
+- `StageStore(dir: Optional[str | os.PathLike] = None)`: low-level filesystem store handling locked file I/O (§2, §8).
+
+Constants owned by earlier sections (§13.2 through §13.18) are defined and governed by those respective sections and are not re-frozen here.
+
+#### 13.20.5 Additive-only evolution policy
+
+Under `schema_version: 1`, the `Stage` public method surface is strictly **additive-only** (§13.1):
+- Existing methods in `STAGE_PUBLIC_METHODS` MUST NOT be removed or renamed.
+- Existing method semantics and return schemas MUST NOT undergo breaking changes.
+- Existing method signatures MAY only evolve by adding backward-compatible optional arguments (with default values).
+- New public instance methods MAY be added in future minor or patch releases under schema version 1, expanding `STAGE_PUBLIC_METHODS`.
+- Embedders and orchestrators can rely on the continuous availability of all 15 methods across the schema version 1 lifecycle.
 
