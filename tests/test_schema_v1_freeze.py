@@ -61,6 +61,8 @@ from stage_signal import (
     FAIL_IF_NEEDS_RECLAIM_ALLOWED_SOURCES,
     HEARTBEAT_ALLOWED_SOURCES,
     HEARTBEAT_DETAIL_KEYS,
+    INIT_DETAIL_KEYS,
+    INIT_IDLE_STATUS_FIELDS,
     LOCK_FILENAME,
     LOCKS_DIRNAME,
     NOTE_ALLOWED_SOURCES,
@@ -3816,6 +3818,8 @@ def test_public_exports_constant_freeze() -> None:
         "FAIL_IF_NEEDS_RECLAIM_ALLOWED_SOURCES",
         "HEARTBEAT_ALLOWED_SOURCES",
         "HEARTBEAT_DETAIL_KEYS",
+        "INIT_DETAIL_KEYS",
+        "INIT_IDLE_STATUS_FIELDS",
         "IllegalTransition",
         "LOCKS_DIRNAME",
         "LOCK_FILENAME",
@@ -3897,7 +3901,7 @@ def test_public_exports_constant_freeze() -> None:
     )
     assert PUBLIC_EXPORTS == expected
     assert isinstance(PUBLIC_EXPORTS, tuple)
-    assert len(PUBLIC_EXPORTS) == 130
+    assert len(PUBLIC_EXPORTS) == 132
     assert PUBLIC_EXPORTS == tuple(sorted(PUBLIC_EXPORTS))
     assert len(PUBLIC_EXPORTS) == len(set(PUBLIC_EXPORTS))
 
@@ -4037,6 +4041,8 @@ def test_public_exports_category_coverage() -> None:
         "SUPERVISE_EXIT_PERMISSION_DENIED",
         "HEARTBEAT_ALLOWED_SOURCES",
         "HEARTBEAT_DETAIL_KEYS",
+        "INIT_DETAIL_KEYS",
+        "INIT_IDLE_STATUS_FIELDS",
         "ARTIFACT_ALLOWED_SOURCES",
         "ARTIFACT_DETAIL_KEYS",
         "DONE_ALLOWED_SOURCES",
@@ -6979,3 +6985,291 @@ def test_start_git_override_and_uninitialized(
     capsys.readouterr()
     rc = cli.main(["--dir", str(missing_dir), "start", "--stage", "cannot start"])
     assert rc == EXIT_NOT_INITIALIZED
+
+
+# ---------------------------------------------------------------------------
+# §13.34: Init bootstrap and idempotent setup contract freeze
+# ---------------------------------------------------------------------------
+
+
+def test_init_constants_exact_values() -> None:
+    """INIT_* constants match SPEC §13.34 and contain the frozen canonical initial fields."""
+    assert INIT_DETAIL_KEYS == ()
+    assert isinstance(INIT_DETAIL_KEYS, tuple)
+    assert len(INIT_DETAIL_KEYS) == 0
+
+    assert isinstance(INIT_IDLE_STATUS_FIELDS, tuple)
+    assert len(INIT_IDLE_STATUS_FIELDS) == 24
+    assert len(set(INIT_IDLE_STATUS_FIELDS)) == 24
+
+    # All 23 STATUS_REQUIRED_KEYS (§13.2) must be in INIT_IDLE_STATUS_FIELDS
+    for key in STATUS_REQUIRED_KEYS:
+        assert key in INIT_IDLE_STATUS_FIELDS
+
+    # Plus pid_token (SPEC §13.34)
+    assert "pid_token" in INIT_IDLE_STATUS_FIELDS
+
+    expected_fields = (
+        "schema_version",
+        "project",
+        "stage_id",
+        "stage_name",
+        "state",
+        "attempt",
+        "session_id",
+        "pid",
+        "pid_token",
+        "model",
+        "variant",
+        "repo_path",
+        "git_branch",
+        "git_head",
+        "started_at",
+        "updated_at",
+        "heartbeat_at",
+        "heartbeat_note",
+        "result",
+        "error",
+        "artifacts",
+        "proof",
+        "notes",
+        "meta",
+    )
+    assert INIT_IDLE_STATUS_FIELDS == expected_fields
+
+
+def test_init_constants_exported_from_top_level() -> None:
+    """Init freeze constants are exported from top-level stage_signal (SPEC §13.34)."""
+    import stage_signal
+
+    for name, expected in (
+        ("INIT_DETAIL_KEYS", INIT_DETAIL_KEYS),
+        ("INIT_IDLE_STATUS_FIELDS", INIT_IDLE_STATUS_FIELDS),
+    ):
+        assert hasattr(stage_signal, name), f"stage_signal missing {name!r}"
+        assert name in stage_signal.__all__, f"{name!r} not in stage_signal.__all__"
+        assert getattr(stage_signal, name) is expected
+
+
+def test_init_fresh_initialization_fields_and_event(tmp_path: Path) -> None:
+    """Fresh init writes all 24 fields, creates directory layout, and appends init event (SPEC §13.34).
+
+    Synchronous test with zero sleeps/threads.
+    """
+    stage_dir = tmp_path / ".stage-signal"
+    stage = Stage(str(stage_dir))
+
+    # Before init: directory does not exist, status raises NotInitialized
+    assert not stage_dir.exists()
+    with pytest.raises(NotInitialized):
+        stage.status()
+
+    # Fresh init
+    status = stage.init(project="fresh-proj")
+
+    # Directory and layout files created
+    assert stage_dir.is_dir()
+    assert (stage_dir / "STATUS.json").is_file()
+    assert (stage_dir / "STATUS.md").is_file()
+    assert (stage_dir / "events.jsonl").is_file()
+    assert (stage_dir / "locks" / "stage.lock").is_file()
+
+    # Exact field structure matches INIT_IDLE_STATUS_FIELDS
+    assert tuple(status.keys()) == INIT_IDLE_STATUS_FIELDS + ("heartbeat_age_seconds",)
+    raw_status = json.loads((stage_dir / "STATUS.json").read_text(encoding="utf-8"))
+    assert tuple(raw_status.keys()) == INIT_IDLE_STATUS_FIELDS
+    assert set(raw_status.keys()) == set(INIT_IDLE_STATUS_FIELDS)
+
+    # Initial values match SPEC §13.34.4
+    assert raw_status["schema_version"] == SCHEMA_VERSION
+    assert raw_status["project"] == "fresh-proj"
+    assert raw_status["stage_id"] is None
+    assert raw_status["stage_name"] is None
+    assert raw_status["state"] == STATE_QUEUED
+    assert raw_status["attempt"] == 1
+    assert raw_status["session_id"] is None
+    assert raw_status["pid"] is None
+    assert raw_status["pid_token"] is None
+    assert raw_status["model"] is None
+    assert raw_status["variant"] is None
+    assert raw_status["repo_path"] == str(stage_dir.parent.resolve())
+    assert raw_status["git_branch"] is None
+    assert raw_status["git_head"] is None
+    assert raw_status["started_at"] is None
+    assert raw_status["updated_at"] is not None
+    assert raw_status["heartbeat_at"] is None
+    assert raw_status["heartbeat_note"] is None
+    assert raw_status["result"] is None
+    assert raw_status["error"] is None
+    assert raw_status["artifacts"] == []
+    assert raw_status["proof"] is None
+    assert raw_status["notes"] == []
+    assert raw_status["meta"] == {}
+
+    # Audit event appended: exactly one 'init' event
+    events = stage.events()
+    assert len(events) == 1
+    ev = events[0]
+    assert ev["type"] == "init"
+    assert ev["type"] in EVENT_TYPES
+    assert ev["stage_id"] is None
+    assert ev["stage_name"] is None
+    assert ev["state"] == STATE_QUEUED
+    assert ev["attempt"] == 1
+    assert ev["message"] == "fresh-proj"
+    assert ev["ts"] == raw_status["updated_at"]
+    for key in EVENT_RECORD_KEYS:
+        assert key in ev
+    assert tuple(ev["detail"].keys()) == INIT_DETAIL_KEYS
+    assert ev["detail"] == {}
+
+
+def test_init_idempotent_preserve_all_states(tmp_path: Path) -> None:
+    """Calling init on an already-initialized stage preserves state and never duplicates events (SPEC §13.34.2).
+
+    Synchronous test with zero sleeps/threads.
+    """
+    stage_dir = tmp_path / ".stage-signal"
+    stage = Stage(str(stage_dir))
+
+    # 1. Queued state: init once, then init again
+    st1 = stage.init(project="idempotent-test")
+    raw1 = (stage_dir / "STATUS.json").read_text(encoding="utf-8")
+    events1 = stage.events()
+    assert len(events1) == 1
+
+    # Second init on queued: must be a no-op preserve
+    st2 = stage.init(project="different-ignored-project")
+    raw2 = (stage_dir / "STATUS.json").read_text(encoding="utf-8")
+    assert raw2 == raw1
+    assert st2["project"] == "idempotent-test"  # preserved, not overwritten
+    assert len(stage.events()) == 1  # no new event appended
+
+    # 2. Running state: start a stage, then call init
+    st_run = stage.start(stage="live-work", session_id="ses-123", pid=os.getpid())
+    assert st_run["state"] == STATE_RUNNING
+    events_run = stage.events()
+    assert len(events_run) == 2  # init + start
+
+    st_after_init = stage.init(project="another-ignored")
+    assert st_after_init["state"] == STATE_RUNNING
+    assert st_after_init["stage_name"] == "live-work"
+    assert st_after_init["session_id"] == "ses-123"
+    assert st_after_init["pid"] == os.getpid()
+    assert len(stage.events()) == 2  # no new event
+
+    # 3. Done state: mark done, then call init
+    stage.done(summary="all completed")
+    assert stage.status()["state"] == STATE_DONE
+    events_done = stage.events()
+    assert len(events_done) == 3
+
+    st_done_init = stage.init()
+    assert st_done_init["state"] == STATE_DONE
+    assert st_done_init["result"]["summary"] == "all completed"
+    assert len(stage.events()) == 3
+
+    # 4. Blocked state
+    stage.start(stage="retry-blocked")
+    stage.blocked(reason="dependency missing")
+    assert stage.status()["state"] == STATE_BLOCKED
+    events_blocked = stage.events()
+
+    st_blocked_init = stage.init()
+    assert st_blocked_init["state"] == STATE_BLOCKED
+    assert st_blocked_init["error"]["reason"] == "dependency missing"
+    assert len(stage.events()) == len(events_blocked)
+
+    # 5. Failed state
+    stage.start(stage="retry-failed")
+    stage.fail(reason="fatal crash")
+    assert stage.status()["state"] == STATE_FAILED
+    events_failed = stage.events()
+
+    st_failed_init = stage.init()
+    assert st_failed_init["state"] == STATE_FAILED
+    assert st_failed_init["error"]["reason"] == "fatal crash"
+    assert len(stage.events()) == len(events_failed)
+
+
+def test_init_project_precedence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Project resolution follows: explicit > STAGE_SIGNAL_PROJECT > dir inference (SPEC §13.34.3).
+
+    Synchronous test with zero sleeps/threads.
+    """
+    # Precedence 1: Explicit project wins over env var and dir name
+    dir1 = tmp_path / "workspace-a" / ".stage-signal"
+    monkeypatch.setenv("STAGE_SIGNAL_PROJECT", "env-project")
+    st1 = Stage(str(dir1)).init(project="explicit-project")
+    assert st1["project"] == "explicit-project"
+
+    # Precedence 2: Environment variable wins over dir inference when explicit is omitted
+    dir2 = tmp_path / "workspace-b" / ".stage-signal"
+    monkeypatch.setenv("STAGE_SIGNAL_PROJECT", "env-project")
+    st2 = Stage(str(dir2)).init()
+    assert st2["project"] == "env-project"
+
+    # Precedence 3a: Directory inference (.stage-signal parent directory name) when env unset
+    monkeypatch.delenv("STAGE_SIGNAL_PROJECT", raising=False)
+    workspace_dir = tmp_path / "my-awesome-repo"
+    dir3 = workspace_dir / ".stage-signal"
+    dir3.mkdir(parents=True)
+    st3 = Stage(str(dir3)).init()
+    assert st3["project"] == "my-awesome-repo"
+
+    # Precedence 3b: Directory inference (custom dir name outside .stage-signal uses cwd name)
+    custom_dir = tmp_path / "custom-stage-dir"
+    st4 = Stage(str(custom_dir)).init()
+    assert st4["project"] == Path.cwd().name
+
+
+def test_init_corrupt_status_fails_loudly(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Corrupt STATUS.json raises CorruptStatusError and CLI exits 1 without clobbering (SPEC §13.34.2).
+
+    Synchronous test with zero sleeps/threads.
+    """
+    stage_dir = tmp_path / ".stage-signal"
+    stage = Stage(str(stage_dir))
+    stage.init(project="corrupt-test")
+
+    # Corrupt STATUS.json
+    status_file = stage_dir / "STATUS.json"
+    status_file.write_text("{not valid json", encoding="utf-8")
+
+    with pytest.raises(CorruptStatusError):
+        stage.init(project="rescue-attempt")
+
+    # Ensure corruption was NOT clobbered
+    assert status_file.read_text(encoding="utf-8") == "{not valid json"
+
+    # CLI test: exits EXIT_ERROR (1) on corrupt status
+    capsys.readouterr()
+    rc = main(["--dir", str(stage_dir), "init"])
+    assert rc == EXIT_ERROR
+
+
+def test_init_cli_behavior(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """CLI init prints initialized message and exits 0 (SPEC §13.34.6).
+
+    Synchronous test with zero sleeps/threads.
+    """
+    stage_dir = tmp_path / ".stage-signal"
+
+    capsys.readouterr()
+    rc = main(["--dir", str(stage_dir), "init", "--project", "cli-proj"])
+    assert rc == EXIT_OK
+    out = capsys.readouterr().out
+    assert out.startswith("initialized cli-proj -> queued - (attempt 1)")
+
+    # Subsequent CLI init call succeeds with exit 0 (idempotent)
+    rc = main(["--dir", str(stage_dir), "init", "--project", "ignored"])
+    assert rc == EXIT_OK
+    out = capsys.readouterr().out
+    assert out.startswith("initialized cli-proj -> queued - (attempt 1)")
+

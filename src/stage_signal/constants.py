@@ -289,6 +289,37 @@ START_DETAIL_KEYS = (
     "variant",
 )
 
+# Frozen init bootstrap contract (SPEC §13.34)
+INIT_DETAIL_KEYS: tuple[str, ...] = ()
+
+INIT_IDLE_STATUS_FIELDS = (
+    "schema_version",
+    "project",
+    "stage_id",
+    "stage_name",
+    "state",
+    "attempt",
+    "session_id",
+    "pid",
+    "pid_token",
+    "model",
+    "variant",
+    "repo_path",
+    "git_branch",
+    "git_head",
+    "started_at",
+    "updated_at",
+    "heartbeat_at",
+    "heartbeat_note",
+    "result",
+    "error",
+    "artifacts",
+    "proof",
+    "notes",
+    "meta",
+)
+
+
 # Frozen schema_version 1 key sets (SPEC §13)
 STATUS_REQUIRED_KEYS = (
     "schema_version",
@@ -555,6 +586,8 @@ PUBLIC_EXPORTS: tuple[str, ...] = (
     "FAIL_IF_NEEDS_RECLAIM_ALLOWED_SOURCES",
     "HEARTBEAT_ALLOWED_SOURCES",
     "HEARTBEAT_DETAIL_KEYS",
+    "INIT_DETAIL_KEYS",
+    "INIT_IDLE_STATUS_FIELDS",
     "IllegalTransition",
     "LOCKS_DIRNAME",
     "LOCK_FILENAME",
