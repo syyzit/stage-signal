@@ -230,6 +230,13 @@ ARTIFACT_DETAIL_KEYS = (
     "label",
 )
 
+# Frozen note progress contract (SPEC §13.28)
+NOTE_ALLOWED_SOURCES = (
+    "running",
+)
+
+NOTE_DETAIL_KEYS: tuple[str, ...] = ()
+
 # Frozen schema_version 1 key sets (SPEC §13)
 STATUS_REQUIRED_KEYS = (
     "schema_version",
@@ -493,6 +500,8 @@ PUBLIC_EXPORTS: tuple[str, ...] = (
     "LOCKS_DIRNAME",
     "LOCK_FILENAME",
     "MAX_NOTES",
+    "NOTE_ALLOWED_SOURCES",
+    "NOTE_DETAIL_KEYS",
     "NOTE_ENTRY_KEYS",
     "NotInitialized",
     "PROOF_KEYS",
