@@ -20,6 +20,13 @@ import pytest
 from stage_signal import (
     ALLOWED_TRANSITIONS,
     ARTIFACT_ENTRY_KEYS,
+    CLEAR_TERMINAL_ALLOWED_SOURCES,
+    CLEAR_TERMINAL_ALWAYS_CLEARED_FIELDS,
+    CLEAR_TERMINAL_DETAIL_KEYS,
+    CLEAR_TERMINAL_IDLE_RESET_FIELDS,
+    CLEAR_TERMINAL_KEEP_STAGE_PRESERVED_FIELDS,
+    CLEAR_TERMINAL_MESSAGE_IDLE,
+    CLEAR_TERMINAL_MESSAGE_KEEP_STAGE,
     CLI_SUBCOMMANDS,
     DEFAULT_DIR_NAME,
     DEFAULT_MIRROR_DIRNAME,
@@ -3737,11 +3744,18 @@ def test_diagnose_doctor_json_summary_null_on_problems(
 
 
 def test_public_exports_constant_freeze() -> None:
-    """PUBLIC_EXPORTS matches the frozen 105-element tuple in SPEC §13.21."""
+    """PUBLIC_EXPORTS matches the frozen 112-element tuple in SPEC §13.21."""
     expected = (
         "ALLOWED_TRANSITIONS",
         "ARTIFACT_ENTRY_KEYS",
         "BadArgsError",
+        "CLEAR_TERMINAL_ALLOWED_SOURCES",
+        "CLEAR_TERMINAL_ALWAYS_CLEARED_FIELDS",
+        "CLEAR_TERMINAL_DETAIL_KEYS",
+        "CLEAR_TERMINAL_IDLE_RESET_FIELDS",
+        "CLEAR_TERMINAL_KEEP_STAGE_PRESERVED_FIELDS",
+        "CLEAR_TERMINAL_MESSAGE_IDLE",
+        "CLEAR_TERMINAL_MESSAGE_KEEP_STAGE",
         "CLI_SUBCOMMANDS",
         "CorruptStatusError",
         "DEFAULT_DIR_NAME",
@@ -3847,7 +3861,7 @@ def test_public_exports_constant_freeze() -> None:
     )
     assert PUBLIC_EXPORTS == expected
     assert isinstance(PUBLIC_EXPORTS, tuple)
-    assert len(PUBLIC_EXPORTS) == 105
+    assert len(PUBLIC_EXPORTS) == 112
     assert PUBLIC_EXPORTS == tuple(sorted(PUBLIC_EXPORTS))
     assert len(PUBLIC_EXPORTS) == len(set(PUBLIC_EXPORTS))
 
@@ -4417,3 +4431,254 @@ def test_supervise_exit_mapping_freeze(tmp_path: Path) -> None:
     assert SUPERVISE_SIGNAL_REASON_FORMAT.format(
         signame="SIGTERM", cmd="sleep 60"
     ) == "command terminated by SIGTERM: sleep 60"
+
+
+# =============================================================================
+# 22. Clear-terminal reset + audit contract freeze (SPEC §13.26, issue #146)
+# =============================================================================
+
+
+def test_clear_terminal_constants_freeze() -> None:
+    """Clear-terminal frozen constants match the exact values in SPEC §13.26.1."""
+    assert CLEAR_TERMINAL_ALLOWED_SOURCES == ("done", "blocked", "failed", "queued")
+    assert isinstance(CLEAR_TERMINAL_ALLOWED_SOURCES, tuple)
+    assert set(CLEAR_TERMINAL_ALLOWED_SOURCES) == set(TERMINAL_STATES) | {STATE_QUEUED}
+    assert STATE_RUNNING not in CLEAR_TERMINAL_ALLOWED_SOURCES
+
+    assert CLEAR_TERMINAL_IDLE_RESET_FIELDS == (
+        "stage_id",
+        "stage_name",
+        "session_id",
+        "pid",
+        "pid_token",
+        "started_at",
+        "heartbeat_at",
+        "heartbeat_note",
+        "artifacts",
+        "meta",
+    )
+    assert isinstance(CLEAR_TERMINAL_IDLE_RESET_FIELDS, tuple)
+
+    # --keep-stage preserves exactly the ten idle-reset fields (SPEC §13.26.1)
+    assert CLEAR_TERMINAL_KEEP_STAGE_PRESERVED_FIELDS == CLEAR_TERMINAL_IDLE_RESET_FIELDS
+    assert isinstance(CLEAR_TERMINAL_KEEP_STAGE_PRESERVED_FIELDS, tuple)
+
+    assert CLEAR_TERMINAL_ALWAYS_CLEARED_FIELDS == ("result", "error", "proof")
+    assert isinstance(CLEAR_TERMINAL_ALWAYS_CLEARED_FIELDS, tuple)
+    # Preserved and always-cleared sets are disjoint
+    assert not (
+        set(CLEAR_TERMINAL_KEEP_STAGE_PRESERVED_FIELDS)
+        & set(CLEAR_TERMINAL_ALWAYS_CLEARED_FIELDS)
+    )
+
+    assert CLEAR_TERMINAL_DETAIL_KEYS == ("keep_stage",)
+    assert isinstance(CLEAR_TERMINAL_DETAIL_KEYS, tuple)
+
+    assert CLEAR_TERMINAL_MESSAGE_IDLE == "cleared to idle queued"
+    assert CLEAR_TERMINAL_MESSAGE_KEEP_STAGE == "cleared to queued"
+    assert isinstance(CLEAR_TERMINAL_MESSAGE_IDLE, str)
+    assert isinstance(CLEAR_TERMINAL_MESSAGE_KEEP_STAGE, str)
+
+    # Allowed sources agree with the frozen transition matrix (SPEC §13.19)
+    assert set(allowed_source_states("clear-terminal")) == set(
+        CLEAR_TERMINAL_ALLOWED_SOURCES
+    )
+    assert set(allowed_source_states("clear_terminal")) == set(
+        CLEAR_TERMINAL_ALLOWED_SOURCES
+    )
+
+
+def test_clear_terminal_constants_exported_from_top_level() -> None:
+    """Clear-terminal freeze constants are exported from top-level stage_signal (SPEC §13.26)."""
+    import stage_signal
+
+    for name, expected in (
+        ("CLEAR_TERMINAL_ALLOWED_SOURCES", CLEAR_TERMINAL_ALLOWED_SOURCES),
+        ("CLEAR_TERMINAL_ALWAYS_CLEARED_FIELDS", CLEAR_TERMINAL_ALWAYS_CLEARED_FIELDS),
+        ("CLEAR_TERMINAL_DETAIL_KEYS", CLEAR_TERMINAL_DETAIL_KEYS),
+        ("CLEAR_TERMINAL_IDLE_RESET_FIELDS", CLEAR_TERMINAL_IDLE_RESET_FIELDS),
+        (
+            "CLEAR_TERMINAL_KEEP_STAGE_PRESERVED_FIELDS",
+            CLEAR_TERMINAL_KEEP_STAGE_PRESERVED_FIELDS,
+        ),
+        ("CLEAR_TERMINAL_MESSAGE_IDLE", CLEAR_TERMINAL_MESSAGE_IDLE),
+        ("CLEAR_TERMINAL_MESSAGE_KEEP_STAGE", CLEAR_TERMINAL_MESSAGE_KEEP_STAGE),
+    ):
+        assert hasattr(stage_signal, name), f"stage_signal missing {name!r}"
+        assert name in stage_signal.__all__, f"{name!r} not in stage_signal.__all__"
+        assert getattr(stage_signal, name) is expected
+
+
+def test_clear_terminal_allowed_sources_semantics(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Clear-terminal succeeds from terminal + queued, refuses running (SPEC §13.26.2).
+
+    Synchronous state-machine smoke with no sleeps/threads.
+    """
+    stage_dir = tmp_path / ".stage-signal"
+    stage = Stage(str(stage_dir))
+    stage.init(project="clear-terminal-sources-freeze")
+    status_file = stage_dir / "STATUS.json"
+
+    # queued abandon path succeeds (SPEC §4 idle vs queued, §13.26.2)
+    status = stage.clear_terminal()
+    assert status["state"] == STATE_QUEUED
+    assert status["stage_id"] is None
+    assert status["stage_name"] is None
+    assert stage.events()[-1]["type"] == "clear_terminal"
+
+    # each terminal source succeeds and lands on queued
+    for terminal_state, finisher in (
+        (STATE_DONE, lambda: stage.done(summary="finished")),
+        (STATE_BLOCKED, lambda: stage.blocked(reason="waiting")),
+        (STATE_FAILED, lambda: stage.fail(reason="broken")),
+    ):
+        stage.start(stage=f"source-{terminal_state}", pid=os.getpid())
+        finisher()
+        assert stage.status()["state"] == terminal_state
+        cleared = stage.clear_terminal()
+        assert cleared["state"] == STATE_QUEUED
+        assert cleared["stage_id"] is None
+        assert cleared["stage_name"] is None
+
+    # running is illegal: library raises, CLI exits 3, no mutation (SPEC §13.26.2)
+    stage.start(stage="running-guard", pid=os.getpid())
+    before = status_file.read_text(encoding="utf-8")
+    events_before = len(stage.events())
+    with pytest.raises(IllegalTransition):
+        stage.clear_terminal()
+    assert status_file.read_text(encoding="utf-8") == before
+    assert len(stage.events()) == events_before
+
+    capsys.readouterr()
+    assert main(["--dir", str(stage_dir), "clear-terminal"]) == EXIT_ILLEGAL_TRANSITION
+    assert "reclaim" in capsys.readouterr().err
+    assert status_file.read_text(encoding="utf-8") == before
+    assert len(stage.events()) == events_before
+
+    # queued abandon via CLI succeeds with exit 0 (covers the CLI path)
+    stage.done(summary="wrap up")
+    capsys.readouterr()
+    assert main(["--dir", str(stage_dir), "clear-terminal"]) == EXIT_OK
+    assert stage.status()["state"] == STATE_QUEUED
+
+
+def test_clear_terminal_idle_reset_field_set_freeze(tmp_path: Path) -> None:
+    """Default clear resets the frozen idle field set, preserves the rest (SPEC §13.26.3)."""
+    stage_dir = tmp_path / ".stage-signal"
+    stage = Stage(str(stage_dir))
+    stage.init(project="clear-terminal-idle-freeze")
+    stage.start(
+        stage="idle-step",
+        session_id="sess-idle-freeze",
+        pid=os.getpid(),
+        model="probe-model",
+        variant="probe-variant",
+    )
+    stage.note("sticky note")
+    stage.done(summary="idle probe finished")
+
+    cleared = stage.clear_terminal()
+    assert cleared["state"] == STATE_QUEUED
+    # Frozen idle-reset fields reach idle values
+    assert cleared["stage_id"] is None
+    assert cleared["stage_name"] is None
+    assert cleared["session_id"] is None
+    assert cleared["pid"] is None
+    assert cleared["pid_token"] is None
+    assert cleared["started_at"] is None
+    assert cleared["heartbeat_at"] is None
+    assert cleared["heartbeat_note"] is None
+    assert cleared["artifacts"] == []
+    assert cleared["meta"] == {}
+    # Always-cleared terminal payloads
+    for field in CLEAR_TERMINAL_ALWAYS_CLEARED_FIELDS:
+        assert cleared[field] is None, f"{field!r} not cleared on idle reset"
+    # Preserved-in-both-modes fields survive the reset
+    assert cleared["attempt"] == 1
+    assert [n["text"] for n in cleared["notes"]] == ["sticky note"]
+    assert cleared["model"] == "probe-model"
+    assert cleared["variant"] == "probe-variant"
+    assert cleared["repo_path"] is not None
+    assert "git_head" in cleared and "git_branch" in cleared
+
+
+def test_clear_terminal_keep_stage_preserved_vs_cleared_freeze(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """--keep-stage preserves identity fields, still clears payloads (SPEC §13.26.4)."""
+    stage_dir = tmp_path / ".stage-signal"
+    stage = Stage(str(stage_dir))
+    stage.init(project="clear-terminal-keep-freeze")
+    stage.start(stage="keep-step", session_id="sess-keep-freeze", pid=os.getpid())
+    stage.done(summary="keep probe finished")
+    before = stage.status()
+
+    kept = stage.clear_terminal(keep_stage=True)
+    assert kept["state"] == STATE_QUEUED
+    # Frozen preserved fields keep their pre-clear values
+    for field in CLEAR_TERMINAL_KEEP_STAGE_PRESERVED_FIELDS:
+        assert kept[field] == before[field], f"{field!r} not preserved with keep_stage"
+    assert kept["stage_id"] == "keep-step"
+    assert kept["stage_name"] == "keep-step"
+    assert kept["session_id"] == "sess-keep-freeze"
+    assert kept["pid"] == before["pid"]
+    assert kept["pid_token"] == before["pid_token"]
+    # Always-cleared terminal payloads are still cleared
+    for field in CLEAR_TERMINAL_ALWAYS_CLEARED_FIELDS:
+        assert kept[field] is None, f"{field!r} not cleared with keep_stage"
+
+    # CLI --keep-stage path preserves identity too
+    stage.start(stage="keep-cli-step", pid=os.getpid())
+    stage.blocked(reason="keep cli probe")
+    capsys.readouterr()
+    assert main(["--dir", str(stage_dir), "clear-terminal", "--keep-stage"]) == EXIT_OK
+    kept_cli = stage.status()
+    assert kept_cli["state"] == STATE_QUEUED
+    assert kept_cli["stage_id"] == "keep-cli-step"
+    assert kept_cli["stage_name"] == "keep-cli-step"
+    assert kept_cli["error"] is None
+
+
+def test_clear_terminal_audit_event_shape_freeze(tmp_path: Path) -> None:
+    """Each clear appends one clear_terminal event with frozen message + detail (SPEC §13.26.5)."""
+    stage_dir = tmp_path / ".stage-signal"
+    stage = Stage(str(stage_dir))
+    stage.init(project="clear-terminal-audit-freeze")
+
+    # Default idle clear
+    stage.start(stage="audit-step", pid=os.getpid())
+    stage.done(summary="audit probe")
+    events_before = len(stage.events())
+    stage.clear_terminal()
+    events = stage.events()
+    assert len(events) == events_before + 1
+    last = events[-1]
+    assert last["type"] == "clear_terminal"
+    assert last["type"] in EVENT_TYPES
+    assert last["state"] == STATE_QUEUED
+    assert last["message"] == CLEAR_TERMINAL_MESSAGE_IDLE == "cleared to idle queued"
+    assert set(last["detail"].keys()) == set(CLEAR_TERMINAL_DETAIL_KEYS)
+    assert last["detail"] == {"keep_stage": False}
+
+    # Keep-stage clear
+    stage.start(stage="audit-keep-step", pid=os.getpid())
+    stage.fail(reason="audit keep probe")
+    events_before = len(stage.events())
+    stage.clear_terminal(keep_stage=True)
+    events = stage.events()
+    assert len(events) == events_before + 1
+    last = events[-1]
+    assert last["type"] == "clear_terminal"
+    assert last["message"] == CLEAR_TERMINAL_MESSAGE_KEEP_STAGE == "cleared to queued"
+    assert set(last["detail"].keys()) == set(CLEAR_TERMINAL_DETAIL_KEYS)
+    assert last["detail"] == {"keep_stage": True}
+
+    # Queued abandon also audits exactly one event
+    events_before = len(stage.events())
+    stage.clear_terminal()
+    events = stage.events()
+    assert len(events) == events_before + 1
+    assert events[-1]["type"] == "clear_terminal"
+    assert events[-1]["detail"] == {"keep_stage": False}

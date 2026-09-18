@@ -18,6 +18,9 @@ from typing import Any, Optional, Sequence
 
 from .constants import (
     ALLOWED_TRANSITIONS,
+    CLEAR_TERMINAL_DETAIL_KEYS,
+    CLEAR_TERMINAL_MESSAGE_IDLE,
+    CLEAR_TERMINAL_MESSAGE_KEEP_STAGE,
     DEFAULT_MIRROR_DIRNAME,
     DEFAULT_STALE_THRESHOLD,
     SUPERVISE_DEFAULT_EVERY,
@@ -722,12 +725,12 @@ class Stage:
                 current["meta"] = {}
             return current
 
-        msg = "cleared to queued" if keep_stage else "cleared to idle queued"
+        msg = CLEAR_TERMINAL_MESSAGE_KEEP_STAGE if keep_stage else CLEAR_TERMINAL_MESSAGE_IDLE
         return self._mutate(
             "clear_terminal",
             _apply,
             message=msg,
-            detail={"keep_stage": keep_stage},
+            detail={CLEAR_TERMINAL_DETAIL_KEYS[0]: keep_stage},
         )
 
     # -- supervisor -------------------------------------------------------
