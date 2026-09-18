@@ -6,6 +6,8 @@ See `docs/RELEASE.md` for the release procedure.
 
 ## [Unreleased]
 
+- Refreshed README Status to name the SPEC freeze coverage through §13.41 (status/events/doctor/wait observers in §13.35–§13.38, `.orch` mirror in §13.39, concurrency/locking in §13.40, proof gate in §13.41) and to confirm the `0.1.6` soak with aligned action (`@v0.1.6`) and PyPI (`"0.1.6"`) pins, with no version bump (#184).
+
 - Fixed sample agent prompts in `examples/cli-orchestrator-loop.md` so `done` passes `--git-head $(git rev-parse HEAD)` after commits (omitting it inherits the start SHA per SPEC §13.30.3), and annotated non-committing smoke paths in `examples/orchestrator-smoke.sh`, `examples/queue-orchestrator-smoke.sh`, and `examples/multi-cli-loop.sh` (mock) that the inherit applies (#182).
 
 - Documented in README that `done` without `--git-head` inherits the `git_head` recorded at `start` (SPEC §13.30.3), that agents/orchestrators committing mid-stage SHOULD pass `--git-head $(git rev-parse HEAD)`, and that `main` carries SPEC contract freezes through §13.41 while the published package remains soaking at `0.1.6` with no version bump (#180).
