@@ -554,6 +554,7 @@ with Stage.open(".stage-signal") as s:   # scoped use; use Stage(dir) + context 
   `NotInitialized` (15), `CorruptStatusError` (1), `WaitTimeout` (14). Each carries `.exit_code`.
 - `state_exit_code(state) -> int` maps state → 10/11/12/13 (and `done` → 0).
 - The complete public instance method surface of `Stage` is frozen in §13.20 (`STAGE_PUBLIC_METHODS`).
+- The complete top-level public export inventory of the package is frozen in §13.21 (`PUBLIC_EXPORTS`).
 
 ## 12. Testing strategy
 
@@ -1378,6 +1379,220 @@ Under `schema_version: 1`, the `Stage` public method surface is strictly **addit
 - Existing method signatures MAY only evolve by adding backward-compatible optional arguments (with default values).
 - New public instance methods MAY be added in future minor or patch releases under schema version 1, expanding `STAGE_PUBLIC_METHODS`.
 - Embedders and orchestrators can rely on the continuous availability of all 15 methods across the schema version 1 lifecycle.
+
+
+### 13.21 Top-level public export inventory freeze (`PUBLIC_EXPORTS`)
+
+External orchestrators, Python embedders, typing tools, and harnesses interact with `stage-signal` programmatically by importing symbols directly from the top-level package namespace (`stage_signal`). Under `schema_version: 1`, the complete top-level public export inventory is frozen to guarantee that all supported symbols exist, retain their documented roles, and remain importable without silent deprecation or breakage.
+
+#### 13.21.1 Canonical export inventory
+
+`stage_signal` exports exactly 93 public symbols matching `stage_signal.__all__`. These symbols are structured into four canonical categories:
+
+##### 1. Classes (§11, §13.20)
+- `Stage`: The primary high-level lifecycle orchestrator, embedding context manager, and transition driver (§11, §13.20).
+- `StageStore`: The low-level atomic filesystem store managing status persistence, mirror writes, and cross-process file locks (§2, §8, §11, §13.20.4).
+
+##### 2. Exception hierarchy (§13.17)
+All six structured exceptions inherit from `StageError` and carry a normative `.exit_code` integer attribute matching §7 and §13.4:
+- `StageError`: Base exception for all library errors (`exit_code = 1`; §13.4, §13.17).
+- `BadArgsError`: Invalid arguments, unknown options, or malformed metadata (`exit_code = 2`; §13.4, §13.17).
+- `IllegalTransition`: Lifecycle state machine transition rule violation (`exit_code = 3`; §13.4, §13.17, §13.19).
+- `CorruptStatusError`: Unparseable or schema-invalid `STATUS.json` on disk (`exit_code = 1`; §13.2, §13.4, §13.17).
+- `WaitTimeout`: Synchronous wait deadline expired before satisfaction (`exit_code = 14`; §13.4, §13.11, §13.17).
+- `NotInitialized`: Stage directory does not exist or lacks initial state (`exit_code = 15`; §13.4, §13.17).
+
+##### 3. Top-level helper functions (§11, §13.19, §13.20.4)
+- `resolve_dir(explicit: Optional[str | os.PathLike] = None) -> Path`: Resolves stage directory path precedence (`--dir` > `STAGE_SIGNAL_DIR` > `.stage-signal`; §2, §13.14).
+- `render_status_md(status: dict[str, Any]) -> str`: Formats status dictionary into standard Markdown for `STATUS.md` human mirrors (§13.18).
+- `state_exit_code(state: str) -> int`: Maps lifecycle state string to observer exit code via `STATE_EXIT_CODES` (§7, §13.16).
+- `allowed_source_states(command: str) -> tuple[str, ...]`: Queries legal source states for a given command from `ALLOWED_TRANSITIONS` (§13.19).
+- `is_transition_allowed(from_state: str, command: str) -> bool`: Evaluates whether a `(from_state, command)` transition edge is legal (§13.19).
+- `transition_target(from_state: str, command: str) -> str`: Returns the target state for a legal transition edge or raises `ValueError` (§13.19).
+- `verify_proof(ref: Optional[str] = None) -> dict[str, Any]`: Verifies composition proof artifacts for `--require-proof` gates (§9, §13.10).
+- `wait_condition_met(status: dict[str, Any], *, want: str, needs_reclaim: bool = False) -> bool`: Evaluates whether wait criteria are satisfied (§6, §13.11).
+- `want_matches(want: str, state: str) -> bool`: Matches target state against wait condition strings (§6).
+- `write_status_mirror(stage_dir: Path, status: dict[str, Any], *, repo_root: Optional[Path] = None) -> Optional[Path]`: Best-effort repository-level `.orch/STATUS.md` and `.orch/DONE` mirror writer (§10).
+
+##### 4. Frozen constants and schema definitions (§13.2–§13.20)
+- **Version and schema:**
+  - `SCHEMA_VERSION`: Integer schema version (`1`; §3, §13.1).
+  - `__version__`: Library release version string.
+- **Lifecycle states and transitions:**
+  - `STATES`: Tuple of all 5 lifecycle states (`queued`, `running`, `done`, `blocked`, `failed`; §4, §13.12).
+  - Individual state strings: `STATE_QUEUED`, `STATE_RUNNING`, `STATE_DONE`, `STATE_BLOCKED`, `STATE_FAILED` (§4, §13.12).
+  - `TERMINAL_STATES`: Tuple of terminal states (`done`, `blocked`, `failed`; §4, §13.12).
+  - `ALLOWED_TRANSITIONS`: Normative transition matrix mapping `(from_state, command)` to target state (§13.19).
+- **Inventories:**
+  - `CLI_SUBCOMMANDS`: 15 frozen CLI subcommands (§13.15).
+  - `STAGE_PUBLIC_METHODS`: 15 frozen `Stage` public instance methods (§13.20).
+  - `PUBLIC_EXPORTS`: 93 frozen public symbols exported from top-level package namespace (§13.21).
+- **Exit codes:**
+  - `EXIT_CODES`: Tuple of all 10 standard exit codes (§7, §13.4).
+  - Individual exit codes: `EXIT_OK` (0), `EXIT_ERROR` (1), `EXIT_BAD_ARGS` (2), `EXIT_ILLEGAL_TRANSITION` (3), `EXIT_RUNNING` (10), `EXIT_BLOCKED` (11), `EXIT_FAILED` (12), `EXIT_QUEUED` (13), `EXIT_WAIT_TIMEOUT` (14), `EXIT_NOT_INITIALIZED` (15) (§7, §13.4).
+  - `STATE_EXIT_CODES`: Dictionary mapping states to observer exit codes (§7, §13.16).
+- **Filesystem layout and environment:**
+  - Layout paths: `DEFAULT_DIR_NAME` (`.stage-signal`), `STATUS_FILENAME` (`STATUS.json`), `STATUS_MD_FILENAME` (`STATUS.md`), `EVENTS_FILENAME` (`events.jsonl`), `LOCKS_DIRNAME` (`locks`), `LOCK_FILENAME` (`stage.lock`), `DEFAULT_MIRROR_DIRNAME` (`.orch`) (§2, §10, §13.13).
+  - Environment variables: `ENV_DIR`, `ENV_PROJECT`, `ENV_PROOF_REF`, `ENV_STATUS_MIRROR`, `ENV_VARS` (§13.14).
+- **STATUS.json schema keys:**
+  - `STATUS_REQUIRED_KEYS`: 23 normative required on-disk keys (§3, §13.2).
+  - `STATUS_JSON_KEYS`: Normative + runtime keys emitted by `status --json` (§13.3.1).
+  - `ARTIFACT_ENTRY_KEYS`: Entry keys for `artifacts[]` (`path`, `label`, `added_at`; §3, §13.7).
+  - `NOTE_ENTRY_KEYS`: Entry keys for `notes[]` (`text`, `added_at`; §3, §13.7).
+  - `MAX_NOTES`: Maximum retained note records (200; §3, §13.7, §13.14).
+  - `RESULT_KEYS`: Keys for `result` object (`summary`, `git_head`, `finished_at`; §3, §13.9).
+  - `ERROR_KEYS`: Keys for `error` object (`reason`, `kind`, `finished_at`; §3, §13.9).
+  - `ERROR_KINDS`: Allowed error kind strings (`blocked`, `failed`; §3, §13.9).
+  - `PROOF_KEYS`: Keys for `proof` object (`tool`, `ref`, `verified`; §9, §13.10).
+  - `PROOF_REQUIRED_KEYS`: Alias for `PROOF_KEYS` (§13.10).
+  - `PROOF_VERIFIED_VALUES`: Allowed values for proof verification (`None`, `"file"`, `"verify"`; §9, §13.10).
+- **Audit events:**
+  - `EVENT_TYPES`: 9 frozen audit event type strings (§5, §13.5).
+  - `EVENT_RECORD_KEYS`: Required keys on each event object in `events.jsonl` (§5, §13.6).
+  - `EVENTS_DEFAULT_TAIL`: CLI default tail count (20; §5, §13.6, §13.14).
+- **Diagnostics, warnings, and defaults:**
+  - `DOCTOR_JSON_KEYS`: Required keys in `doctor --json` payload (§13.3.2).
+  - `WARNING_CODES`: Frozen warning codes (`STALE_HEARTBEAT`, `DEAD_PID`, `UNPARSEABLE_HEARTBEAT`; §13.8).
+  - Individual warning code constants: `WARNING_CODE_DEAD_PID`, `WARNING_CODE_STALE_HEARTBEAT`, `WARNING_CODE_UNPARSEABLE_HEARTBEAT` (§13.8).
+  - `WARNING_KEYS`: Required keys in doctor warning objects (`code`, `message`, `detail`; §13.8).
+  - `WARNING_REQUIRED_KEYS`: Alias for `WARNING_KEYS` (§13.8).
+  - `DOCTOR_WARNING_KEYS`, `DOCTOR_SUMMARY_RECLAIM_NEEDED`, `DOCTOR_SUMMARY_OK_FORMAT`, and helper `doctor_summary_ok` (§13.22); also `DOCTOR_WARNING_KEYS`: Alias for `WARNING_KEYS` (§13.8).
+  - `DEFAULT_STALE_THRESHOLD`: Default stale heartbeat threshold in seconds (300.0; §4, §13.8, §13.14).
+- **Wait outcomes and defaults:**
+  - `WAIT_JSON_KEYS`: Required keys in `wait --json` payload (§13.3.3).
+  - `WAIT_OUTCOMES`: Frozen wait outcome enums (`"met"`, `"mismatch"`, `"timeout"`; §13.11).
+  - Individual wait outcomes: `WAIT_OUTCOME_MET`, `WAIT_OUTCOME_MISMATCH`, `WAIT_OUTCOME_TIMEOUT` (§13.11).
+  - Timing defaults: `WAIT_DEFAULT_TIMEOUT` (3600.0), `WAIT_DEFAULT_POLL` (5.0) (§6, §13.11, §13.14).
+- **Human mirror headings:**
+  - `STATUS_MD_TITLE`: Document title heading (`# stage-signal STATUS`; §13.18).
+  - `STATUS_MD_REQUIRED_HEADINGS`: 8 required section headings (§13.18).
+  - `STATUS_MD_OPTIONAL_HEADINGS`: 3 conditional headings (`heartbeat_note:`, `result:`, `error:`; §13.18).
+  - `STATUS_MD_HEADINGS`: Union of required and optional headings (§13.18).
+- **Supervision:**
+  - `SUPERVISE_DEFAULT_EVERY`: Child supervision heartbeat interval (60.0; §4, §6, §13.14).
+
+#### 13.21.2 Frozen structure export (`PUBLIC_EXPORTS`)
+
+The single source of truth for the canonical top-level public export inventory is defined in `stage_signal.constants` as a sorted tuple and re-exported from `stage_signal` and `__all__`:
+
+```python
+PUBLIC_EXPORTS: tuple[str, ...] = (
+    "ALLOWED_TRANSITIONS",
+    "ARTIFACT_ENTRY_KEYS",
+    "BadArgsError",
+    "CLI_SUBCOMMANDS",
+    "CorruptStatusError",
+    "DEFAULT_DIR_NAME",
+    "DEFAULT_MIRROR_DIRNAME",
+    "DEFAULT_STALE_THRESHOLD",
+    "DOCTOR_JSON_KEYS",
+    "DOCTOR_SUMMARY_OK_FORMAT",
+    "DOCTOR_SUMMARY_RECLAIM_NEEDED",
+    "DOCTOR_WARNING_KEYS",
+    "ENV_DIR",
+    "ENV_PROJECT",
+    "ENV_PROOF_REF",
+    "ENV_STATUS_MIRROR",
+    "ENV_VARS",
+    "ERROR_KEYS",
+    "ERROR_KINDS",
+    "EVENTS_DEFAULT_TAIL",
+    "EVENTS_FILENAME",
+    "EVENT_RECORD_KEYS",
+    "EVENT_TYPES",
+    "EXIT_BAD_ARGS",
+    "EXIT_BLOCKED",
+    "EXIT_CODES",
+    "EXIT_ERROR",
+    "EXIT_FAILED",
+    "EXIT_ILLEGAL_TRANSITION",
+    "EXIT_NOT_INITIALIZED",
+    "EXIT_OK",
+    "EXIT_QUEUED",
+    "EXIT_RUNNING",
+    "EXIT_WAIT_TIMEOUT",
+    "IllegalTransition",
+    "LOCKS_DIRNAME",
+    "LOCK_FILENAME",
+    "MAX_NOTES",
+    "NOTE_ENTRY_KEYS",
+    "NotInitialized",
+    "PROOF_KEYS",
+    "PROOF_REQUIRED_KEYS",
+    "PROOF_VERIFIED_VALUES",
+    "PUBLIC_EXPORTS",
+    "RESULT_KEYS",
+    "SCHEMA_VERSION",
+    "STAGE_PUBLIC_METHODS",
+    "STATES",
+    "STATE_BLOCKED",
+    "STATE_DONE",
+    "STATE_EXIT_CODES",
+    "STATE_FAILED",
+    "STATE_QUEUED",
+    "STATE_RUNNING",
+    "STATUS_FILENAME",
+    "STATUS_JSON_KEYS",
+    "STATUS_MD_FILENAME",
+    "STATUS_MD_HEADINGS",
+    "STATUS_MD_OPTIONAL_HEADINGS",
+    "STATUS_MD_REQUIRED_HEADINGS",
+    "STATUS_MD_TITLE",
+    "STATUS_REQUIRED_KEYS",
+    "SUPERVISE_DEFAULT_EVERY",
+    "Stage",
+    "StageError",
+    "StageStore",
+    "TERMINAL_STATES",
+    "WAIT_DEFAULT_POLL",
+    "WAIT_DEFAULT_TIMEOUT",
+    "WAIT_JSON_KEYS",
+    "WAIT_OUTCOMES",
+    "WAIT_OUTCOME_MET",
+    "WAIT_OUTCOME_MISMATCH",
+    "WAIT_OUTCOME_TIMEOUT",
+    "WARNING_CODES",
+    "WARNING_CODE_DEAD_PID",
+    "WARNING_CODE_STALE_HEARTBEAT",
+    "WARNING_CODE_UNPARSEABLE_HEARTBEAT",
+    "WARNING_KEYS",
+    "WARNING_REQUIRED_KEYS",
+    "WaitTimeout",
+    "__version__",
+    "allowed_source_states",
+    "doctor_summary_ok",
+    "is_transition_allowed",
+    "render_status_md",
+    "resolve_dir",
+    "state_exit_code",
+    "transition_target",
+    "verify_proof",
+    "wait_condition_met",
+    "want_matches",
+    "write_status_mirror",
+)
+```
+
+#### 13.21.3 `__all__` set-equality and importability contract
+
+Every symbol enumerated in `PUBLIC_EXPORTS`:
+1. **`__all__` equivalence:** `set(PUBLIC_EXPORTS) == set(stage_signal.__all__)` MUST hold exactly. No public export may exist on `stage_signal` without membership in `PUBLIC_EXPORTS`, and no symbol in `PUBLIC_EXPORTS` may be omitted from `__all__`.
+2. **Direct importability:** Every name in `PUBLIC_EXPORTS` MUST be directly accessible via attribute lookup (`getattr(stage_signal, name)`) and standard Python import mechanisms (`from stage_signal import <name>`).
+3. **No private symbol leakage:** Names prefixed with `_` are strictly prohibited from `PUBLIC_EXPORTS`, with the sole normative exception of `__version__`.
+
+#### 13.21.4 Cross-links
+
+- **§11 (Library API):** Documents library usage, context managers, and top-level helper functions.
+- **§13.17 (Exception hierarchy):** Formally defines the exception class tree and exit code mapping.
+- **§13.20 (Stage public method surface):** Formally defines and freezes the 15 instance methods of `Stage` (`STAGE_PUBLIC_METHODS`).
+
+#### 13.21.5 Additive-only evolution policy
+
+Under `schema_version: 1`, the top-level public export inventory is strictly **additive-only** (§13.1):
+- Existing symbols in `PUBLIC_EXPORTS` MUST NOT be removed, renamed, or relocated.
+- Existing symbol types, semantics, and contracts MUST NOT undergo breaking changes.
+- Future minor or patch releases under schema version 1 MAY add new classes, helper functions, or frozen constants to `stage_signal`, expanding `PUBLIC_EXPORTS` and `__all__`.
+- External orchestrators, embedders, and typing definitions can safely rely on the uninterrupted presence of all 93 public exports throughout the entire lifecycle of `schema_version: 1`.
 
 ### 13.22 Doctor human summary strings freeze (`DOCTOR_SUMMARY_RECLAIM_NEEDED`, `DOCTOR_SUMMARY_OK_FORMAT`)
 
