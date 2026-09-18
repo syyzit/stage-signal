@@ -3356,10 +3356,6 @@ Under `schema_version: 1`, the doctor / diagnose read contract is strictly **add
 `Stage.wait` / `stage-signal wait [--state <choice>] [--needs-reclaim] [--timeout SEC] [--poll SEC] [--json]` (§6, §11, §13.20) is the polling observer: it polls `STATUS.json` until the requested target state or reclaim condition is met, early-terminating on unexpected terminal mismatch or raising `WaitTimeout` (exit 14) on deadline expiry, without mutating stage state. Under `schema_version: 1`, the poll loop defaults (`WAIT_DEFAULT_TIMEOUT`, `WAIT_DEFAULT_POLL`), argument validation and mutual exclusivity, exception-to-exit-code mapping, machine-readable JSON schema (`WAIT_JSON_KEYS`, `WAIT_OUTCOMES`), human messages, and observer exit table via `STATE_EXIT_CODES` are frozen so orchestrators can reliably synchronize process lifecycles and pipeline stages. This section introduces **no new constants**: the timing defaults are frozen in §13.14 (`WAIT_DEFAULT_TIMEOUT`, `WAIT_DEFAULT_POLL`), the target vocabulary and predicate helpers in §13.23 (`WAIT_CHOICES`, `WAIT_WANT_NEEDS_RECLAIM`, `want_matches`, `wait_condition_met`), the outcomes enum in §13.11 (`WAIT_OUTCOMES`), the JSON schema in §13.3.3 (`WAIT_JSON_KEYS`), the observer exit mapping in §13.16 (`STATE_EXIT_CODES`), the timeout error in §13.17 (`WaitTimeout`, `EXIT_WAIT_TIMEOUT`), and the base exit codes in §13.4 (`EXIT_CODES`). No audit event is emitted by a wait invocation: there is no `wait` event type in `EVENT_TYPES` (§13.5), and `STATUS.md` and `.orch/` mirrors are never rewritten by wait.
 
 #### 13.38.1 Frozen constants and exact values (existing symbols only)
-
-The single sources of truth are the already-frozen, already-exported symbols (defined in `stage_signal.constants`, exported from `stage_signal` and `__all__`, inventoried in `PUBLIC_EXPORTS`; §13.21):
-
-```python
 WAIT_DEFAULT_TIMEOUT = 3600.0
 WAIT_DEFAULT_POLL = 5.0
 WAIT_CHOICES = ("done", "blocked", "failed", "terminal")
@@ -3517,6 +3513,119 @@ Under `schema_version: 1`, the wait observer and poll loop contract is strictly 
 - No new event type is introduced for wait invocations: observing stage transitions remains event-free (§13.5).
 - New payload keys MAY be added in minor or patch releases only as additional trailing entries of `WAIT_JSON_KEYS` (with `PUBLIC_EXPORTS` growing additively); existing frozen keys and values MUST keep their exact values and order.
 - Readers and orchestrators MUST tolerate unknown future wait payload keys and unknown future outcome values without failing.
+
+
+### 13.39 Optional `.orch` mirror write contract freeze (`write_status_mirror`)
+
+`write_status_mirror` / `--write-status-mirror` / `STAGE_SIGNAL_STATUS_MIRROR` (§10, §13.14) is the optional repository-level `.orch/` convenience mirror: on mirror-eligible mutations only, it best-effort rewrites `<repo>/.orch/STATUS.md` from the freshly written STATUS snapshot and touches `<repo>/.orch/DONE` when the new state is `done`. Under `schema_version: 1`, the honoring-command set, the tri-state opt-in (`None` / `True` / `False`), the repo-root resolution, the minimal mirror content, the DONE-on-`done`-only rule, and the best-effort never-raises contract are frozen so orchestrators can rely on the mirror as a non-normative convenience without ever treating it as source of truth. This section introduces **no new constants and no new exports**: the writer is already exported as `write_status_mirror`, the directory name as `DEFAULT_MIRROR_DIRNAME` (§13.13), and the opt-in as `ENV_STATUS_MIRROR` / `ENV_VARS` (§13.14). `STATUS.json` remains the sole normative state (§3); the in-dir `.stage-signal/STATUS.md` human mirror keeps its own frozen headings (§13.18), which are not redefined here.
+
+#### 13.39.1 Frozen constants and exact values (existing symbols only)
+DEFAULT_MIRROR_DIRNAME = ".orch"
+ENV_STATUS_MIRROR = "STAGE_SIGNAL_STATUS_MIRROR"
+ENV_VARS = (ENV_DIR, ENV_PROJECT, ENV_PROOF_REF, ENV_STATUS_MIRROR)
+```
+
+```python
+def write_status_mirror(
+    stage_dir: Path, status: dict[str, Any], *, repo_root: Optional[Path] = None
+) -> Optional[Path]:
+    """Best-effort status mirror into `<repo>/.orch/` (SPEC §10). Never raises."""
+```
+
+- `DEFAULT_MIRROR_DIRNAME` (`".orch"`; §13.13): the directory name appended to the resolved repo root. The mirror files are always `<root>/.orch/STATUS.md` and (on `done` only) `<root>/.orch/DONE`.
+- `ENV_STATUS_MIRROR` (`"STAGE_SIGNAL_STATUS_MIRROR"`; §13.14): the environment opt-in consumed only when no explicit tri-state value is given (§13.39.2).
+- `write_status_mirror(stage_dir, status, *, repo_root=None) -> Optional[Path]`: the best-effort writer. Returns the mirrored `STATUS.md` path on success, or `None` when skipped or failed (never raises; §13.39.5).
+- `PUBLIC_EXPORTS` stays at 134 symbols: this section adds no entry (§13.21).
+
+#### 13.39.2 Honoring commands and the tri-state opt-in
+
+Only mirror-eligible state-transition commands honor the flag / keyword / env:
+
+| Command | Library keyword | CLI flag | Mirror gate |
+|---------|----------------|----------|-------------|
+| `start` | `start(..., write_status_mirror=None)` | `start --write-status-mirror` | `_mutate("start", ..., do_mirror=...)` |
+| `done` (incl. `--accept-failure`) | `done(..., write_status_mirror=None)` | `done --write-status-mirror` | `_mutate("done", ..., do_mirror=...)` |
+| `blocked` | `blocked(reason, *, write_status_mirror=None)` | `blocked --write-status-mirror` | `_mutate("blocked", ..., do_mirror=...)` |
+| `fail` (incl. `--if-dead-pid` / `--if-needs-reclaim`) | `fail(reason, *, ..., write_status_mirror=None)` | `fail --write-status-mirror` | `_mutate("failed", ..., do_mirror=...)` |
+| `reclaim` | `reclaim(reason, *, keep_failed=False, kill=False, write_status_mirror=None)` | `reclaim --write-status-mirror` | mirrors the intermediate `failed` snapshot only (§13.39.4) |
+| `supervise` | `supervise(cmd, *, ..., write_status_mirror=None, ...)` | `supervise --write-status-mirror` | passthrough to the terminal `done` / `fail` (§13.39.4) |
+
+- **Tri-state:** each keyword and each CLI flag defaults to `None` (unset). The resolver (`_status_mirror_enabled(explicit)` in `src/stage_signal/stage.py`) is frozen:
+  - `explicit is True` → mirroring enabled, regardless of the environment.
+  - `explicit is False` → mirroring disabled, even when `STAGE_SIGNAL_STATUS_MIRROR` is set (library-only; the CLI `store_true` flag cannot produce `False` and there is no `--no-write-status-mirror`).
+  - `explicit is None` → the environment decides: enabled exactly when `STAGE_SIGNAL_STATUS_MIRROR` stripped and lowercased is one of `"1"`, `"true"`, `"yes"`, `"on"`; anything else (unset, empty, `"0"`, `"false"`, `"no"`, `"off"`, other text) means disabled.
+- **CLI shape:** every honoring subcommand declares `--write-status-mirror` as `action="store_true", default=None`, so flag absent is `None` (env decides) and flag present is `True`. The flag is accepted only on the six subcommands above.
+- **Non-mirroring commands:** `init`, `heartbeat`, `note`, `artifact`, `status`, `events`, `wait`, `clear-terminal`, and `doctor` accept no `write_status_mirror` keyword and no `--write-status-mirror` flag, and never write to `.orch/` — even when `STAGE_SIGNAL_STATUS_MIRROR` is set. In particular `note` never triggers a mirror write (§13.28), `heartbeat` never mirrors (§13.27), and the pure observers (`status`, `events`, `diagnose`) never mutate `STATUS.md` or `.orch/` (§13.35, §13.36, §13.37).
+
+#### 13.39.3 Repo-root resolution and minimal mirror content
+
+From the exact implementation in `write_status_mirror` (`src/stage_signal/stage.py`):
+
+```python
+root = repo_root
+if root is None:
+    # <repo>/.stage-signal -> <repo>
+    if stage_dir.name == ".stage-signal" and stage_dir.parent.is_dir():
+        root = stage_dir.parent
+    else:
+        root = Path.cwd()
+mirror = root / DEFAULT_MIRROR_DIRNAME
+mirror.mkdir(parents=True, exist_ok=True)
+lines = [
+    "# stage-signal status mirror",
+    f"state: {status.get('state')}",
+    f"stage: {status.get('stage_name')}",
+    f"stage_id: {status.get('stage_id')}",
+    f"project: {status.get('project')}",
+    f"updated: {status.get('updated_at')}",
+    f"source: stage-signal {stage_dir}",
+    "",
+]
+(mirror / "STATUS.md").write_text("\n".join(lines), encoding="utf-8")
+if status.get("state") == STATE_DONE:
+    (mirror / "DONE").write_text(
+        f"done: {status.get('stage_name')} "
+        f"{status.get('updated_at')}\n",
+        encoding="utf-8",
+    )
+return mirror / "STATUS.md"
+```
+
+- **Repo root:** an explicit `repo_root=` argument wins when given (library-only; the CLI and `Stage` methods never pass it, so they always use the default). Otherwise, when the stage dir is literally named `.stage-signal` (the `DEFAULT_DIR_NAME`; §13.13) with an existing parent directory, the parent is the root (`<repo>/.stage-signal` → `<repo>`); in every other case (custom dir names, missing parents) the root is the process `Path.cwd()` at call time.
+- **Minimal content:** `<root>/.orch/STATUS.md` contains exactly these lines in order: the `# stage-signal status mirror` title, `state:`, `stage:`, `stage_id:`, `project:`, `updated:`, and the `source: stage-signal <stage_dir>` provenance line, followed by one trailing blank line. Values render via `status.get(...)` (missing keys render as `None`, never raise). The `.orch/STATUS.md` headings are intentionally minimal and MUST NOT be confused with the in-dir `.stage-signal/STATUS.md` headings frozen in §13.18 — §13.18 is not redefined here and its `STATUS_MD_REQUIRED_HEADINGS` do not apply to the `.orch/` mirror.
+- **DONE-on-`done`-only:** `<root>/.orch/DONE` is written if and only if the freshly written snapshot has `state == "done"` (`STATE_DONE`; §13.12), with content `done: <stage_name> <updated_at>\n`. Non-`done` mirrors (`running`, `blocked`, `failed`, `queued`) rewrite `STATUS.md` but never create, modify, or delete `DONE`. A `DONE` file left over from an earlier `done` is never removed by later non-`done` mirrors.
+- **Snapshot source:** callers always pass the freshly written in-lock snapshot (`new_status` / `failed`), so the mirror reflects the post-mutation `state`, `stage_name`, `stage_id`, `project`, and `updated_at` of the `STATUS.json` just persisted.
+
+#### 13.39.4 Per-command mirror points
+
+- **`_mutate` gate (`start` / `done` / `blocked` / `fail`):** after `write_status`, `append_event`, and `write_status_md`, the helper mirrors only when `_status_mirror_enabled(do_mirror)` is true **and** `event_type in ("start", "done", "blocked", "failed")`. The `event_type` is the audit event just appended (`"start"` for `start`, `"done"` for `done` including `--accept-failure`, `"blocked"` for `blocked`, `"failed"` for `fail` including the `--if-dead-pid` / `--if-needs-reclaim` guards) — so only successful mutations mirror; rejected transitions (exit 3) and proof-gate refusals mirror nothing and mutate nothing. Non-transition events (`heartbeat`, `note`, `artifact`, `clear_terminal`, `init`) can never pass this gate even if mirroring is enabled.
+- **`reclaim`:** mirrors the intermediate `failed` snapshot (event `"failed"`, `detail: {"reclaim": True, "keep_failed": ...}`) when enabled. With `--keep-failed` the stage stays `failed` and the mirror stands as written; without `--keep-failed` the subsequent atomic clear to idle `queued` (event `"clear_terminal"`) performs no second mirror write, so the `.orch/` mirror keeps showing the `failed` snapshot until the next mirror-eligible command. No `DONE` file is touched because the mirrored state is never `done`.
+- **`supervise`:** performs no mirror write of its own (the child-PID adoption heartbeat is a direct locked store write with no mirror). The `write_status_mirror` value is passed through to the terminal `self.done(...)` (exit 0) or `self.fail(...)` (non-zero exit, command-not-found, permission-denied, or OS error), so a supervised run mirrors exactly once, at its terminal transition, with the same tri-state semantics.
+- **Exit codes:** mirroring never changes the mutation exit contract: successful transitions still exit 0 (`EXIT_OK`; §7) whether the mirror is enabled, disabled, succeeded, or failed.
+
+#### 13.39.5 Best-effort, never-raises
+
+- `write_status_mirror` wraps its entire body in `try/except Exception: return None`: filesystem failures (unwritable root, `mkdir` errors, encoding errors), broken snapshots, and any other exception yield `None` instead of raising. The `Optional[Path]` return is the only success signal — callers MUST treat `None` as "mirror skipped or failed", never as a stage failure.
+- Mutation callers (`_mutate` and `reclaim`) translate `None` into exactly one `stderr` warning line, `stage-signal: warning: status mirror failed`, and continue: the freshly written STATUS, its audit event, and the returned snapshot are unaffected, and the CLI still exits 0.
+- Because the mirror writer takes no lock and runs inside the caller's exclusive-lock section on the already-persisted snapshot, a mirror failure can never corrupt `STATUS.json`, `events.jsonl`, or the in-dir `STATUS.md`.
+
+#### 13.39.6 Cross-links
+
+- **§10 (optional `.orch` status mirror):** the user-facing mirror definition (honoring commands, DONE-on-`done`, warn-but-never-fail) frozen here; `docs/COMPOSE.md` Appendix carries the same summary by reference.
+- **§13.13 (on-disk layout path constants freeze):** `DEFAULT_MIRROR_DIRNAME` (`".orch"`) reused as the mirror directory name; the stage-dir-name branch of root resolution keys on `DEFAULT_DIR_NAME` (`".stage-signal"`).
+- **§13.14 (environment and timing defaults freeze):** `ENV_STATUS_MIRROR` / `ENV_VARS` opt-in names and the `--write-status-mirror` / `write_status_mirror=True` precedence reused here.
+- **§13.18 (STATUS.md human mirror freeze):** the in-dir `.stage-signal/STATUS.md` `STATUS_MD_REQUIRED_HEADINGS` / `STATUS_MD_TITLE` contract is distinct and unchanged; this section neither redefines its headings nor extends them to `.orch/STATUS.md`.
+- **§13.20 (Stage method surface freeze):** the six `write_status_mirror=None`-bearing signatures (`start`, `done`, `blocked`, `fail`, `reclaim`, `supervise`) and their CLI equivalences; the remaining methods take no such parameter.
+- **§13.21 (Top-level public export inventory):** no addition — `write_status_mirror`, `DEFAULT_MIRROR_DIRNAME`, `ENV_STATUS_MIRROR`, and `ENV_VARS` are already inventoried; `PUBLIC_EXPORTS` stays at 134 symbols.
+
+#### 13.39.7 Additive-only evolution policy
+
+Under `schema_version: 1`, the `.orch` mirror write contract is strictly **additive-only** (§13.1):
+
+- The honoring-command set, the `None` / `True` / `False` tri-state with the exact `"1" | "true" | "yes" | "on"` env set, the repo-root resolution order (explicit `repo_root` > `.stage-signal`-parent > `cwd`), the 7-line minimal `STATUS.md` content with its `source:` provenance line, the DONE-if-and-only-if-`done` rule, the mirror-once-per-eligible-mutation points (including reclaim-mirrors-`failed`-only), the `None`-means-failed return, the single-`stderr`-warning caller behavior, and the never-raises best-effort guarantee MUST NOT be removed, renamed, reworded, or change semantic meaning.
+- New mirror-eligible commands, new mirror content lines, or new env truthy spellings MAY be added in minor or patch releases only additively (existing lines keep their exact order and format; existing truthy values keep working); readers of `.orch/STATUS.md` MUST tolerate unknown extra lines without failing, mirroring the §13.18 tolerance rule.
+- `STATUS.json` stays the sole normative state: orchestrators MUST NOT treat the `.orch/` mirror as authoritative and MUST fall back to `status --json` (§13.35) when the mirror is absent or stale.
+
 
 
 
