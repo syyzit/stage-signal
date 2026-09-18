@@ -8500,3 +8500,485 @@ def test_doctor_read_cross_links_freeze() -> None:
     assert len(PUBLIC_EXPORTS) == 134
 
 
+# ---------------------------------------------------------------------------
+# §13.38: Wait observer and poll loop contract freeze
+# ---------------------------------------------------------------------------
+
+
+def test_wait_frozen_constants_and_defaults() -> None:
+    """WAIT_DEFAULT_TIMEOUT, WAIT_DEFAULT_POLL, WAIT_CHOICES, WAIT_JSON_KEYS, WAIT_OUTCOMES freeze (SPEC §13.38.1)."""
+    assert WAIT_DEFAULT_TIMEOUT == 3600.0
+    assert isinstance(WAIT_DEFAULT_TIMEOUT, float)
+
+    assert WAIT_DEFAULT_POLL == 5.0
+    assert isinstance(WAIT_DEFAULT_POLL, float)
+
+    assert WAIT_CHOICES == ("done", "blocked", "failed", "terminal")
+    assert isinstance(WAIT_CHOICES, tuple)
+    assert len(WAIT_CHOICES) == 4
+
+    assert WAIT_WANT_NEEDS_RECLAIM == "needs_reclaim"
+    assert isinstance(WAIT_WANT_NEEDS_RECLAIM, str)
+
+    assert WAIT_JSON_KEYS == (
+        "outcome",
+        "wanted",
+        "observed_state",
+        "state",
+        "exit_code",
+        "timeout",
+        "stage_id",
+        "dir",
+        "reason",
+        "needs_reclaim",
+        "status",
+    )
+    assert isinstance(WAIT_JSON_KEYS, tuple)
+    assert len(WAIT_JSON_KEYS) == 11
+    assert len(set(WAIT_JSON_KEYS)) == 11
+
+    assert WAIT_OUTCOMES == ("met", "mismatch", "timeout")
+    assert isinstance(WAIT_OUTCOMES, tuple)
+    assert len(WAIT_OUTCOMES) == 3
+
+    assert WAIT_OUTCOME_MET == "met"
+    assert WAIT_OUTCOME_MISMATCH == "mismatch"
+    assert WAIT_OUTCOME_TIMEOUT == "timeout"
+
+    assert EXIT_WAIT_TIMEOUT == 14
+    assert WaitTimeout.exit_code == EXIT_WAIT_TIMEOUT == 14
+
+
+def test_wait_pure_shared_lock_no_mutation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Stage.wait() is a pure non-mutating shared-lock read with detached deep-copy snapshots (SPEC §13.38.2).
+
+    Synchronous test with zero sleeps/threads.
+    """
+    import contextlib
+
+    from stage_signal.store import StageStore
+
+    stage_dir = tmp_path / ".stage-signal"
+    stage = Stage(str(stage_dir))
+    stage.init(project="wait-pure-read-freeze")
+    stage.start(stage="pure-step", pid=os.getpid())
+    stage.done(summary="wait pure done")
+
+    status_file = stage_dir / STATUS_FILENAME
+    status_md_file = stage_dir / "STATUS.md"
+    events_file = stage_dir / EVENTS_FILENAME
+    raw_status_before = status_file.read_bytes()
+    raw_md_before = status_md_file.read_bytes()
+    raw_events_before = events_file.read_bytes()
+    n_events_before = len(stage.events())
+
+    # Record lock modes requested during wait: must be shared (exclusive=False)
+    lock_modes: list[bool] = []
+    orig_locked = StageStore.locked
+
+    @contextlib.contextmanager
+    def _recording_locked(self: StageStore, exclusive: bool = True):  # type: ignore[no-untyped-def]
+        lock_modes.append(exclusive)
+        with orig_locked(self, exclusive=exclusive):
+            yield
+
+    monkeypatch.setattr(StageStore, "locked", _recording_locked)
+
+    st = stage.wait("done")
+
+    assert lock_modes, "wait() must enter store.locked()"
+    assert all(mode is False for mode in lock_modes), f"wait() must use shared lock, got {lock_modes!r}"
+
+    # Pure read: stage files and event counts unchanged
+    assert status_file.read_bytes() == raw_status_before
+    assert status_md_file.read_bytes() == raw_md_before
+    assert events_file.read_bytes() == raw_events_before
+    assert len(stage.events()) == n_events_before
+
+    # Snapshot shape and detached guarantee
+    for key in STATUS_JSON_KEYS:
+        assert key in st, f"guaranteed status key {key!r} missing from wait snapshot"
+    assert st["state"] == STATE_DONE
+    assert st["result"]["summary"] == "wait pure done"
+
+    st["state"] = "TAMPERED"
+    st["result"]["summary"] = "TAMPERED"
+    assert status_file.read_bytes() == raw_status_before
+    assert stage.status()["state"] == STATE_DONE
+
+
+def test_wait_argument_validation_and_mutual_exclusivity(tmp_path: Path) -> None:
+    """Invalid targets, mutual exclusivity of --needs-reclaim vs --state, and non-positive timeout/poll (SPEC §13.38.3).
+
+    Synchronous test with zero sleeps/threads.
+    """
+    stage_dir = tmp_path / ".stage-signal"
+    stage = Stage(str(stage_dir))
+    stage.init(project="wait-args-freeze")
+
+    # Library: invalid want target
+    with pytest.raises(BadArgsError) as exc_info:
+        stage.wait("invalid_target")
+    assert exc_info.value.exit_code == EXIT_BAD_ARGS == 2
+
+    # Library: needs_reclaim with non-terminal want
+    with pytest.raises(BadArgsError) as exc_info:
+        stage.wait("done", needs_reclaim=True)
+    assert exc_info.value.exit_code == EXIT_BAD_ARGS == 2
+    assert "cannot be combined" in str(exc_info.value)
+
+    # Library: timeout <= 0
+    with pytest.raises(BadArgsError) as exc_info:
+        stage.wait(timeout=0)
+    assert exc_info.value.exit_code == EXIT_BAD_ARGS == 2
+
+    with pytest.raises(BadArgsError) as exc_info:
+        stage.wait(timeout=-10.0)
+    assert exc_info.value.exit_code == EXIT_BAD_ARGS == 2
+
+    # Library: poll <= 0
+    with pytest.raises(BadArgsError) as exc_info:
+        stage.wait(poll=0)
+    assert exc_info.value.exit_code == EXIT_BAD_ARGS == 2
+
+    with pytest.raises(BadArgsError) as exc_info:
+        stage.wait(poll=-0.5)
+    assert exc_info.value.exit_code == EXIT_BAD_ARGS == 2
+
+    # CLI: mutual exclusivity of --needs-reclaim and explicit --state (caught at CLI boundary -> exit 2)
+    assert (
+        main(["--dir", str(stage_dir), "wait", "--needs-reclaim", "--state", "done"])
+        == EXIT_BAD_ARGS == 2
+    )
+    assert (
+        main(["--dir", str(stage_dir), "wait", "--needs-reclaim", "--state", "blocked"])
+        == EXIT_BAD_ARGS == 2
+    )
+
+    # CLI: invalid choices or bad numbers handled via argparse / BadArgsError exiting 2
+    with pytest.raises(SystemExit) as exc_info_sys:
+        main(["--dir", str(stage_dir), "wait", "--state", "bogus"])
+    assert exc_info_sys.value.code == EXIT_BAD_ARGS == 2
+
+    assert (
+        main(["--dir", str(stage_dir), "wait", "--timeout", "0"])
+        == EXIT_BAD_ARGS == 2
+    )
+    assert (
+        main(["--dir", str(stage_dir), "wait", "--poll", "-1"])
+        == EXIT_BAD_ARGS == 2
+    )
+
+
+def test_wait_timeout_library_and_cli_freeze(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """WaitTimeout exception in library and exit code 14 in CLI across human and --json modes (SPEC §13.38.4).
+
+    Synchronous test with zero sleeps/threads (deadline expired via monotonic advance, sleep mocked).
+    """
+    import time
+
+    stage_dir = tmp_path / ".stage-signal"
+    stage = Stage(str(stage_dir))
+    stage.init(project="wait-timeout-freeze")
+    stage.start(stage="timeout-step", pid=os.getpid())
+
+    # Mock time.monotonic to simulate immediate timeout on the poll check
+    # and mock sleep to assert zero sleep occurs.
+    current_time = [1000.0]
+
+    def _advancing_monotonic() -> float:
+        val = current_time[0]
+        current_time[0] += 50000.0  # jumps well past deadline on second call
+        return val
+
+    monkeypatch.setattr(time, "monotonic", _advancing_monotonic)
+    monkeypatch.setattr(time, "sleep", lambda _s: pytest.fail("time.sleep called in timeout test"))
+
+    # Library: raises WaitTimeout with last_status snapshot
+    with pytest.raises(WaitTimeout) as exc_info:
+        stage.wait("terminal", timeout=10.0, poll=1.0)
+    assert exc_info.value.exit_code == EXIT_WAIT_TIMEOUT == 14
+    assert "wait timed out" in str(exc_info.value)
+    assert exc_info.value.last_status is not None
+    assert exc_info.value.last_status["state"] == STATE_RUNNING
+    for key in STATUS_JSON_KEYS:
+        assert key in exc_info.value.last_status
+
+    # Library with needs_reclaim=True includes extra suffix
+    current_time[0] = 1000.0
+    with pytest.raises(WaitTimeout) as exc_info_rec:
+        stage.wait("terminal", timeout=10.0, poll=1.0, needs_reclaim=True)
+    assert "needs_reclaim=False" in str(exc_info_rec.value)
+
+    # CLI human mode: exit 14 and stderr error message
+    current_time[0] = 1000.0
+    capsys.readouterr()
+    rc = main(["--dir", str(stage_dir), "wait", "--timeout", "10", "--poll", "1"])
+    assert rc == EXIT_WAIT_TIMEOUT == 14
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "stage-signal: error: wait timed out after 10s (state=running)" in captured.err
+
+    # CLI --json mode: exit 14 and complete 11-key JSON payload
+    current_time[0] = 1000.0
+    capsys.readouterr()
+    rc = main(["--dir", str(stage_dir), "wait", "--json", "--timeout", "10", "--poll", "1"])
+    assert rc == EXIT_WAIT_TIMEOUT == 14
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    payload = json.loads(captured.out)
+    for key in WAIT_JSON_KEYS:
+        assert key in payload, f"guaranteed key {key!r} missing from wait --json timeout payload"
+    assert payload["outcome"] == WAIT_OUTCOME_TIMEOUT == "timeout"
+    assert payload["timeout"] is True
+    assert payload["exit_code"] == EXIT_WAIT_TIMEOUT == 14
+    assert payload["wanted"] == "terminal"
+    assert payload["observed_state"] == STATE_RUNNING
+    assert payload["state"] == STATE_RUNNING
+    assert "wait timed out" in str(payload["reason"])
+    assert payload["needs_reclaim"] is False
+    assert isinstance(payload["status"], dict)
+    assert payload["status"]["state"] == STATE_RUNNING
+
+
+def test_wait_json_payload_schema_all_outcomes_freeze(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """wait --json guarantees all 11 WAIT_JSON_KEYS across met, mismatch, and timeout outcomes (SPEC §13.38.5).
+
+    Synchronous test with zero sleeps/threads.
+    """
+    import stage_signal.stage as stage_mod
+
+    stage_dir = tmp_path / ".stage-signal"
+    stage = Stage(str(stage_dir))
+    stage.init(project="wait-json-freeze")
+
+    def run_wait_json(argv: list[str]) -> tuple[int, dict[str, Any]]:
+        capsys.readouterr()
+        rc = main(["--dir", str(stage_dir), "wait", "--json"] + argv)
+        out = capsys.readouterr().out
+        payload = json.loads(out)
+        for key in WAIT_JSON_KEYS:
+            assert key in payload, f"key {key!r} missing from wait --json output: {payload!r}"
+        # Assert exact 11 keys in payload
+        assert set(payload.keys()) == set(WAIT_JSON_KEYS)
+        return rc, payload
+
+    # 1. Outcome: "met" via --state done
+    stage.start(stage="step-done", pid=os.getpid())
+    stage.done(summary="met-done-summary")
+    rc, data = run_wait_json(["--state", "done"])
+    assert rc == EXIT_OK == 0
+    assert data["outcome"] == WAIT_OUTCOME_MET == "met"
+    assert data["wanted"] == "done"
+    assert data["observed_state"] == STATE_DONE
+    assert data["state"] == STATE_DONE
+    assert data["exit_code"] == EXIT_OK == 0
+    assert data["timeout"] is False
+    assert data["stage_id"] == "step-done"
+    assert data["dir"] == str(stage_dir)
+    assert data["reason"] is None
+    assert data["needs_reclaim"] is False
+    assert isinstance(data["status"], dict)
+    assert data["status"]["state"] == STATE_DONE
+
+    # 2. Outcome: "met" via --needs-reclaim (running + DEAD_PID)
+    stage.start(stage="step-reclaim", pid=os.getpid())
+    monkeypatch.setattr(stage_mod, "_is_pid_alive", lambda pid: False)
+    rc, data = run_wait_json(["--needs-reclaim"])
+    assert rc == EXIT_OK == 0
+    assert data["outcome"] == WAIT_OUTCOME_MET == "met"
+    assert data["wanted"] == WAIT_WANT_NEEDS_RECLAIM == "needs_reclaim"
+    assert data["observed_state"] == STATE_RUNNING
+    assert data["state"] == STATE_RUNNING
+    assert data["exit_code"] == EXIT_OK == 0
+    assert data["timeout"] is False
+    assert data["needs_reclaim"] is True
+
+    # 3. Outcome: "mismatch" on blocked (wanted done) -> exit 11
+    monkeypatch.setattr(stage_mod, "_is_pid_alive", lambda pid: True)
+    stage.start(stage="step-blocked", pid=os.getpid())
+    stage.blocked(reason="external dependency unavailable")
+    rc, data = run_wait_json(["--state", "done"])
+    assert rc == EXIT_BLOCKED == 11
+    assert data["outcome"] == WAIT_OUTCOME_MISMATCH == "mismatch"
+    assert data["wanted"] == "done"
+    assert data["observed_state"] == STATE_BLOCKED
+    assert data["state"] == STATE_BLOCKED
+    assert data["exit_code"] == EXIT_BLOCKED == 11
+    assert data["timeout"] is False
+    assert data["reason"] == "external dependency unavailable"
+
+    # 4. Outcome: "mismatch" on failed (wanted done) -> exit 12
+    stage.start(stage="step-failed", pid=os.getpid())
+    stage.fail(reason="fatal execution error")
+    rc, data = run_wait_json(["--state", "done"])
+    assert rc == EXIT_FAILED == 12
+    assert data["outcome"] == WAIT_OUTCOME_MISMATCH == "mismatch"
+    assert data["wanted"] == "done"
+    assert data["observed_state"] == STATE_FAILED
+    assert data["state"] == STATE_FAILED
+    assert data["exit_code"] == EXIT_FAILED == 12
+    assert data["timeout"] is False
+    assert data["reason"] == "fatal execution error"
+
+    # 5. Outcome: "mismatch" on done with --needs-reclaim (fails closed to exit 1)
+    stage.start(stage="step-done-noreclaim", pid=os.getpid())
+    stage.done(summary="clean success")
+    rc, data = run_wait_json(["--needs-reclaim"])
+    assert rc == EXIT_ERROR == 1
+    assert data["outcome"] == WAIT_OUTCOME_MISMATCH == "mismatch"
+    assert data["wanted"] == WAIT_WANT_NEEDS_RECLAIM == "needs_reclaim"
+    assert data["observed_state"] == STATE_DONE
+    assert data["state"] == STATE_DONE
+    assert data["exit_code"] == EXIT_ERROR == 1
+    assert data["timeout"] is False
+    assert data["needs_reclaim"] is False
+
+
+def test_wait_human_cli_output_shapes_freeze(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """CLI human stdout and stderr formatting across met, mismatch, and reclaim conditions (SPEC §13.38.6).
+
+    Synchronous test with zero sleeps/threads.
+    """
+    import stage_signal.stage as stage_mod
+
+    stage_dir = tmp_path / ".stage-signal"
+    stage = Stage(str(stage_dir))
+    stage.init(project="wait-human-freeze")
+
+    def run_wait(argv: list[str]) -> tuple[int, str, str]:
+        capsys.readouterr()
+        rc = main(["--dir", str(stage_dir), "wait"] + argv)
+        captured = capsys.readouterr()
+        return rc, captured.out, captured.err
+
+    # Condition met: state done
+    stage.start(stage="build-stage", pid=os.getpid())
+    stage.done(summary="build complete")
+    rc, out, err = run_wait(["--state", "done"])
+    assert rc == EXIT_OK == 0
+    assert out.strip() == "wait met: done done build-stage (attempt 1)"
+    assert err == ""
+
+    # Condition met: default terminal want
+    rc, out, err = run_wait([])
+    assert rc == EXIT_OK == 0
+    assert out.strip() == "wait met: done done build-stage (attempt 1)"
+    assert err == ""
+
+    # Condition met: --needs-reclaim (label is needs_reclaim)
+    stage.start(stage="reclaim-stage", pid=os.getpid())
+    monkeypatch.setattr(stage_mod, "_is_pid_alive", lambda pid: False)
+    rc, out, err = run_wait(["--needs-reclaim"])
+    assert rc == EXIT_OK == 0
+    assert out.strip() == "wait met: needs_reclaim running reclaim-stage (attempt 1)"
+    assert err == ""
+
+    # Mismatch: blocked (wanted done) -> stderr, exit 11
+    monkeypatch.setattr(stage_mod, "_is_pid_alive", lambda pid: True)
+    stage.start(stage="block-stage", pid=os.getpid())
+    stage.blocked(reason="waiting for user input")
+    rc, out, err = run_wait(["--state", "done"])
+    assert rc == EXIT_BLOCKED == 11
+    assert out == ""
+    assert err.strip() == "wait ended in blocked (wanted done)"
+
+    # Mismatch: failed (wanted done) -> stderr, exit 12
+    stage.start(stage="fail-stage", pid=os.getpid())
+    stage.fail(reason="disk full")
+    rc, out, err = run_wait(["--state", "done"])
+    assert rc == EXIT_FAILED == 12
+    assert out == ""
+    assert err.strip() == "wait ended in failed (wanted done)"
+
+    # Mismatch: done without reclaim under --needs-reclaim -> stderr, exit 1
+    stage.start(stage="done-stage", pid=os.getpid())
+    stage.done(summary="ok")
+    rc, out, err = run_wait(["--needs-reclaim"])
+    assert rc == EXIT_ERROR == 1
+    assert out == ""
+    assert err.strip() == "wait ended in done (wanted needs_reclaim)"
+
+
+def test_wait_uninitialized_and_corrupt_preconditions_freeze(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Preconditions: NotInitialized (exit 15) and CorruptStatusError (exit 1) (SPEC §13.38.2, §13.38.7).
+
+    Synchronous test with zero sleeps/threads.
+    """
+    missing_dir = tmp_path / "missing-wait-dir" / ".stage-signal"
+    missing_stage = Stage(str(missing_dir))
+
+    # NotInitialized in library
+    with pytest.raises(NotInitialized) as exc_info:
+        missing_stage.wait()
+    assert exc_info.value.exit_code == EXIT_NOT_INITIALIZED == 15
+
+    # NotInitialized in CLI (human and --json)
+    for argv in ([], ["--json"]):
+        capsys.readouterr()
+        rc = main(["--dir", str(missing_dir), "wait"] + argv)
+        assert rc == EXIT_NOT_INITIALIZED == 15
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert "not initialized" in captured.err.lower() or "missing" in captured.err.lower()
+
+    # CorruptStatusError: invalid JSON in STATUS.json
+    stage_dir = tmp_path / ".stage-signal"
+    stage = Stage(str(stage_dir))
+    stage.init(project="corrupt-wait-freeze")
+    (stage_dir / STATUS_FILENAME).write_text("{broken json\n", encoding="utf-8")
+
+    with pytest.raises(CorruptStatusError) as exc_info_corrupt:
+        stage.wait()
+    assert exc_info_corrupt.value.exit_code == EXIT_ERROR == 1
+
+    for argv in ([], ["--json"]):
+        capsys.readouterr()
+        rc = main(["--dir", str(stage_dir), "wait"] + argv)
+        assert rc == EXIT_ERROR == 1
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert "corrupt" in captured.err.lower() or "json" in captured.err.lower()
+
+
+def test_wait_read_cross_links_freeze() -> None:
+    """Wait observer reuses frozen method-surface, timing, and export symbols; adds no export (SPEC §13.38.8)."""
+    import stage_signal
+
+    assert "wait" in STAGE_PUBLIC_METHODS
+    assert callable(Stage.wait)
+
+    for name in (
+        "WAIT_CHOICES",
+        "WAIT_DEFAULT_POLL",
+        "WAIT_DEFAULT_TIMEOUT",
+        "WAIT_JSON_KEYS",
+        "WAIT_OUTCOMES",
+        "WAIT_OUTCOME_MET",
+        "WAIT_OUTCOME_MISMATCH",
+        "WAIT_OUTCOME_TIMEOUT",
+        "WAIT_WANT_NEEDS_RECLAIM",
+        "WaitTimeout",
+        "want_matches",
+        "wait_condition_met",
+        "EXIT_WAIT_TIMEOUT",
+    ):
+        assert hasattr(stage_signal, name), f"stage_signal missing {name!r}"
+        assert name in stage_signal.__all__, f"{name!r} not in stage_signal.__all__"
+        assert name in PUBLIC_EXPORTS, f"{name!r} not in PUBLIC_EXPORTS"
+
+    # §13.38 adds no export: the inventory stays at the 134 frozen symbols.
+    assert len(PUBLIC_EXPORTS) == 134
+
+
+
