@@ -34,6 +34,9 @@ Default root: `.stage-signal/` in the repo (override: `--dir PATH` or
   retrying once.
 - `events.jsonl` is append-only; never rewritten by the library (except file
   creation). Each line is a complete JSON object, UTF-8, `\n` terminated.
+- Canonical layout path constants (`DEFAULT_DIR_NAME`, `STATUS_FILENAME`,
+  `STATUS_MD_FILENAME`, `EVENTS_FILENAME`, `LOCKS_DIRNAME`, `LOCK_FILENAME`,
+  `DEFAULT_MIRROR_DIRNAME`) are frozen in §13.13.
 
 ## 3. STATUS.json schema (schema_version 1)
 
@@ -837,3 +840,32 @@ The non-terminal states are `queued` and `running`. The terminal states are `don
 Under `schema_version: 1`, stage state evolution is **additive-only** (§13.1): existing states and terminal classifications MUST NOT be removed, renamed, or change semantic meaning. Any future state introduced under schema version 1 MUST specify its terminal or non-terminal classification, and observers/readers MUST tolerate unknown states without crashing.
 
 State machine transitions and lifecycle rules remain defined in §4; the `state` field contract on `STATUS.json` is defined in §13.2.
+
+### 13.13 On-disk layout path constants freeze (`DEFAULT_DIR_NAME`, `STATUS_FILENAME`, `STATUS_MD_FILENAME`, `EVENTS_FILENAME`, `LOCKS_DIRNAME`, `LOCK_FILENAME`, `DEFAULT_MIRROR_DIRNAME`)
+The canonical on-disk layout directory and filenames defining the stage filesystem layout (§2) are frozen under `schema_version: 1`:
+
+| Constant | Value | Purpose |
+|----------|-------|---------|
+| `DEFAULT_DIR_NAME` | `".stage-signal"` | Default relative root directory for stage state in repository (§2). |
+| `STATUS_FILENAME` | `"STATUS.json"` | Normative current state file (§2, §3, §13.2). |
+| `STATUS_MD_FILENAME` | `"STATUS.md"` | Optional human-readable Markdown mirror file (§2). |
+| `EVENTS_FILENAME` | `"events.jsonl"` | Append-only newline-delimited JSON events log (§2, §13.6). |
+| `LOCKS_DIRNAME` | `"locks"` | Subdirectory under the stage dir hosting concurrency locks (§2, §8). |
+| `LOCK_FILENAME` | `"stage.lock"` | File under `locks/` used for mutual exclusion / advisory locking (§2, §8). |
+| `DEFAULT_MIRROR_DIRNAME` | `".orch"` | Default directory name for orchestrator status mirror files (§10, `write_status_mirror`). |
+
+The single sources of truth for these path constants are:
+- `DEFAULT_DIR_NAME = ".stage-signal"`
+- `STATUS_FILENAME = "STATUS.json"`
+- `STATUS_MD_FILENAME = "STATUS.md"`
+- `EVENTS_FILENAME = "events.jsonl"`
+- `LOCKS_DIRNAME = "locks"`
+- `LOCK_FILENAME = "stage.lock"`
+- `DEFAULT_MIRROR_DIRNAME = ".orch"`
+
+defined in `stage_signal.constants` and exported from `stage_signal`.
+
+Under `schema_version: 1`, layout path constants are **additive-only** (§13.1): existing path names and relative layout positions MUST NOT be removed, renamed, or change semantic meaning. Readers and observers MUST tolerate unknown extra files or directories present in the stage directory without crashing or failing.
+
+Filesystem layout and concurrency locking rules remain defined in §2 and §8; the mirror directory layout remains defined in §10.
+
