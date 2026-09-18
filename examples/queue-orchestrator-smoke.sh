@@ -8,6 +8,7 @@
 #   ./examples/queue-orchestrator-smoke.sh
 set -u
 
+# NOTE: this smoke never commits, so bare `done` omits --git-head and inherits the start SHA (§13.30.3).
 fail() { echo "QUEUE SMOKE FAIL: $1" >&2; exit 1; }
 pass() { echo "QUEUE SMOKE OK: $1"; }
 

@@ -34,6 +34,7 @@ ST heartbeat >/dev/null || fail "heartbeat"
 pass "heartbeat"
 
 ST done --summary "ok" >/dev/null || fail "done"
+# NOTE: no commit here, so omit --git-head inherits the start SHA (§13.30.3).
 [ "$(STATE_OF)" = "done" ] || fail "expected done after done"
 pass "done -> done"
 

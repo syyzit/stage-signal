@@ -209,7 +209,9 @@ while true; do
   stage-signal --dir "$STAGE_DIR" start --stage "$NEXT_STAGE" --meta "cli=$AGENT"
 
   # 3. Formulate prompt
-  PROMPT="You are working milestone '$NEXT_STAGE'. When done: stage-signal done --summary 'done'. If blocked: stage-signal blocked --reason '...'. If failed: stage-signal fail --reason '...'."
+  # NOTE: pass --git-head on done after committing so result.git_head matches
+  # the finished tip; omitting --git-head inherits the start SHA (§13.30.3).
+  PROMPT="You are working milestone '$NEXT_STAGE'. Commit, then: stage-signal done --summary 'done' --git-head \$(git rev-parse HEAD). If blocked: stage-signal blocked --reason '...'. If failed: stage-signal fail --reason '...'."
 
   # 4. Invoke the agent CLI (the only branch point!)
   case "$AGENT" in
