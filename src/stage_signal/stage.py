@@ -17,12 +17,14 @@ from pathlib import Path
 from typing import Any, Optional, Sequence
 
 from .constants import (
+    ALLOWED_TRANSITIONS,
     DEFAULT_MIRROR_DIRNAME,
     DEFAULT_STALE_THRESHOLD,
     SUPERVISE_DEFAULT_EVERY,
     ENV_STATUS_MIRROR,
     ENV_PROJECT,
     ENV_PROOF_REF,
+    allowed_source_states,
     EVENT_TYPES,
     MAX_NOTES,
     SCHEMA_VERSION,
@@ -383,7 +385,7 @@ class Stage:
     def heartbeat(self, note: Optional[str] = None) -> dict[str, Any]:
         """Bump heartbeat. Only from `running` (SPEC §4.3)."""
         def _apply(current: dict[str, Any]) -> dict[str, Any]:
-            _require_state(current, (STATE_RUNNING,), "heartbeat")
+            _require_state(current, allowed_source_states("heartbeat"), "heartbeat")
             ts = now_iso()
             current["heartbeat_at"] = ts
             if note is not None:
@@ -398,7 +400,7 @@ class Stage:
             raise BadArgsError("note requires non-empty TEXT")
 
         def _apply(current: dict[str, Any]) -> dict[str, Any]:
-            _require_state(current, (STATE_RUNNING,), "note")
+            _require_state(current, allowed_source_states("note"), "note")
             notes = list(current.get("notes") or [])
             notes.append({"text": text, "added_at": now_iso()})
             current["notes"] = notes[-MAX_NOTES:]
@@ -414,7 +416,7 @@ class Stage:
             raise BadArgsError("artifact requires non-empty PATH")
 
         def _apply(current: dict[str, Any]) -> dict[str, Any]:
-            _require_state(current, (STATE_RUNNING,), "artifact")
+            _require_state(current, allowed_source_states("artifact"), "artifact")
             artifacts = list(current.get("artifacts") or [])
             artifacts.append(
                 {"path": path, "label": label, "added_at": now_iso()}
@@ -452,7 +454,7 @@ class Stage:
         def _apply(current: dict[str, Any]) -> dict[str, Any]:
             state = current.get("state")
             if accept_failure:
-                if state != STATE_FAILED:
+                if (state, "done --accept-failure") not in ALLOWED_TRANSITIONS:
                     raise IllegalTransition(
                         f"done --accept-failure only allowed from state 'failed' "
                         f"(current state: {state!r})"
@@ -689,7 +691,7 @@ class Stage:
 
         def _apply(current: dict[str, Any]) -> dict[str, Any]:
             _require_state(
-                current, TERMINAL_STATES + (STATE_QUEUED,), "clear-terminal",
+                current, allowed_source_states("clear-terminal"), "clear-terminal",
                 message="only terminal states (done/blocked/failed) or queued "
                         "can be cleared (running requires reclaim, "
                         "fail --if-needs-reclaim, or fail --if-dead-pid first)",
@@ -1462,12 +1464,10 @@ def _require_state(
 def _require_terminal_source(
     current: dict[str, Any], target: str, op: str
 ) -> None:
-    """Enforce SPEC §4 rules 5-6: queued/running, or idempotent same-stage repeat."""
+    """Enforce SPEC §4 rules 5-6: queued/running, or idempotent same-stage repeat (SPEC §13.19)."""
     state = current.get("state")
-    if state in (STATE_QUEUED, STATE_RUNNING):
+    if (state, op) in ALLOWED_TRANSITIONS:
         return
-    if state == target:
-        return  # idempotent repeat (same series by construction)
     raise IllegalTransition(
         f"{op} not allowed from terminal state {state!r}: "
         "run 'start' for a new attempt or 'clear-terminal' first"

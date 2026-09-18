@@ -1,6 +1,7 @@
 """stage-signal public API."""
 
 from .constants import (
+    ALLOWED_TRANSITIONS,
     ARTIFACT_ENTRY_KEYS,
     CLI_SUBCOMMANDS,
     DEFAULT_DIR_NAME,
@@ -70,7 +71,10 @@ from .constants import (
     WARNING_CODES,
     WARNING_KEYS,
     WARNING_REQUIRED_KEYS,
+    allowed_source_states,
+    is_transition_allowed,
     state_exit_code,
+    transition_target,
 )
 from .errors import (
     BadArgsError,
@@ -104,6 +108,9 @@ __all__ = [
     "resolve_dir",
     "render_status_md",
     "state_exit_code",
+    "allowed_source_states",
+    "is_transition_allowed",
+    "transition_target",
     "verify_proof",
     "wait_condition_met",
     "want_matches",
@@ -117,6 +124,7 @@ __all__ = [
     "STATE_RUNNING",
     "STATES",
     "TERMINAL_STATES",
+    "ALLOWED_TRANSITIONS",
     "DEFAULT_STALE_THRESHOLD",
     "SUPERVISE_DEFAULT_EVERY",
     "WARNING_CODE_DEAD_PID",
