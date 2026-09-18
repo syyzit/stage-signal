@@ -19,7 +19,7 @@ Default root: `.stage-signal/` in the repo (override: `--dir PATH` or
 ```
 .stage-signal/
   STATUS.json        # normative current state (single JSON object)
-  STATUS.md          # optional human mirror (best-effort, never normative)
+  STATUS.md          # optional human mirror (best-effort, never normative; §13.18)
   events.jsonl       # append-only, one JSON object per line
   locks/stage.lock   # lock file (POSIX fcntl.flock; Windows msvcrt.locking)
 ```
@@ -36,7 +36,8 @@ Default root: `.stage-signal/` in the repo (override: `--dir PATH` or
   creation). Each line is a complete JSON object, UTF-8, `\n` terminated.
 - Canonical layout path constants (`DEFAULT_DIR_NAME`, `STATUS_FILENAME`,
   `STATUS_MD_FILENAME`, `EVENTS_FILENAME`, `LOCKS_DIRNAME`, `LOCK_FILENAME`,
-  `DEFAULT_MIRROR_DIRNAME`) are frozen in §13.13.
+  `DEFAULT_MIRROR_DIRNAME`) are frozen in §13.13; `STATUS.md` human-mirror
+  required headings and non-normative contract are frozen in §13.18.
 
 ## 3. STATUS.json schema (schema_version 1)
 
@@ -231,7 +232,7 @@ Rules:
    appends a `clear_terminal` event (audit).
 9. Every mutation appends exactly one event to `events.jsonl` and rewrites
    `STATUS.md` best-effort (`reclaim` appends two events: `failed` then `clear_terminal`,
-   or only `failed` when `--keep-failed`).
+   or only `failed` when `--keep-failed`; see §13.18).
 
 ### Idle vs. Queued (orchestrator contract)
 
@@ -517,7 +518,9 @@ the transition); the 10–13 codes are for *observing* (`status`/`wait`) only (a
 (`state: <state>` + stage + updated) and touches `<repo>/.orch/DONE` when
 the new state is `done`. Mirror failures warn on stderr but never fail the
 command. Repo root = parent of the stage dir when the dir is named
-`.stage-signal`, else `cwd`. See `docs/COMPOSE.md`.
+`.stage-signal`, else `cwd`. See `docs/COMPOSE.md`. (This is distinct from
+the standard `.stage-signal/STATUS.md` mirror whose required headings and
+best-effort contract are frozen in §13.18; see also §2 and §13.13).
 
 ## 11. Library API (Python)
 
@@ -850,7 +853,7 @@ The canonical on-disk layout directory and filenames defining the stage filesyst
 |----------|-------|---------|
 | `DEFAULT_DIR_NAME` | `".stage-signal"` | Default relative root directory for stage state in repository (§2). |
 | `STATUS_FILENAME` | `"STATUS.json"` | Normative current state file (§2, §3, §13.2). |
-| `STATUS_MD_FILENAME` | `"STATUS.md"` | Optional human-readable Markdown mirror file (§2). |
+| `STATUS_MD_FILENAME` | `"STATUS.md"` | Optional human-readable Markdown mirror file (§2, §13.18). |
 | `EVENTS_FILENAME` | `"events.jsonl"` | Append-only newline-delimited JSON events log (§2, §13.6). |
 | `LOCKS_DIRNAME` | `"locks"` | Subdirectory under the stage dir hosting concurrency locks (§2, §8). |
 | `LOCK_FILENAME` | `"stage.lock"` | File under `locks/` used for mutual exclusion / advisory locking (§2, §8). |
@@ -869,7 +872,7 @@ defined in `stage_signal.constants` and exported from `stage_signal`.
 
 Under `schema_version: 1`, layout path constants are **additive-only** (§13.1): existing path names and relative layout positions MUST NOT be removed, renamed, or change semantic meaning. Readers and observers MUST tolerate unknown extra files or directories present in the stage directory without crashing or failing.
 
-Filesystem layout and concurrency locking rules remain defined in §2 and §8; the mirror directory layout remains defined in §10.
+Filesystem layout and concurrency locking rules remain defined in §2 and §8; the mirror directory layout remains defined in §10; human mirror section requirements remain defined in §13.18.
 ### 13.14 Environment variables and timing defaults freeze (`ENV_DIR`, `WAIT_DEFAULT_TIMEOUT`, etc.)
 
 The canonical environment variable names and CLI/runtime numeric defaults and limits are frozen under `schema_version: 1`.
@@ -1068,4 +1071,79 @@ Under `schema_version: 1`, the public exception hierarchy and exit mapping is st
 - Existing exception types (`StageError`, `BadArgsError`, `IllegalTransition`, `NotInitialized`, `CorruptStatusError`, `WaitTimeout`) MUST NOT be removed, renamed, or assigned different `exit_code` values.
 - Existing inheritance relationships MUST NOT be broken: each subclass MUST remain an `issubclass` of `StageError` (and `Exception`).
 - New exception subclasses MAY be added in future minor or patch releases, expanding the hierarchy, provided each new class inherits from `StageError` (or an existing subclass) and carries an `exit_code` consistent with §7 and §13.4.
+
+### 13.18 Best-effort STATUS.md human mirror required sections freeze (`STATUS_MD_REQUIRED_HEADINGS`)
+
+The human-readable Markdown mirror written by `StageStore.write_status_md` / `render_status_md` (`.stage-signal/STATUS.md`; §2, §13.13) provides a predictable, human-inspected mirror of stage status while maintaining strict non-normative status.
+
+#### 13.18.1 Best-effort / never normative contract
+
+As established in §2, `STATUS.md` is **best-effort and never normative**:
+- `STATUS.json` (§3) remains the sole authoritative source of truth for all stage lifecycle automation, state transitions, and tooling.
+- `StageStore.write_status_md` is executed best-effort upon mutations; write errors (such as read-only filesystems, disk quota limits, or permission errors) MUST NOT abort state transitions, crash callers, or raise exceptions (§2, §10).
+- External tools and orchestrators must inspect `STATUS.json` (or `stage-signal status --json`) for normative state and machine-critical gating decisions.
+
+#### 13.18.2 Document title and required headings
+
+`STATUS.md` begins with a document title followed by required key-value lines formatted as `<marker> <value>`. Across all five lifecycle states (`queued`, `running`, `done`, `blocked`, `failed`), the mirror is guaranteed to emit the following headings and lines:
+
+| Marker / Heading | Description | Lifecycle Applicability |
+|------------------|-------------|-------------------------|
+| `# stage-signal STATUS` | Top-level Markdown H1 title (`STATUS_MD_TITLE`). | Always present across all states. |
+| `state:` | Current lifecycle state (`queued`, `running`, `done`, `blocked`, `failed`; §4, §13.12). | Always present across all states. |
+| `stage:` | Human-readable stage name (`stage_name`), or `None` if unset (§3). | Always present across all states. |
+| `stage_id:` | Unique stage identifier (`stage_id`), or `None` if unset (§3). | Always present across all states. |
+| `attempt:` | Current run attempt counter integer (`attempt`), or `None` if uninitialized (§3). | Always present across all states. |
+| `project:` | Project name (`project`), or `None` if unset (§3). | Always present across all states. |
+| `updated:` | ISO-8601 mutation timestamp (`updated_at`), or `None` if unset (§3). | Always present across all states. |
+| `heartbeat:` | Heartbeat ISO-8601 timestamp (`heartbeat_at`), or `None` if unset (§3). | Always present across all states. |
+
+The single source of truth for these required headings is:
+
+```python
+STATUS_MD_TITLE = "# stage-signal STATUS"
+STATUS_MD_REQUIRED_HEADINGS = (
+    "# stage-signal STATUS",
+    "state:",
+    "stage:",
+    "stage_id:",
+    "attempt:",
+    "project:",
+    "updated:",
+    "heartbeat:",
+)
+```
+
+defined in `stage_signal.constants` and exported from `stage_signal`.
+
+#### 13.18.3 Conditional / optional headings
+
+When specific status fields are present in `STATUS.json`, `render_status_md` emits corresponding conditional summary lines:
+
+| Marker / Heading | Condition | Description |
+|------------------|-----------|-------------|
+| `heartbeat_note:` | Present when `heartbeat_note` is non-null. | Last recorded heartbeat note string (§3, §6). |
+| `result:` | Present when `result` object is non-null (terminal `done`). | JSON serialization of result object (`{"summary": ..., "git_head": ..., "finished_at": ...}`; §3, §13.9). |
+| `error:` | Present when `error` object is non-null (terminal `blocked` or `failed`). | JSON serialization of error object (`{"reason": ..., "kind": ..., "finished_at": ...}`; §3, §13.9). |
+
+These conditional headings are tracked in:
+
+```python
+STATUS_MD_OPTIONAL_HEADINGS = (
+    "heartbeat_note:",
+    "result:",
+    "error:",
+)
+STATUS_MD_HEADINGS = STATUS_MD_REQUIRED_HEADINGS + STATUS_MD_OPTIONAL_HEADINGS
+```
+
+#### 13.18.4 Tolerance of extra sections and additive evolution
+
+Under `schema_version: 1`, the human mirror format is strictly **additive-only** (§13.1):
+- Existing required headings (`STATUS_MD_REQUIRED_HEADINGS`) MUST NOT be removed, renamed, or reordered in incompatible ways.
+- Readers, parsers, and light orchestrators inspecting `STATUS.md` MUST tolerate unknown extra sections, lines, or trailing content without failing or misinterpreting existing headings.
+- New headings or informational sections MAY be appended in future minor or patch releases under schema version 1.
+- Writers MUST continue guaranteeing that write failures never raise exceptions, preserving the best-effort nature of the mirror.
+
+Distinction from orchestrator mirror: The optional `<repo>/.orch/STATUS.md` mirror (§10, `write_status_mirror`) is an independent repository-level convenience mirror that includes an extra `source:` line and touches `.orch/DONE` on completion; both mirrors adhere to non-normative, best-effort principles.
 

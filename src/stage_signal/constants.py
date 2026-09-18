@@ -203,6 +203,24 @@ WAIT_OUTCOMES = (
     WAIT_OUTCOME_TIMEOUT,
 )
 
+STATUS_MD_TITLE = "# stage-signal STATUS"
+STATUS_MD_REQUIRED_HEADINGS = (
+    "# stage-signal STATUS",
+    "state:",
+    "stage:",
+    "stage_id:",
+    "attempt:",
+    "project:",
+    "updated:",
+    "heartbeat:",
+)
+STATUS_MD_OPTIONAL_HEADINGS = (
+    "heartbeat_note:",
+    "result:",
+    "error:",
+)
+STATUS_MD_HEADINGS = STATUS_MD_REQUIRED_HEADINGS + STATUS_MD_OPTIONAL_HEADINGS
+
 
 def state_exit_code(state: str) -> int:
     """Map a stage state to its observer exit code (SPEC §6, §7, §13.16)."""

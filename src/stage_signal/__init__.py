@@ -41,6 +41,10 @@ from .constants import (
     STATUS_FILENAME,
     STATUS_JSON_KEYS,
     STATUS_MD_FILENAME,
+    STATUS_MD_HEADINGS,
+    STATUS_MD_OPTIONAL_HEADINGS,
+    STATUS_MD_REQUIRED_HEADINGS,
+    STATUS_MD_TITLE,
     STATUS_REQUIRED_KEYS,
     SUPERVISE_DEFAULT_EVERY,
     TERMINAL_STATES,
@@ -82,7 +86,7 @@ from .stage import (
     want_matches,
     write_status_mirror,
 )
-from .store import StageStore, resolve_dir
+from .store import StageStore, render_status_md, resolve_dir
 
 __version__ = "0.1.6"
 
@@ -97,6 +101,7 @@ __all__ = [
     "WaitTimeout",
     "StageStore",
     "resolve_dir",
+    "render_status_md",
     "state_exit_code",
     "verify_proof",
     "wait_condition_met",
@@ -152,6 +157,10 @@ __all__ = [
     "DEFAULT_DIR_NAME",
     "STATUS_FILENAME",
     "STATUS_MD_FILENAME",
+    "STATUS_MD_TITLE",
+    "STATUS_MD_REQUIRED_HEADINGS",
+    "STATUS_MD_OPTIONAL_HEADINGS",
+    "STATUS_MD_HEADINGS",
     "EVENTS_FILENAME",
     "LOCKS_DIRNAME",
     "LOCK_FILENAME",
