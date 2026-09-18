@@ -217,6 +217,7 @@ while true; do
       ;;
     mock)
       # Mock agent: simulate work, issue heartbeat, and complete
+      # NOTE: mock never commits, so omit --git-head inherits the start SHA (§13.30.3).
       ST heartbeat >/dev/null
       ST done --summary "mock completed $NEXT_STAGE" >/dev/null
       ;;
