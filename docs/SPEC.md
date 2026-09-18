@@ -1456,7 +1456,8 @@ All six structured exceptions inherit from `StageError` and carry a normative `.
   - Individual warning code constants: `WARNING_CODE_DEAD_PID`, `WARNING_CODE_STALE_HEARTBEAT`, `WARNING_CODE_UNPARSEABLE_HEARTBEAT` (§13.8).
   - `WARNING_KEYS`: Required keys in doctor warning objects (`code`, `message`, `detail`; §13.8).
   - `WARNING_REQUIRED_KEYS`: Alias for `WARNING_KEYS` (§13.8).
-  - `DOCTOR_WARNING_KEYS`, `DOCTOR_SUMMARY_RECLAIM_NEEDED`, `DOCTOR_SUMMARY_OK_FORMAT`, and helper `doctor_summary_ok` (§13.22); also `DOCTOR_WARNING_KEYS`: Alias for `WARNING_KEYS` (§13.8).
+  - `DOCTOR_WARNING_KEYS`: Alias for `WARNING_KEYS` (§13.8).
+  - `DOCTOR_SUMMARY_RECLAIM_NEEDED`, `DOCTOR_SUMMARY_OK_FORMAT`, and helper `doctor_summary_ok` (§13.22).
   - `DEFAULT_STALE_THRESHOLD`: Default stale heartbeat threshold in seconds (300.0; §4, §13.8, §13.14).
 - **Wait outcomes and defaults:**
   - `WAIT_JSON_KEYS`: Required keys in `wait --json` payload (§13.3.3).
