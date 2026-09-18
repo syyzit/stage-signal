@@ -56,6 +56,10 @@ from stage_signal import (
     STATUS_FILENAME,
     STATUS_JSON_KEYS,
     STATUS_MD_FILENAME,
+    STATUS_MD_HEADINGS,
+    STATUS_MD_OPTIONAL_HEADINGS,
+    STATUS_MD_REQUIRED_HEADINGS,
+    STATUS_MD_TITLE,
     STATUS_REQUIRED_KEYS,
     SUPERVISE_DEFAULT_EVERY,
     TERMINAL_STATES,
@@ -77,6 +81,8 @@ from stage_signal import (
     StageError,
     WaitTimeout,
     Stage,
+    StageStore,
+    render_status_md,
     resolve_dir,
     state_exit_code,
     write_status_mirror,
@@ -2540,3 +2546,327 @@ def test_stage_error_base_cli_exit(monkeypatch: pytest.MonkeyPatch, capsys: pyte
     err_out = capsys.readouterr().err
     assert "stage-signal: error: simulated unhandled stage error" in err_out
 
+# =============================================================================
+# 16. STATUS.md human-mirror required sections freeze (SPEC §13.18, issue #130)
+# =============================================================================
+
+
+def test_status_md_constants_freeze() -> None:
+    """STATUS_MD constants match the frozen tuple in SPEC §13.18."""
+    assert STATUS_MD_TITLE == "# stage-signal STATUS"
+    assert isinstance(STATUS_MD_TITLE, str)
+
+    expected_required_headings = (
+        "# stage-signal STATUS",
+        "state:",
+        "stage:",
+        "stage_id:",
+        "attempt:",
+        "project:",
+        "updated:",
+        "heartbeat:",
+    )
+    assert STATUS_MD_REQUIRED_HEADINGS == expected_required_headings
+    assert isinstance(STATUS_MD_REQUIRED_HEADINGS, tuple)
+    for heading in STATUS_MD_REQUIRED_HEADINGS:
+        assert isinstance(heading, str)
+
+    expected_optional_headings = (
+        "heartbeat_note:",
+        "result:",
+        "error:",
+    )
+    assert STATUS_MD_OPTIONAL_HEADINGS == expected_optional_headings
+    assert isinstance(STATUS_MD_OPTIONAL_HEADINGS, tuple)
+    for heading in STATUS_MD_OPTIONAL_HEADINGS:
+        assert isinstance(heading, str)
+
+    assert STATUS_MD_HEADINGS == STATUS_MD_REQUIRED_HEADINGS + STATUS_MD_OPTIONAL_HEADINGS
+
+
+def test_status_md_constants_exported_from_top_level() -> None:
+    """STATUS_MD constants and renderer are exported from top-level stage_signal (SPEC §13.18)."""
+    import stage_signal
+
+    for symbol in (
+        "STATUS_MD_TITLE",
+        "STATUS_MD_REQUIRED_HEADINGS",
+        "STATUS_MD_OPTIONAL_HEADINGS",
+        "STATUS_MD_HEADINGS",
+        "render_status_md",
+    ):
+        assert hasattr(stage_signal, symbol), f"missing {symbol} attribute"
+        assert symbol in stage_signal.__all__, f"{symbol} not in __all__"
+
+    assert stage_signal.STATUS_MD_REQUIRED_HEADINGS is STATUS_MD_REQUIRED_HEADINGS
+    assert stage_signal.STATUS_MD_TITLE is STATUS_MD_TITLE
+    assert stage_signal.render_status_md is render_status_md
+
+
+def test_status_md_render_each_lifecycle_state() -> None:
+    """render_status_md emits all required headings for each lifecycle state (SPEC §13.18)."""
+    # 1. State: queued (initial state after init)
+    queued_status: dict[str, Any] = {
+        "schema_version": 1,
+        "project": "test-project",
+        "stage_id": None,
+        "stage_name": None,
+        "state": "queued",
+        "attempt": 1,
+        "session_id": None,
+        "pid": None,
+        "model": None,
+        "variant": None,
+        "repo_path": "/path/to/repo",
+        "git_branch": "main",
+        "git_head": "abc1234",
+        "started_at": None,
+        "updated_at": "2026-09-18T10:00:00+00:00",
+        "heartbeat_at": None,
+        "heartbeat_note": None,
+        "result": None,
+        "error": None,
+        "artifacts": [],
+        "proof": None,
+        "notes": [],
+        "meta": {},
+    }
+    md_queued = render_status_md(queued_status)
+    assert md_queued.startswith(STATUS_MD_TITLE)
+    for heading in STATUS_MD_REQUIRED_HEADINGS:
+        assert heading in md_queued
+    assert "state: queued" in md_queued
+    assert "stage: None" in md_queued
+    assert "heartbeat: None" in md_queued
+    assert "heartbeat_note:" not in md_queued
+    assert "result:" not in md_queued
+    assert "error:" not in md_queued
+
+    # 2. State: running
+    running_status: dict[str, Any] = {
+        **queued_status,
+        "state": "running",
+        "stage_name": "build-step",
+        "stage_id": "build-step-001",
+        "pid": 12345,
+        "started_at": "2026-09-18T10:01:00+00:00",
+        "updated_at": "2026-09-18T10:02:00+00:00",
+        "heartbeat_at": "2026-09-18T10:02:00+00:00",
+    }
+    md_running = render_status_md(running_status)
+    assert md_running.startswith(STATUS_MD_TITLE)
+    for heading in STATUS_MD_REQUIRED_HEADINGS:
+        assert heading in md_running
+    assert "state: running" in md_running
+    assert "stage: build-step" in md_running
+    assert "stage_id: build-step-001" in md_running
+    assert "heartbeat: 2026-09-18T10:02:00+00:00" in md_running
+    assert "result:" not in md_running
+    assert "error:" not in md_running
+
+    # 3. State: running with heartbeat_note
+    running_note_status: dict[str, Any] = {
+        **running_status,
+        "heartbeat_note": "compiling assets",
+    }
+    md_running_note = render_status_md(running_note_status)
+    for heading in STATUS_MD_REQUIRED_HEADINGS:
+        assert heading in md_running_note
+    assert "heartbeat_note: compiling assets" in md_running_note
+
+    # 4. State: done (terminal)
+    done_status: dict[str, Any] = {
+        **running_status,
+        "state": "done",
+        "updated_at": "2026-09-18T10:05:00+00:00",
+        "result": {
+            "summary": "build passed successfully",
+            "git_head": "def5678",
+            "finished_at": "2026-09-18T10:05:00+00:00",
+        },
+    }
+    md_done = render_status_md(done_status)
+    assert md_done.startswith(STATUS_MD_TITLE)
+    for heading in STATUS_MD_REQUIRED_HEADINGS:
+        assert heading in md_done
+    assert "state: done" in md_done
+    assert "result:" in md_done
+    assert '"summary": "build passed successfully"' in md_done
+    assert "error:" not in md_done
+
+    # 5. State: blocked (terminal)
+    blocked_status: dict[str, Any] = {
+        **running_status,
+        "state": "blocked",
+        "updated_at": "2026-09-18T10:03:00+00:00",
+        "error": {
+            "reason": "waiting for external credential",
+            "kind": "blocked",
+            "finished_at": "2026-09-18T10:03:00+00:00",
+        },
+    }
+    md_blocked = render_status_md(blocked_status)
+    assert md_blocked.startswith(STATUS_MD_TITLE)
+    for heading in STATUS_MD_REQUIRED_HEADINGS:
+        assert heading in md_blocked
+    assert "state: blocked" in md_blocked
+    assert "error:" in md_blocked
+    assert '"reason": "waiting for external credential"' in md_blocked
+    assert '"kind": "blocked"' in md_blocked
+    assert "result:" not in md_blocked
+
+    # 6. State: failed (terminal)
+    failed_status: dict[str, Any] = {
+        **running_status,
+        "state": "failed",
+        "updated_at": "2026-09-18T10:04:00+00:00",
+        "error": {
+            "reason": "test failure in test_foo",
+            "kind": "failed",
+            "finished_at": "2026-09-18T10:04:00+00:00",
+        },
+    }
+    md_failed = render_status_md(failed_status)
+    assert md_failed.startswith(STATUS_MD_TITLE)
+    for heading in STATUS_MD_REQUIRED_HEADINGS:
+        assert heading in md_failed
+    assert "state: failed" in md_failed
+    assert "error:" in md_failed
+    assert '"reason": "test failure in test_foo"' in md_failed
+    assert '"kind": "failed"' in md_failed
+    assert "result:" not in md_failed
+
+
+def test_status_md_readers_tolerate_extra_sections() -> None:
+    """Readers and parsers MUST tolerate unknown extra sections and fields (SPEC §13.1, §13.18)."""
+    # 1. Extra fields in status dict passed to renderer
+    status_with_extras = {
+        "schema_version": 1,
+        "project": "extra-test",
+        "stage_id": "s1",
+        "stage_name": "s1",
+        "state": "running",
+        "attempt": 1,
+        "updated_at": "2026-09-18T10:00:00+00:00",
+        "heartbeat_at": "2026-09-18T10:00:00+00:00",
+        "unknown_future_field": "future_value",
+        "nested_metadata": {"foo": "bar", "count": 42},
+    }
+    rendered = render_status_md(status_with_extras)
+    for heading in STATUS_MD_REQUIRED_HEADINGS:
+        assert heading in rendered
+
+    # 2. STATUS.md containing extra sections appended by future schema/writers
+    augmented_md = rendered + "\n## Future Extensions\nfuture_field: 42\ncustom_note: hello\n"
+    # An observer looking for required headings must find all of them intact
+    for heading in STATUS_MD_REQUIRED_HEADINGS:
+        assert heading in augmented_md
+
+    # Line-by-line parsing extracts required headings despite extra content
+    parsed: dict[str, str] = {}
+    for line in augmented_md.splitlines():
+        if ": " in line:
+            k, v = line.split(": ", 1)
+            parsed[k.strip()] = v.strip()
+
+    assert parsed.get("state") == "running"
+    assert parsed.get("stage") == "s1"
+    assert parsed.get("project") == "extra-test"
+    assert parsed.get("future_field") == "42"
+
+
+def test_write_status_md_best_effort_never_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """StageStore.write_status_md is best-effort and never raises on error (SPEC §2, §13.18)."""
+    stage_dir = tmp_path / ".stage-signal"
+    store = StageStore(stage_dir)
+    status = {
+        "state": "running",
+        "stage_name": "test",
+        "stage_id": "test-1",
+        "attempt": 1,
+        "project": "test",
+        "updated_at": "2026-09-18T10:00:00+00:00",
+        "heartbeat_at": "2026-09-18T10:00:00+00:00",
+    }
+
+    # 1. Normal write works
+    store.write_status_md(status)
+    assert (stage_dir / "STATUS.md").is_file()
+    content = (stage_dir / "STATUS.md").read_text(encoding="utf-8")
+    for heading in STATUS_MD_REQUIRED_HEADINGS:
+        assert heading in content
+
+    # 2. Mock mkstemp raising OSError (e.g. disk full / readonly)
+    def broken_mkstemp(*args: Any, **kwargs: Any) -> Any:
+        raise OSError("Disk quota exceeded")
+
+    monkeypatch.setattr("tempfile.mkstemp", broken_mkstemp)
+    # Must NOT raise
+    store.write_status_md(status)
+
+    # 3. Mock os.replace raising PermissionError
+    monkeypatch.undo()
+
+    def broken_replace(src: Any, dst: Any) -> None:
+        raise PermissionError("Access denied")
+
+    monkeypatch.setattr("os.replace", broken_replace)
+    # Must NOT raise
+    store.write_status_md(status)
+
+    # 4. Non-dict input passed to write_status_md
+    monkeypatch.undo()
+    # Must NOT raise even if bad input causes render failure
+    store.write_status_md(None)  # type: ignore[arg-type]
+    store.write_status_md("invalid-string")  # type: ignore[arg-type]
+
+
+def test_status_md_on_disk_lifecycle_smoke(tmp_path: Path) -> None:
+    """On-disk STATUS.md mirror is updated with required headings across lifecycle (SPEC §2, §13.18)."""
+    stage_dir = tmp_path / ".stage-signal"
+    st = Stage(str(stage_dir))
+
+    # 1. init -> queued
+    st.init(project="lifecycle-mirror-test")
+    md_path = stage_dir / "STATUS.md"
+    assert md_path.is_file()
+    content_queued = md_path.read_text(encoding="utf-8")
+    for heading in STATUS_MD_REQUIRED_HEADINGS:
+        assert heading in content_queued
+    assert "state: queued" in content_queued
+
+    # 2. start -> running
+    st.start(stage="task-1", pid=os.getpid())
+    content_running = md_path.read_text(encoding="utf-8")
+    for heading in STATUS_MD_REQUIRED_HEADINGS:
+        assert heading in content_running
+    assert "state: running" in content_running
+    assert "stage: task-1" in content_running
+
+    # 3. heartbeat with note
+    st.heartbeat(note="in progress")
+    content_note = md_path.read_text(encoding="utf-8")
+    for heading in STATUS_MD_REQUIRED_HEADINGS:
+        assert heading in content_note
+    assert "heartbeat_note: in progress" in content_note
+
+    # 4. done -> terminal done
+    st.done(summary="task finished successfully")
+    content_done = md_path.read_text(encoding="utf-8")
+    for heading in STATUS_MD_REQUIRED_HEADINGS:
+        assert heading in content_done
+    assert "state: done" in content_done
+    assert "result:" in content_done
+    assert '"summary": "task finished successfully"' in content_done
+
+    # 5. start new stage and fail -> terminal failed
+    st.start(stage="task-2", pid=os.getpid())
+    st.fail(reason="fatal failure encountered")
+    content_failed = md_path.read_text(encoding="utf-8")
+    for heading in STATUS_MD_REQUIRED_HEADINGS:
+        assert heading in content_failed
+    assert "state: failed" in content_failed
+    assert "error:" in content_failed
+    assert '"reason": "fatal failure encountered"' in content_failed

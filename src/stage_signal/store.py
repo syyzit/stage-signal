@@ -30,6 +30,7 @@ from .constants import (
     LOCK_FILENAME,
     STATUS_FILENAME,
     STATUS_MD_FILENAME,
+    STATUS_MD_TITLE,
 )
 from .errors import CorruptStatusError, NotInitialized
 
@@ -242,7 +243,7 @@ class StageStore:
                     os.unlink(tmp)
                 raise
         except Exception:
-            contextlib.suppress(Exception)
+            pass
 
 
 def validate_status(data: Any, *, source: str = "STATUS.json") -> None:
@@ -273,9 +274,9 @@ def validate_status(data: Any, *, source: str = "STATUS.json") -> None:
 
 
 def render_status_md(status: dict[str, Any]) -> str:
-    """Render the human-readable STATUS.md mirror."""
+    """Render the human-readable STATUS.md mirror (SPEC §13.18)."""
     lines = [
-        "# stage-signal STATUS",
+        STATUS_MD_TITLE,
         "",
         f"state: {status.get('state')}",
         f"stage: {status.get('stage_name')}",

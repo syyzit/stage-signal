@@ -6,6 +6,7 @@ See `docs/RELEASE.md` for the release procedure.
 
 ## [Unreleased]
 
+- Froze best-effort STATUS.md human mirror required sections in SPEC §13.18 via exported `STATUS_MD_REQUIRED_HEADINGS` and `STATUS_MD_TITLE`, documenting non-normative status vs `STATUS.json`, cross-linking §2, §10, and §13.13, and asserting reader tolerance of additive sections and non-raising write failures (#130).
 - Froze public exception hierarchy and exit mapping in SPEC §13.17 (`StageError`→1, `BadArgsError`→2, `IllegalTransition`→3, `NotInitialized`→15, `CorruptStatusError`→1, `WaitTimeout`→14), cross-linking §7 and §13.4, asserting top-level package exports, and guaranteeing additive-only evolution under `schema_version: 1` (#129).
 - Froze state-to-exit-code mapping in SPEC §13.16 via exported `STATE_EXIT_CODES` (`queued`→13, `running`→10, `done`→0, `blocked`→11, `failed`→12), cross-linking §13.4 and §6, documenting distinction from mutation command exits and guaranteeing additive-only observer mapping under `schema_version: 1` (#126).
 - Froze CLI subcommand inventory in SPEC §13.15 via exported `CLI_SUBCOMMANDS`, cross-linking §6, documenting `stage-signal == python -m stage_signal` entry point equivalence, and guaranteeing additive-only command surface under `schema_version: 1` (#125).
