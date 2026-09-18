@@ -250,8 +250,8 @@ def build_parser() -> argparse.ArgumentParser:
     c.set_defaults(func=cmd_clear_terminal)
 
     c = sub.add_parser("doctor", help="check stage dir health")
-    c.add_argument("--stale-after", type=float, default=300.0, metavar="SEC",
-                   help="warn on running heartbeat older than SEC (default: 300)")
+    c.add_argument("--stale-after", type=float, default=DEFAULT_STALE_THRESHOLD, metavar="SEC",
+                   help=f"warn on running heartbeat older than SEC (default: {int(DEFAULT_STALE_THRESHOLD)})")
     c.add_argument("--json", action="store_true", default=False,
                    help="output machine-readable JSON")
     c.add_argument("--format", choices=["human", "json"], default=None,

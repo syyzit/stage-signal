@@ -6,6 +6,7 @@ See `docs/RELEASE.md` for the release procedure.
 
 ## [Unreleased]
 
+- Froze environment variable names (`ENV_DIR`, `ENV_PROJECT`, `ENV_PROOF_REF`, `ENV_STATUS_MIRROR`, `ENV_VARS`) and timing/capacity defaults (`WAIT_DEFAULT_TIMEOUT`, `WAIT_DEFAULT_POLL`, `EVENTS_DEFAULT_TAIL`, `DEFAULT_STALE_THRESHOLD`, `SUPERVISE_DEFAULT_EVERY`, `MAX_NOTES`) in SPEC §13.14, documenting precedence (`--dir` wins over `STAGE_SIGNAL_DIR`) and exporting missing constants from `stage_signal` (#122).
 - Froze on-disk layout path constants in SPEC §13.13 via exported `DEFAULT_DIR_NAME`,
   `STATUS_FILENAME`, `STATUS_MD_FILENAME`, `EVENTS_FILENAME`, `LOCKS_DIRNAME`,
   `LOCK_FILENAME`, and `DEFAULT_MIRROR_DIRNAME`, cross-linking §2 and guaranteeing

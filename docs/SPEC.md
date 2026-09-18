@@ -868,4 +868,48 @@ defined in `stage_signal.constants` and exported from `stage_signal`.
 Under `schema_version: 1`, layout path constants are **additive-only** (§13.1): existing path names and relative layout positions MUST NOT be removed, renamed, or change semantic meaning. Readers and observers MUST tolerate unknown extra files or directories present in the stage directory without crashing or failing.
 
 Filesystem layout and concurrency locking rules remain defined in §2 and §8; the mirror directory layout remains defined in §10.
+### 13.14 Environment variables and timing defaults freeze (`ENV_DIR`, `WAIT_DEFAULT_TIMEOUT`, etc.)
+
+The canonical environment variable names and CLI/runtime numeric defaults and limits are frozen under `schema_version: 1`.
+
+#### 13.14.1 Environment variables
+
+`stage-signal` recognizes four canonical environment variables:
+
+| Constant | Env Var Name | Description | Precedence |
+|----------|--------------|-------------|------------|
+| `ENV_DIR` | `"STAGE_SIGNAL_DIR"` | Stage directory path override. | Explicit `--dir PATH` (or `Stage(dir=...)` / `resolve_dir(explicit)`) takes precedence over `ENV_DIR`; if neither is set, defaults to `DEFAULT_DIR_NAME` (`.stage-signal`) per §2. |
+| `ENV_PROJECT` | `"STAGE_SIGNAL_PROJECT"` | Project identifier fallback when initializing or starting a stage. | Explicit `--project` / `project=` takes precedence; if omitted, falls back to `ENV_PROJECT`, then Git/directory name inference. |
+| `ENV_PROOF_REF` | `"STAGE_SIGNAL_PROOF_REF"` | Proof reference fallback for `--require-proof` / `--proof-ref`. | Explicit `--proof-ref R` takes precedence; falls back to `ENV_PROOF_REF` per §9. |
+| `ENV_STATUS_MIRROR` | `"STAGE_SIGNAL_STATUS_MIRROR"` | Enables optional `.orch` status mirror (`"1"`, `"true"`, `"yes"`). | Explicit `--write-status-mirror` / `write_status_mirror=True` or `ENV_STATUS_MIRROR` enables mirroring per §10. |
+
+Precedence rule: `--dir` strictly wins over `STAGE_SIGNAL_DIR` (`ENV_DIR`) per §2.
+
+The single sources of truth for these environment variable names are:
+- `ENV_DIR = "STAGE_SIGNAL_DIR"`
+- `ENV_PROJECT = "STAGE_SIGNAL_PROJECT"`
+- `ENV_PROOF_REF = "STAGE_SIGNAL_PROOF_REF"`
+- `ENV_STATUS_MIRROR = "STAGE_SIGNAL_STATUS_MIRROR"`
+- `ENV_VARS = (ENV_DIR, ENV_PROJECT, ENV_PROOF_REF, ENV_STATUS_MIRROR)`
+
+defined in `stage_signal.constants` and exported from `stage_signal`.
+
+Under `schema_version: 1`, environment variable names are strictly **additive-only** (§13.1): these variable names MUST NOT be removed, renamed, or change their semantic meaning. Future environment variables introduced under schema version 1 must follow the `STAGE_SIGNAL_*` prefix convention.
+
+#### 13.14.2 Timing defaults and limits
+
+The canonical CLI timing defaults, staleness thresholds, and capacity limits are frozen:
+
+| Constant | Value | Type | Description |
+|----------|-------|------|-------------|
+| `WAIT_DEFAULT_TIMEOUT` | `3600.0` | float | Default timeout for `wait` in seconds (1 hour) when `--timeout` is omitted (§6). |
+| `WAIT_DEFAULT_POLL` | `5.0` | float | Default polling interval for `wait` in seconds (5s) when `--poll` is omitted (§6). |
+| `EVENTS_DEFAULT_TAIL` | `20` | int | Default event count for `events` CLI when `--tail` is omitted (§5, §13.6). |
+| `DEFAULT_STALE_THRESHOLD` | `300.0` | float | Default heartbeat staleness threshold in seconds (5 minutes) for `doctor` and `supervise` (§4, §6). |
+| `SUPERVISE_DEFAULT_EVERY` | `60.0` | float | Default heartbeat emission interval in seconds (1 minute) for `supervise` (§6). |
+| `MAX_NOTES` | `200` | int | Maximum number of note objects retained in `STATUS.json`'s `notes[]` list (§3). |
+
+The single sources of truth for these timing defaults and limits are defined in `stage_signal.constants` and exported from `stage_signal`.
+
+Under `schema_version: 1`, current numeric defaults are pinned. Numeric defaults may be tuned only via documented SemVer-minor note if ever changed; for this freeze, orchestrators and CLI callers can rely on these exact values as standard baseline behavior.
 
