@@ -1387,7 +1387,7 @@ External orchestrators, Python embedders, typing tools, and harnesses interact w
 
 #### 13.21.1 Canonical export inventory
 
-`stage_signal` exports exactly 124 public symbols matching `stage_signal.__all__`. These symbols are structured into four canonical categories:
+`stage_signal` exports exactly 128 public symbols matching `stage_signal.__all__`. These symbols are structured into four canonical categories:
 
 ##### 1. Classes (§11, §13.20)
 - `Stage`: The primary high-level lifecycle orchestrator, embedding context manager, and transition driver (§11, §13.20).
@@ -1428,7 +1428,7 @@ All six structured exceptions inherit from `StageError` and carry a normative `.
 - **Inventories:**
   - `CLI_SUBCOMMANDS`: 15 frozen CLI subcommands (§13.15).
   - `STAGE_PUBLIC_METHODS`: 15 frozen `Stage` public instance methods (§13.20).
-  - `PUBLIC_EXPORTS`: 124 frozen public symbols exported from top-level package namespace (§13.21).
+  - `PUBLIC_EXPORTS`: 128 frozen public symbols exported from top-level package namespace (§13.21).
 - **Exit codes:**
   - `EXIT_CODES`: Tuple of all 10 standard exit codes (§7, §13.4).
   - Individual exit codes: `EXIT_OK` (0), `EXIT_ERROR` (1), `EXIT_BAD_ARGS` (2), `EXIT_ILLEGAL_TRANSITION` (3), `EXIT_RUNNING` (10), `EXIT_BLOCKED` (11), `EXIT_FAILED` (12), `EXIT_QUEUED` (13), `EXIT_WAIT_TIMEOUT` (14), `EXIT_NOT_INITIALIZED` (15) (§7, §13.4).
@@ -1492,6 +1492,11 @@ All six structured exceptions inherit from `StageError` and carry a normative `.
 - **Note progress appending:**
   - `NOTE_ALLOWED_SOURCES`: Legal source states (`"running"` only; §4, §13.28).
   - `NOTE_DETAIL_KEYS`: Audit detail keys (empty — note carries no detail extras; §5, §13.28).
+- **Fail terminal:**
+  - `FAIL_ALLOWED_SOURCES`: Legal plain-fail source states (`"queued"`, `"running"`, `"failed"`; §4 rule 6, §13.31).
+  - `FAIL_IF_DEAD_PID_ALLOWED_SOURCES`: Legal `--if-dead-pid` source states (`"queued"`, `"running"`, `"failed"`; §4 rule 6, §13.31).
+  - `FAIL_IF_NEEDS_RECLAIM_ALLOWED_SOURCES`: Legal `--if-needs-reclaim` source states (`"running"` only; §4 rule 6, §13.31).
+  - `FAIL_DETAIL_KEYS`: Audit detail keys (empty — fail carries no detail extras; §5, §13.31).
 - **Clear-terminal reset and audit:**
   - `CLEAR_TERMINAL_ALLOWED_SOURCES`: Legal source states (`"done"`, `"blocked"`, `"failed"`, `"queued"`; §4, §13.26).
   - `CLEAR_TERMINAL_IDLE_RESET_FIELDS`: Ten identity/claim fields reset to idle by default (§4, §13.26).
@@ -1556,6 +1561,10 @@ PUBLIC_EXPORTS: tuple[str, ...] = (
     "EXIT_QUEUED",
     "EXIT_RUNNING",
     "EXIT_WAIT_TIMEOUT",
+    "FAIL_ALLOWED_SOURCES",
+    "FAIL_DETAIL_KEYS",
+    "FAIL_IF_DEAD_PID_ALLOWED_SOURCES",
+    "FAIL_IF_NEEDS_RECLAIM_ALLOWED_SOURCES",
     "HEARTBEAT_ALLOWED_SOURCES",
     "HEARTBEAT_DETAIL_KEYS",
     "IllegalTransition",
@@ -1656,7 +1665,7 @@ Under `schema_version: 1`, the top-level public export inventory is strictly **a
 - Existing symbols in `PUBLIC_EXPORTS` MUST NOT be removed, renamed, or relocated.
 - Existing symbol types, semantics, and contracts MUST NOT undergo breaking changes.
 - Future minor or patch releases under schema version 1 MAY add new classes, helper functions, or frozen constants to `stage_signal`, expanding `PUBLIC_EXPORTS` and `__all__`.
-- External orchestrators, embedders, and typing definitions can safely rely on the uninterrupted presence of all 124 public exports throughout the entire lifecycle of `schema_version: 1`.
+- External orchestrators, embedders, and typing definitions can safely rely on the uninterrupted presence of all 128 public exports throughout the entire lifecycle of `schema_version: 1`.
 
 ### 13.22 Doctor human summary strings freeze (`DOCTOR_SUMMARY_RECLAIM_NEEDED`, `DOCTOR_SUMMARY_OK_FORMAT`)
 
@@ -2487,3 +2496,118 @@ Under `schema_version: 1`, the done terminal contract is strictly **additive-onl
 - New result keys or audit detail keys MAY be added in minor or patch releases only as additional optional fields; existing frozen values MUST keep their exact values and types.
 - Readers MUST tolerate unknown future result keys and unknown future detail keys without failing.
 
+### 13.31 Fail terminal contract freeze (`FAIL_ALLOWED_SOURCES`, `FAIL_IF_DEAD_PID_ALLOWED_SOURCES`, `FAIL_IF_NEEDS_RECLAIM_ALLOWED_SOURCES`, `FAIL_DETAIL_KEYS`)
+
+`Stage.fail` / `stage-signal fail --reason TEXT [--if-dead-pid|--if-needs-reclaim]` (§4 rule 6, §6, §13.20) marks a hard failure by transitioning the stage to terminal `failed` with an `error` payload. Under `schema_version: 1`, the plain-fail allowed sources, the non-empty reason validation, the mutual exclusion of the two guard flags, each flag's guard semantics, the `error`-object shape (cross-linked to `ERROR_KEYS` / `ERROR_KINDS`, not redefined), the `result`-to-`null` rule, and the `failed` audit event shape are frozen so orchestrators can fail a stage — or conditionally fail a stuck `running` stage — and branch on `error.reason` / `error.kind` without scraping human text. The `failed` event type itself is frozen in §13.5 and the record keys in §13.6; the allowed edges are frozen in §13.19.
+
+#### 13.31.1 Frozen constants and exact values
+
+The single sources of truth are defined in `stage_signal.constants` and exported from `stage_signal` and `__all__`:
+
+```python
+FAIL_ALLOWED_SOURCES = (
+    "queued",
+    "running",
+    "failed",
+)
+
+FAIL_IF_DEAD_PID_ALLOWED_SOURCES = (
+    "queued",
+    "running",
+    "failed",
+)
+
+FAIL_IF_NEEDS_RECLAIM_ALLOWED_SOURCES = (
+    "running",
+)
+
+FAIL_DETAIL_KEYS: tuple[str, ...] = ()
+```
+
+- `FAIL_ALLOWED_SOURCES`: exactly `("queued", "running", "failed")`. Plain `fail` (neither guard flag) is legal from `queued` or `running`, plus the idempotent repeat from `failed` (§4 rule 6, §13.12). It MUST equal `allowed_source_states("fail")` from `ALLOWED_TRANSITIONS` (§13.19), whose frozen plain-fail edges are `(queued, "fail") -> failed`, `(running, "fail") -> failed`, and `(failed, "fail") -> failed`.
+- `FAIL_IF_DEAD_PID_ALLOWED_SOURCES`: exactly `("queued", "running", "failed")`. It MUST equal `allowed_source_states("fail --if-dead-pid")` (§13.19), whose frozen edges are `(queued, "fail --if-dead-pid") -> failed`, `(running, "fail --if-dead-pid") -> failed`, and `(failed, "fail --if-dead-pid") -> failed`. Outside `running` the dead-pid guard is skipped and plain-fail rules apply (§13.31.5); from `done` or `blocked` the call is still refused (exit 3).
+- `FAIL_IF_NEEDS_RECLAIM_ALLOWED_SOURCES`: exactly `("running",)`. It MUST equal `allowed_source_states("fail --if-needs-reclaim")` (§13.19), whose sole frozen edge is `(running, "fail --if-needs-reclaim") -> failed`. The runtime guard additionally requires `needs_reclaim` to be true (§13.31.4); a healthy `running` stage or any non-running state refuses with exit 3.
+- `FAIL_DETAIL_KEYS`: exactly `()`. A `fail`-emitted `failed` audit record carries no detail extras (`detail == {}`, §13.31.7). This is distinct from the reclaim-emitted `failed` event, which carries `RECLAIM_FAILED_DETAIL_KEYS` (§13.25); readers distinguish direct failures (empty detail) from reclaim failures (reclaim detail keys) by the detail shape.
+
+#### 13.31.2 Plain-fail allowed sources and the terminal guard
+
+Plain `fail` (neither `--if-dead-pid` nor `--if-needs-reclaim`) enforces `_require_terminal_source(current, STATE_FAILED, "fail")`, i.e. the `(state, "fail")` edge MUST be a member of `ALLOWED_TRANSITIONS` (§13.19), otherwise `IllegalTransition` (exit 3) with no mutation:
+
+| Precondition failure | Library | CLI exit |
+|----------------------|---------|----------|
+| Stage not initialized (missing dir/STATUS) | `NotInitialized` | 15 (`EXIT_NOT_INITIALIZED`; §7, §13.4, §13.17) |
+| Corrupt `STATUS.json` / unreadable events | `CorruptStatusError` | 1 (`EXIT_ERROR`; §7, §13.4, §13.17) |
+| Missing, empty, or whitespace-only `--reason` | `BadArgsError` | 2 (`EXIT_BAD_ARGS`; §7, §13.4, §13.17) |
+| Both `--if-dead-pid` and `--if-needs-reclaim` | `BadArgsError` | 2 (`EXIT_BAD_ARGS`; §7, §13.4, §13.17) |
+| Current state is `done` or `blocked` (terminal-to-different-terminal without an intervening `start`) | `IllegalTransition` | 3 (`EXIT_ILLEGAL_TRANSITION`; §7, §13.4, §13.17) |
+
+`fail` from `failed` is the idempotent repeat (exit 0, reason overwritten). `fail` from `done` or `blocked` is strictly illegal and MUST raise `IllegalTransition` (exit 3) with no mutation of STATUS, events, or mirrors. Argument validation (exit 2) is evaluated before any state guard, so an empty reason or a flag conflict is exit 2 regardless of state. All guards are checked under the mutation lock.
+
+#### 13.31.3 Reason validation and flag mutual exclusion
+
+From the exact implementation in `Stage.fail` (`src/stage_signal/stage.py`), evaluated in order before any mutation:
+
+- **Reason validation:** `if not reason or not reason.strip(): raise BadArgsError("fail requires non-empty --reason TEXT")`.
+  - Passing `None`, an empty string `""`, or a whitespace-only string (spaces, tabs, newlines) raises `BadArgsError`.
+  - In the CLI, `--reason` is `required=True`, so omitting the flag makes `argparse` fail with exit 2 (`EXIT_BAD_ARGS`); passing `--reason ""` or `--reason "  "` reaches `Stage.fail`, which raises `BadArgsError` (exit 2).
+  - Validation strips only for the emptiness check: a valid reason is stored byte-for-byte as supplied (no stripping, no normalization); the audit `message` and `error.reason` carry the original string verbatim (§13.31.6, §13.31.7).
+- **Mutual exclusion:** `if if_dead_pid and if_needs_reclaim: raise BadArgsError("fail --if-dead-pid and --if-needs-reclaim are mutually exclusive")` (exit 2), with no mutation. The CLI usage line keeps the flags exclusive: `stage-signal fail --reason TEXT [--if-dead-pid|--if-needs-reclaim]` (§6).
+
+#### 13.31.4 `--if-needs-reclaim` guard
+
+With `if_needs_reclaim=True`, the plain-fail source check is replaced by the reclaim-detection guard, evaluated under the mutation lock with the default 300-second heartbeat threshold (`DEFAULT_STALE_THRESHOLD`; §13.14):
+
+- The transition to `failed` (exit 0) succeeds **only** when `needs_reclaim` would be true under the same detection as `Stage.diagnose()` / `doctor` / `status`: `state == "running"` and a `DEAD_PID` or `STALE_HEARTBEAT` warning applies (§4 rule 7, §13.8). An `UNPARSEABLE_HEARTBEAT` warning alone does not satisfy the guard.
+- When `needs_reclaim` is false (healthy `running`, or any non-running state including `queued`, `done`, `blocked`, and `failed`), the call MUST raise `IllegalTransition` (exit 3) with a message stating the refusal (`"fail --if-needs-reclaim refused: needs_reclaim is false ..."`) and MUST NOT mutate status, events, or mirrors.
+- On success the payload and audit shape are identical to plain `fail` (§13.31.6, §13.31.7): a single `failed` event with empty detail (no `reclaim` keys; the two-event reclaim trail belongs to `reclaim`, §13.25).
+
+#### 13.31.5 `--if-dead-pid` guard
+
+With `if_dead_pid=True` (and `if_needs_reclaim=False`), the plain-fail source check still applies first; the liveness guard additionally applies when the current state is `running`:
+
+- Outside `running`, normal fail rules apply (§13.31.2): `queued` and `failed` allow the transition (exit 0), while `done` and `blocked` reject it with `IllegalTransition` (exit 3). The liveness probe does not run.
+- From `running`, the recorded claiming `pid` MUST be a valid positive integer (not a boolean): a null, missing-as-null, non-integer, boolean, or non-positive pid raises `IllegalTransition` (exit 3) with no mutation. (A wholly absent `pid` key fails schema validation first as corrupt status, exit 1; §4 rule 6, §13.2.)
+- From `running` with a valid pid, the shared `_is_pid_alive` probe MUST return exactly `False` (confirmed dead). A live pid (`True`) refuses with `"fail --if-dead-pid refused: claiming pid <N> is alive"`; unknown liveness (`None`) refuses with `"fail --if-dead-pid refused: claiming pid <N> has unknown liveness"` — both `IllegalTransition` (exit 3) with no mutation. The guard is checked under the mutation lock. No signal is ever sent by `fail` (termination belongs to `reclaim --kill`, §13.25).
+- On success the payload and audit shape are identical to plain `fail` (§13.31.6, §13.31.7).
+
+#### 13.31.6 Success payload: `error` object, `kind`, and `result=null`
+
+On success, from the exact implementation in `Stage.fail` (`src/stage_signal/stage.py`):
+
+- `state` is set to `"failed"` (`STATE_FAILED`; §13.12).
+- `error` is set to `{"reason": reason, "kind": "failed", "finished_at": now_iso()}`, where `reason` is the verbatim supplied string and `finished_at` is the current ISO-8601 timestamp (`now_iso()`).
+- `set(error.keys()) == set(ERROR_KEYS)` (`reason`, `kind`, `finished_at`); the `error` object keys are owned by §13.9 and are NOT redefined here. `error.kind` is exactly `"failed"` (`STATE_FAILED`), a member of the frozen `ERROR_KINDS` (`blocked`, `failed`; §13.9). Readers MUST tolerate unknown additional keys on the `error` object (§13.1, §13.9).
+- `result` is set to `null` (a `failed` stage never carries a `result`; §13.9).
+- `updated_at` is bumped by the standard mutation path (§4 rule 9). All other STATUS fields (`stage_id`, `stage_name`, `attempt`, `session_id`, `pid`, `pid_token`, `proof`, `artifacts`, `notes`, `meta`, claim/git/heartbeat fields) are preserved unchanged.
+- CLI stdout on success is `failed <one_line_summary>: <reason>` (e.g. `failed failed my-stage (attempt 1): disk full`) with exit 0 (`EXIT_OK`; mutation commands exit 0 on success regardless of target state, §7, §13.4). A successful `failed` transition (not the `fail` command) is mirror-eligible: when mirroring is enabled (`--write-status-mirror` or `$STAGE_SIGNAL_STATUS_MIRROR`), the `.orch/` mirror is rewritten best-effort (§10); mirror failures warn on `stderr` and never abort the transition.
+
+#### 13.31.7 Audit event shape
+
+Each successful `fail` call — plain or guarded — appends exactly one `failed` event (§5; no new event type is introduced):
+
+- `type` is exactly `"failed"` (a member of `EVENT_TYPES`; §13.5) with the standard record keys (`EVENT_RECORD_KEYS`; §13.6). `ts` equals the mutation `updated_at`. `state` is `"failed"` and `stage_id` / `stage_name` / `attempt` reflect the post-mutation STATUS.
+- `message` is the reason passthrough: exactly the supplied `reason` string — byte-for-byte, no affixes.
+- `detail` is exactly `{}`: `set(detail.keys()) == set(FAIL_DETAIL_KEYS)` (empty). The reclaim-emitted `failed` event (owned by §13.25) instead carries `RECLAIM_FAILED_DETAIL_KEYS`; readers distinguish direct failures from reclaim failures by the detail shape.
+
+Readers MUST tolerate additive unknown keys on the `failed` `detail` object without failing (§13.1).
+
+#### 13.31.8 Cross-links
+
+- **§4 rule 6 (States & transitions):** normative `fail --reason [--if-dead-pid|--if-needs-reclaim]` rule — plain sources, both guards, mutual exclusion, and the `updated_at` bump rule (§4 rule 9); staleness never auto-mutates.
+- **§5 (events.jsonl) + §13.5/§13.6:** the `failed` event type and required record keys; audit-trail reads via `events` (including after `fail --if-needs-reclaim` / `--if-dead-pid` recovery).
+- **§6 (CLI contract):** `stage-signal fail --reason TEXT [--if-dead-pid|--if-needs-reclaim] [--write-status-mirror]` usage line; mutation-command exit 0 contract; the `doctor` `DEAD_PID` recovery hint naming `fail --reason TEXT --if-dead-pid`.
+- **§13.9 (result/error object keys freeze):** `ERROR_KEYS` (`reason`, `kind`, `finished_at`) matched by every fail-written `error` object and `ERROR_KINDS` (`blocked`, `failed`) containing `error.kind`; `result: null` validity.
+- **§13.12 (states freeze):** `failed` as a terminal state vs `queued`/`running` sources and the `done`/`blocked` refusal.
+- **§13.17 (exception hierarchy freeze):** `BadArgsError` (exit 2) for reason/flag validation, `IllegalTransition` (exit 3) for source/guard refusal, `NotInitialized` (exit 15) / `CorruptStatusError` (exit 1) for precondition failures.
+- **§13.19 (transition matrix freeze):** the frozen `fail`, `fail --if-dead-pid`, and `fail --if-needs-reclaim` edges and the illegal-edge refusal rule.
+- **§13.20 (Stage method surface freeze):** `fail(reason, *, if_dead_pid=False, if_needs_reclaim=False, write_status_mirror=None) -> dict[str, Any]` signature and CLI equivalence.
+- **§4 rule 7 + §13.25 (reclaim freeze):** shared `needs_reclaim` detection (`DEAD_PID` / `STALE_HEARTBEAT`) and the distinct reclaim `failed`-event detail / two-event trail; `fail` never signals or clears.
+
+#### 13.31.9 Additive-only evolution policy
+
+Under `schema_version: 1`, the fail terminal contract is strictly **additive-only** (§13.1):
+
+- The frozen plain-fail sources, the non-empty-reason validation, the flag mutual exclusion, the per-flag guards (including the exact `False`-means-dead liveness requirement and the `needs_reclaim`-false refusal), the `ERROR_KEYS`-matching / `kind: failed` / `result: null` payload, and the reason-passthrough / empty-`detail` audit shape MUST NOT be removed, renamed, reworded, or change semantic meaning.
+- No new event type is introduced for failing: the audit record stays a `failed` event (§13.5).
+- New fail detail keys or guard modes MAY be added in minor or patch releases only as additional constants; existing frozen values MUST keep their exact values.
+- Readers MUST tolerate unknown future `failed` detail keys and unknown future `error` object keys without failing.
