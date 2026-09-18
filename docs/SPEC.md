@@ -3627,5 +3627,109 @@ Under `schema_version: 1`, the `.orch` mirror write contract is strictly **addit
 - `STATUS.json` stays the sole normative state: orchestrators MUST NOT treat the `.orch/` mirror as authoritative and MUST fall back to `status --json` (§13.35) when the mirror is absent or stale.
 
 
+### 13.40 Reserved: concurrency locking contract (parallel lane, issue #175)
+
+`§13.40` is reserved for the locking freeze owned by the parallel lane (issue #175) and is intentionally left undefined here. This section (`§13.41`) MUST NOT define, constrain, or assume any locking behavior beyond what `§13.30` already states (verify-before-mutate runs before any mutation; a refused gate mutates nothing).
+
+
+### 13.41 Proof composition gate freeze (`--proof-ref` / `--require-proof`, no new constants)
+
+`Stage.done(..., proof_ref=None, require_proof=False)` / `stage-signal done [--proof-ref REF] [--require-proof]` (§4 rule 5, §6, §9, §13.20, §13.30) composes the completion proof recorded on the terminal `done` transition. Under `schema_version: 1`, the gate has exactly two modes — record-only `--proof-ref` (no verification) vs `--require-proof` verify-before-mutate — with an explicit-flag-beats-environment resolution order, a file gate (`verified="file"`) tried before the external `agent-done-or-not verify` gate (`verified="verify"`), and a fail-closed refusal (`IllegalTransition`, exit 3) that mutates nothing when neither gate passes. This section introduces **no new constants and no new exports**: the proof shape stays frozen in §13.10 (`PROOF_KEYS`, `PROOF_VERIFIED_VALUES` — referenced here, never redefined), the fallback name in §13.14 (`ENV_PROOF_REF` / `ENV_VARS`), the refusal code in §13.4 (`EXIT_ILLEGAL_TRANSITION`), the refusal exception in §13.17 (`IllegalTransition`), and the verifier entry point in §13.21 (`verify_proof`). `PUBLIC_EXPORTS` stays at 134 symbols.
+
+#### 13.41.1 Frozen constants and exact values (existing symbols only)
+
+```python
+PROOF_KEYS = ("tool", "ref", "verified")
+PROOF_VERIFIED_VALUES = (None, "file", "verify")
+ENV_PROOF_REF = "STAGE_SIGNAL_PROOF_REF"
+EXIT_ILLEGAL_TRANSITION = 3
+```
+
+```python
+def verify_proof(ref: Optional[str] = None) -> dict[str, Any]:
+    """Verify a proof reference for `done --require-proof` (SPEC §9)."""
+```
+
+- `PROOF_KEYS` (`("tool", "ref", "verified")`; §13.10): every non-null proof object written by `done` includes all three keys. This section does not restate their types or meanings — §13.10 is normative and is not redefined here.
+- `PROOF_VERIFIED_VALUES` (`(None, "file", "verify")`; §13.10): the closed verified enum. `None` means recorded-without-checking (record-only mode); `"file"` means the file gate passed; `"verify"` means the external verifier passed. This section does not restate the enum — §13.10 is normative and is not redefined here.
+- `ENV_PROOF_REF` (`"STAGE_SIGNAL_PROOF_REF"`; §13.14): the environment fallback name for the proof reference, already a member of `ENV_VARS`. The precedence rule is frozen in §13.41.3.
+- `EXIT_ILLEGAL_TRANSITION` (`3`; §13.4) and `IllegalTransition` (§13.17): every gate refusal raises `IllegalTransition` in the library and exits 3 on the CLI. No gate failure ever maps to another exit code.
+- `verify_proof(ref=None) -> dict[str, Any]` (§13.21): the single verification entry point, shared by `Stage.done` and any direct library caller. Its gate order and failure messages are frozen in §13.41.4.
+- `PUBLIC_EXPORTS` stays at 134 symbols: this section adds no entry (§13.21).
+
+#### 13.41.2 Record-only `--proof-ref` vs `--require-proof` verify-before-mutate
+
+From the exact implementation in `Stage.done` (`src/stage_signal/stage.py`):
+
+```python
+ref = proof_ref or os.environ.get(ENV_PROOF_REF)
+if require_proof:
+    proof = verify_proof(ref)  # before any mutation
+elif ref:
+    proof = {"tool": "agent-done-or-not", "ref": ref, "verified": None}
+```
+
+- **Record-only (`require_proof=False` with a resolved non-empty `ref`):** `done` records `proof = {"tool": "agent-done-or-not", "ref": ref, "verified": None}` with zero verification — no filesystem check, no subprocess, no `PATH` lookup. A dangling or nonsense `ref` (missing file, unknown binary) is still recorded exit 0. The `tool` value is always the literal string `"agent-done-or-not"`; the `ref` value is the resolved string byte-for-byte (§13.41.3).
+- **Verify-before-mutate (`require_proof=True`):** `done` calls `verify_proof(ref)` **before** any mutation (before the transition guard, before the exclusive-lock write, before the audit event). On success the returned dict (with `verified` in `("file", "verify")`) becomes the recorded proof; on refusal `verify_proof` raises `IllegalTransition` and the `done` transition is aborted with no mutation whatsoever (§13.41.5).
+- **Omitted proof (`require_proof=False` with null/empty resolved `ref`):** `proof` is `None` and the existing `current["proof"]` is preserved as-is (§13.30.3). A plain `done` with no `--proof-ref` and no `ENV_PROOF_REF` never clears a previously recorded proof.
+- **CLI shape:** `done --proof-ref` defaults to `None` and `--require-proof` is `action="store_true", default=False` (`src/stage_signal/cli.py`); `cmd_done` passes both through verbatim to `Stage.done`. `--require-proof` without `--proof-ref` is legal and resolves via the environment (§13.41.3); `--proof-ref` without `--require-proof` is the record-only mode.
+
+#### 13.41.3 Resolution order: explicit flag beats environment
+
+The proof reference resolver is frozen as `ref = proof_ref or os.environ.get(ENV_PROOF_REF)`, evaluated identically in `Stage.done` and in `verify_proof`:
+
+- An explicit non-empty `proof_ref` argument (CLI `--proof-ref REF`) always wins over `ENV_PROOF_REF` (`STAGE_SIGNAL_PROOF_REF`; §13.14).
+- When the explicit argument is omitted, `None`, or the empty string, the environment value is used as-is (including any surrounding whitespace — no stripping, no normalization).
+- When both are missing or empty, the resolved `ref` is falsy: record-only mode records nothing (`proof` is `None`), while `--require-proof` refuses immediately with `IllegalTransition("--require-proof needs --proof-ref REF or $STAGE_SIGNAL_PROOF_REF (no proof reference given)")` (exit 3).
+- `Path(ref).expanduser()` is applied only inside the file gate (§13.41.4); the recorded `proof["ref"]` is always the unresolved-as-passed string, never the expanded path.
+
+#### 13.41.4 File gate (`verified="file"`) vs external verifier (`verified="verify"`); fail-closed exit 3
+
+From the exact implementation in `verify_proof` (`src/stage_signal/stage.py`), the gate order is frozen:
+
+1. **Missing reference:** falsy `ref` (after the §13.41.3 fallback) raises `IllegalTransition("--require-proof needs --proof-ref REF or $STAGE_SIGNAL_PROOF_REF (no proof reference given)")`.
+2. **File gate:** `candidate = Path(ref).expanduser()`; when `candidate.is_file()` is true, the gate is decided by the file alone — the external verifier is never consulted:
+   - `candidate.stat().st_size > 0` → return `{"tool": "agent-done-or-not", "ref": ref, "verified": "file"}`.
+   - Empty file, or an `OSError` from `stat()` → raise `IllegalTransition(f"proof gate failed: file {ref!r} is empty/unreadable")`.
+   - A directory (or any non-file path) at `ref` is not a file gate hit: it falls through to the external verifier below.
+3. **External verifier gate:** when `ref` is not an existing file, `shutil.which("agent-done-or-not")` is consulted. When the binary is on `PATH`, the frozen command `agent-done-or-not verify --ref R` runs with `capture_output=True, text=True, timeout=120` (on Windows `.cmd`/`.bat` shims the command is prefixed via `COMSPEC`/`cmd.exe /c`):
+   - Exit code 0 → return `{"tool": "agent-done-or-not", "ref": ref, "verified": "verify"}`. Verifier stdout/stderr content is ignored on success.
+   - Non-zero exit → raise `IllegalTransition(f"proof gate failed: agent-done-or-not verify exited {code}: {(stderr or stdout).strip()}")`.
+   - `OSError` / `subprocess.SubprocessError` during launch or wait → raise `IllegalTransition(f"proof gate failed: agent-done-or-not error: {exc}")`.
+4. **Fail closed:** when `ref` is not an existing file and no `agent-done-or-not` binary is on `PATH`, raise `IllegalTransition(f"proof gate failed: {ref!r} is not an existing file and agent-done-or-not is not on PATH (fail closed)")`.
+
+- The file gate always wins over the external verifier: an existing non-empty file returns `verified="file"` even when a passing verifier binary is also installed.
+- Every refusal path raises `IllegalTransition` (never `BadArgsError`, never a bare `OSError`), so the CLI always exits 3 (`EXIT_ILLEGAL_TRANSITION`; §7, §13.4, §13.17). Rationale (§9): never silently claim proof.
+- The library shells out only here: `verify_proof` is the single place in the codebase that spawns a subprocess, and only when the file gate missed and the binary exists. No network access is ever performed by the gate.
+
+#### 13.41.5 Verify-before-mutate atomicity: refusal mutates nothing
+
+- `Stage.done` evaluates `verify_proof(ref)` before entering `_mutate`, so a refused gate performs zero writes: `STATUS.json` bytes, `events.jsonl` (no `done` event appended), the in-dir `.stage-signal/STATUS.md` mirror, and any `.orch/` mirror (§13.39) all remain completely unmodified — identical to the illegal-source guards in §13.30.2.
+- Because verification precedes the transition guard, a refused gate reports the proof failure even when the source state would also reject the transition; conversely a passing gate still enforces the frozen `DONE_ALLOWED_SOURCES` / `DONE_ACCEPT_FAILURE_ALLOWED_SOURCES` guards (§13.30.2) afterwards.
+- On success the verified proof dict flows into the frozen `done` write path unchanged: `current["proof"]` assignment (§13.30.3) and the `done` audit event `detail["proof"]` (§13.30.5) carry the exact dict `verify_proof` returned.
+
+#### 13.41.6 Cross-links
+
+- **§4 rule 5 (States & transitions):** `done` sources, idempotent repeat, `--accept-failure`-only-from-`failed`, and the `--require-proof` verifies-before-mutating rule with exit 3 and no mutation.
+- **§7 (Exit codes):** gate refusal is exit 3; record-only success and verified success are exit 0.
+- **§9 (Proof-of-done protocol):** the user-facing composition definition frozen here (record-only pointer vs file-or-verifier verification, fail-closed rationale, library-shells-out-only-here).
+- **§13.4 (Exit-code table freeze `EXIT_CODES`):** `EXIT_ILLEGAL_TRANSITION` (`3`) reused for every gate refusal; no new code.
+- **§13.9 (result/error keys freeze):** the `done` result payload shape is unchanged by the gate; proof composition touches only `proof` and `detail["proof"]`, never `RESULT_KEYS`.
+- **§13.10 (Proof keys and verified enum freeze):** `PROOF_KEYS` / `PROOF_VERIFIED_VALUES` referenced normatively, never redefined; this section freezes gate *behavior* producing those values.
+- **§13.14 (Environment and timing defaults freeze):** `ENV_PROOF_REF` / `ENV_VARS` names reused; the explicit-flag-beats-environment precedence of §13.41.3.
+- **§13.17 (Public exception hierarchy and exit mapping freeze):** `IllegalTransition` (exit 3) reused for every gate refusal; the CLI boundary maps it to exit 3.
+- **§13.21 (Top-level public export inventory):** no addition — `verify_proof`, `PROOF_KEYS`, `PROOF_VERIFIED_VALUES`, `ENV_PROOF_REF`, `ENV_VARS`, `EXIT_ILLEGAL_TRANSITION`, and `IllegalTransition` are already inventoried; `PUBLIC_EXPORTS` stays at 134 symbols.
+- **§13.30 (Done terminal contract freeze):** the `done` write path, allowed sources, `detail` shape (`DONE_DETAIL_KEYS`), and mirror behavior that a verified proof flows through; proof construction itself is owned here.
+
+#### 13.41.7 Additive-only evolution policy
+
+Under `schema_version: 1`, the proof composition gate contract is strictly **additive-only** (§13.1):
+
+- The two modes (record-only with `verified: null` vs verify-before-mutate), the `explicit --proof-ref > ENV_PROOF_REF` resolution with falsy-falls-back semantics, the file-gate-before-verifier order, the non-empty-file requirement, the exact `agent-done-or-not verify --ref R` command shape, the fail-closed refusals (missing ref / empty-unreadable file / verifier non-zero / verifier launch error / neither file nor binary) all raising `IllegalTransition` (exit 3), the verify-before-any-mutation atomicity with zero writes on refusal, the `tool: "agent-done-or-not"` literal, and the unresolved-as-passed `ref` recording MUST NOT be removed, renamed, reworded, or change semantic meaning.
+- No new event type is introduced for proof verification: a refused gate appends no event, and a successful `done` still appends exactly one `done` event (§13.5, §13.30.5).
+- New `verified` enum values or new gate backends MAY be added in minor or patch releases only additively (existing `None` / `"file"` / `"verify"` values keep their exact meaning; the file gate keeps winning over later backends); readers MUST tolerate unknown future `verified` values without failing, per §13.10.
+- `PROOF_KEYS` and `PROOF_VERIFIED_VALUES` MUST NOT be redefined here or anywhere outside §13.10; any future key or enum change is owned by §13.10 under its own additive-only rule.
+
+
 
 
