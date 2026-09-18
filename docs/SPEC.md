@@ -913,3 +913,53 @@ The single sources of truth for these timing defaults and limits are defined in 
 
 Under `schema_version: 1`, current numeric defaults are pinned. Numeric defaults may be tuned only via documented SemVer-minor note if ever changed; for this freeze, orchestrators and CLI callers can rely on these exact values as standard baseline behavior.
 
+### 13.15 CLI subcommand inventory freeze (`CLI_SUBCOMMANDS`)
+
+The canonical CLI subcommand inventory is frozen under `schema_version: 1`.
+
+#### 13.15.1 Entry points and equivalence
+
+`stage-signal` provides two equivalent entry points:
+- Console script: `stage-signal` (defined via `project.scripts` in `pyproject.toml`)
+- Module execution: `python -m stage_signal` (supported via `__main__.py`)
+
+Both invoke `stage_signal.cli:main` and provide identical arguments, behavior, and exit codes. Orchestrators and automation harnesses MAY invoke either form interchangeably.
+
+#### 13.15.2 Canonical subcommand inventory
+
+The CLI provides 15 canonical subcommands. In alphabetical order:
+
+| Subcommand | Purpose | Primary SPEC Reference |
+|------------|---------|------------------------|
+| `artifact` | Record an artifact path in `STATUS.json` (`running` state only). | §6 |
+| `blocked` | Transition stage to `blocked` with a reason string. | §4, §6 |
+| `clear-terminal` | Reset a terminal or queued state back to idle `queued`. | §4, §6 |
+| `doctor` | Check stage directory health, validate schema, inspect claiming PID liveness, detect reclaim needs. | §4, §6, §13.8 |
+| `done` | Mark stage succeeded (`done`) with optional summary, proof verification, or failure acceptance. | §4, §6, §9 |
+| `events` | Query and format recent audit records from `events.jsonl` (chronological or JSON). | §5, §6, §13.6 |
+| `fail` | Mark stage hard-failed (`failed`) with a reason string; optional dead PID or needs-reclaim guards. | §4, §6 |
+| `heartbeat` | Bump stage heartbeat timestamp and optional heartbeat note (`running` state only). | §3, §4, §6 |
+| `init` | Create stage directory and write initial `queued` status idempotently. | §2, §3, §6 |
+| `note` | Append a free-form progress note to `STATUS.json` (`running` state only). | §3, §6, §13.14 |
+| `reclaim` | Atomic fail-and-clear transition when `needs_reclaim` is true; optional process termination (`--kill`). | §4, §6 |
+| `start` | Claim and start a stage, transition to `running`, record PID, metadata, and git context. | §3, §4, §6 |
+| `status` | Show current stage status in human text or structured JSON; exit code reflects state. | §6, §7, §13.2 |
+| `supervise` | Supervise a child process command with automatic heartbeat emissions until process exit. | §4, §6 |
+| `wait` | Poll until a target state or `needs_reclaim` condition is reached, or until timeout. | §6, §7, §13.11 |
+
+The single source of truth for the canonical subcommand inventory is:
+- `CLI_SUBCOMMANDS = ("artifact", "blocked", "clear-terminal", "doctor", "done", "events", "fail", "heartbeat", "init", "note", "reclaim", "start", "status", "supervise", "wait")`
+
+defined in `stage_signal.constants` as a sorted tuple and exported from `stage_signal`.
+The CLI argument parser (`build_parser()`) subcommand choices MUST match `CLI_SUBCOMMANDS` exactly.
+
+#### 13.15.3 Additive-only evolution under schema version 1
+
+Under `schema_version: 1`, the CLI subcommand inventory is strictly **additive-only** (§13.1):
+- Existing subcommands MUST NOT be removed or renamed.
+- Existing subcommand semantic meanings MUST NOT change.
+- New subcommands MAY be added in minor or patch releases, expanding `CLI_SUBCOMMANDS`.
+- Individual flag and argument additions to existing subcommands must remain backwards-compatible.
+- Orchestrators and external automation may safely rely on the presence and stability of these 15 subcommands.
+
+Detailed command syntax, argument semantics, and behavioral rules remain defined in §6; exit codes remain defined in §7.

@@ -65,6 +65,24 @@ EVENTS_DEFAULT_TAIL = 20
 DEFAULT_STALE_THRESHOLD = 300.0
 SUPERVISE_DEFAULT_EVERY = 60.0
 
+CLI_SUBCOMMANDS = (
+    "artifact",
+    "blocked",
+    "clear-terminal",
+    "doctor",
+    "done",
+    "events",
+    "fail",
+    "heartbeat",
+    "init",
+    "note",
+    "reclaim",
+    "start",
+    "status",
+    "supervise",
+    "wait",
+)
+
 EVENT_TYPES = (
     "init",
     "start",
