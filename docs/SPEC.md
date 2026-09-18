@@ -3077,3 +3077,166 @@ Under `schema_version: 1`, the status read snapshot contract is strictly **addit
 - New derived snapshot keys MAY be added in minor or patch releases only as additional trailing entries of `STATUS_JSON_KEYS` (with `PUBLIC_EXPORTS` growing additively); existing frozen keys and values MUST keep their exact values and order.
 - Readers MUST tolerate unknown future snapshot keys without failing.
 
+
+### 13.36 Events read snapshot and tail contract freeze (no new constants)
+
+`Stage.events` / `stage-signal events [--tail N] [--type TYPE] [--json]` (§5, §6, §11, §13.20) is the pure audit log observer: it returns recent event records from `events.jsonl` (§2, §5) under a shared lock, without mutating anything. Under `schema_version: 1`, the shared-lock non-mutating read, the chronological oldest-to-newest ordering of the selected tail, the filter-before-tail semantics, the exact default tail count (`EVENTS_DEFAULT_TAIL = 20`), the 0-means-all tail behavior, the return shape guaranteeing all `EVENT_RECORD_KEYS` (§13.6) with `EVENT_TYPES` (§13.5), the `NotInitialized` (exit 15) / corrupt (exit 1) / bad arguments (exit 2) preconditions, and the human one-line vs `--json` array CLI shapes are frozen so orchestrators can audit the lifecycle trail without scraping `events.jsonl` or suffering race conditions. This section introduces **no new constants**: the event record key set is already frozen as `EVENT_RECORD_KEYS` (§13.6), the canonical event types as `EVENT_TYPES` (§13.5), the default tail count as `EVENTS_DEFAULT_TAIL` (§13.14), the log filename as `EVENTS_FILENAME` (§13.13), the failure taxonomy as `NotInitialized` / `CorruptStatusError` / `BadArgsError` (§13.17), and the exit codes as `EXIT_OK` (0), `EXIT_ERROR` (1), `EXIT_BAD_ARGS` (2), `EXIT_NOT_INITIALIZED` (15) (§13.4). No audit event is emitted by an events read: reading events is strictly non-mutating and appends nothing to `events.jsonl`.
+
+#### 13.36.1 Frozen constants and exact values (existing symbols only)
+
+The single sources of truth are the already-frozen, already-exported symbols (defined in `stage_signal.constants`, exported from `stage_signal` and `__all__`, inventoried in `PUBLIC_EXPORTS`; §13.21):
+
+```python
+EVENT_TYPES = (
+    "init",
+    "start",
+    "heartbeat",
+    "note",
+    "artifact",
+    "done",
+    "blocked",
+    "failed",
+    "clear_terminal",
+)
+
+EVENT_RECORD_KEYS = (
+    "ts",
+    "type",
+    "stage_id",
+    "stage_name",
+    "state",
+    "attempt",
+    "message",
+    "detail",
+)
+
+EVENTS_DEFAULT_TAIL = 20
+EVENTS_FILENAME = "events.jsonl"
+```
+
+- `EVENT_TYPES`: exactly the 9 frozen event types (§13.5). Used to validate `--type` arguments on both CLI and library interfaces (§13.36.3).
+- `EVENT_RECORD_KEYS`: exactly the 8 frozen required event record keys (§13.6). Every event in `events.jsonl`, every event in the `Stage.events()` return list, and every object in the `events --json` array includes all 8 keys (§13.36.4).
+- `EVENTS_DEFAULT_TAIL`: integer `20` (§13.14). The default tail count for `stage-signal events` CLI invocations when `--tail` is omitted (§13.36.3).
+- `EVENTS_FILENAME`: `"events.jsonl"` (§13.13). The append-only audit log filename in the stage directory.
+- `NotInitialized` (`exit_code == EXIT_NOT_INITIALIZED == 15`), `CorruptStatusError` (`exit_code == EXIT_ERROR == 1`), and `BadArgsError` (`exit_code == EXIT_BAD_ARGS == 2`) (§13.17): the only three failure conditions (§13.36.5).
+- `STAGE_PUBLIC_METHODS` contains `"events"` (§13.20).
+- `PUBLIC_EXPORTS` stays at 134 symbols: this section adds no new export (§13.21).
+
+#### 13.36.2 Shared-lock pure read with no mutation
+
+From the exact implementation in `Stage.events` (`src/stage_signal/stage.py`) and `StageStore.read_events` (`src/stage_signal/store.py`):
+
+```python
+def events(
+    self,
+    *,
+    tail: Optional[int] = None,
+    type: Optional[str] = None,
+) -> list[dict[str, Any]]:
+    """Read events.jsonl (shared lock). Chronological, newest last."""
+    if type is not None and type not in EVENT_TYPES:
+        raise BadArgsError(
+            f"invalid event type {type!r} "
+            f"(choose from {'|'.join(EVENT_TYPES)})"
+        )
+    if tail is not None and (
+        not isinstance(tail, int) or isinstance(tail, bool) or tail < 0
+    ):
+        raise BadArgsError("events tail must be an int >= 0 (0 = all)")
+    with self._store.locked(exclusive=False):
+        events = self._store.read_events()
+    if type is not None:
+        events = [event for event in events if event.get("type") == type]
+    if tail:
+        events = events[-tail:]
+    return copy.deepcopy(events)
+```
+
+- **Shared lock:** the read holds `store.locked(exclusive=False)` — POSIX shared `LOCK_SH` on `locks/stage.lock` (Windows falls back to exclusive byte locking; §8). It never takes an exclusive write lock and never blocks concurrent shared readers.
+- **Deep copy:** the returned list contains `copy.deepcopy` of each event dictionary, so caller-side mutation of the returned objects or list never mutates internal state or files.
+- **No mutation of any kind:** an events read performs no `write_status`, appends no event to `events.jsonl` (the event count is unchanged across reads), rewrites neither `STATUS.md` nor the `.orch/` mirror (§10, §13.18), and never bumps `updated_at`.
+- **Empty log handling:** if `events.jsonl` exists and is empty or contains only blank/whitespace lines, `events()` returns `[]` (empty list) and `events --json` outputs `[]` (empty JSON array).
+
+#### 13.36.3 Tail and filter semantics: filter-before-tail and chronological ordering
+
+- **Ordering: chronological (oldest → newest of selected tail):**
+  Events are appended to `events.jsonl` chronologically (§5). `Stage.events()` and `stage-signal events` preserve this append order: the last element in the returned list/array is the most recent (newest last). When a tail slice is selected, it returns the trailing subset in the same chronological order (the oldest of the selected tail is first, and the newest is last).
+- **Filter-before-tail order:**
+  When both `type` and `tail` are specified, filtering by `type` is evaluated **before** taking the tail slice:
+  1. All events are read from `events.jsonl`.
+  2. If `type` is specified, the list is filtered: `events = [e for e in events if e.get("type") == type]`.
+  3. If `tail` is positive (`tail > 0`), the last `tail` matching events are selected: `events = events[-tail:]`.
+  This guarantees that an earlier event of a specific type (e.g. an earlier `failed` event) is never pushed out of view by subsequent events of different types (such as subsequent `heartbeat` or `note` events).
+- **Tail argument (`--tail N` / `tail: Optional[int]`):**
+  - **CLI:** `--tail` defaults to `EVENTS_DEFAULT_TAIL` (`20`). Passing `--tail 0` selects **all** matching events (0 = all). Values `< 0` are rejected by CLI argument parsing with exit code 2 (`EXIT_BAD_ARGS`).
+  - **Library:** `tail` defaults to `None`. Both `tail=None` and `tail=0` select **all** matching events (the default of 20 is a CLI-only convenience; library callers receive the complete log unless they explicitly specify a tail). If `tail` is passed as a boolean (e.g. `tail=True`), a negative integer (`tail < 0`), or a non-integer type, `Stage.events()` raises `BadArgsError` (`exit_code == 2`).
+- **Type argument (`--type TYPE` / `type: Optional[str]`):**
+  - Must be a member of `EVENT_TYPES` (`init|start|heartbeat|note|artifact|done|blocked|failed|clear_terminal`; §13.5).
+  - Any unknown or misspelled event type raises `BadArgsError` (`exit_code == 2`) in the library, or exits 2 on the CLI.
+
+#### 13.36.4 Return shape and event record freeze
+
+Every event dictionary returned by `Stage.events()` and emitted by `stage-signal events --json` contains all 8 required `EVENT_RECORD_KEYS` (§13.6):
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `ts` | ISO8601 | Mutation timestamp with timezone. |
+| `type` | enum | One of the 9 frozen `EVENT_TYPES` (§13.5). |
+| `stage_id` | str\|null | Stage attempt-series identifier at time of event. |
+| `stage_name` | str\|null | Human stage name at time of event. |
+| `state` | enum | Stage lifecycle state at time of event (`STATES`; §13.12). |
+| `attempt` | int ≥ 1 | Attempt counter at time of event. |
+| `message` | str\|null | Human summary, note, or reason (`null` when absent). |
+| `detail` | object | Event-specific detail dictionary (`{}` when absent). |
+
+- Under `schema_version: 1`, readers MUST tolerate unknown additional keys on event dictionaries per the additive-only policy (§13.1).
+- Existing keys and their value types MUST NOT be removed, renamed, or redefined.
+
+#### 13.36.5 Precondition failures: not initialized vs corrupt vs bad args
+
+| Precondition failure | Library | CLI exit (human and `--json` alike) |
+|----------------------|---------|--------------------------------------|
+| Stage not initialized (missing dir/STATUS) | `NotInitialized` | 15 (`EXIT_NOT_INITIALIZED`; §7, §13.4, §13.17) |
+| Corrupt `events.jsonl` (unreadable file, or any non-empty line with invalid JSON) | `CorruptStatusError` | 1 (`EXIT_ERROR`; §7, §13.4, §13.17) |
+| Invalid arguments (unknown `--type`, negative `--tail`, non-int `tail`) | `BadArgsError` | 2 (`EXIT_BAD_ARGS`; §7, §13.4, §13.17) |
+
+- **Not initialized:** When the stage directory or `STATUS.json` is missing, `store.require_initialized()` raises `NotInitialized`. The CLI prints an error message to `stderr` and nothing to `stdout`, exiting 15 in both human and `--json` modes.
+- **Fail-closed corruption:** If `events.jsonl` cannot be read (`OSError`), or if any non-empty line fails JSON parsing, `store.read_events()` raises `CorruptStatusError` identifying the offending line number (e.g. `corrupt <path> line N: <error>`). The CLI exits 1 with the error on `stderr` and prints nothing on `stdout`. Blank/whitespace lines are skipped and do not trigger corruption errors.
+- **Bad arguments:** When `--type` is not in `EVENT_TYPES` or `--tail` is negative/invalid, the library raises `BadArgsError` and the CLI exits 2.
+
+#### 13.36.6 CLI shapes: human one-liner vs `--json` array
+
+From `cmd_events` (`src/stage_signal/cli.py`):
+
+- **Exit code:** Always exits 0 (`EXIT_OK`) on success, regardless of the observed state in the event records. (Unlike `status`, which reflects current lifecycle state via observer exit codes 0/10/11/12/13, `events` is an audit command whose exit code indicates command success/failure; §7, §13.4).
+- **Human (default, no `--json`):**
+  - Renders each matching event sequentially on stdout via `_one_line_event(event)`.
+  - Line format:
+    `{ts}  {type:<14}  {state:<8}  {stage_name}`
+    followed by `  {msg}` when `message` is non-null, where any embedded newlines (`\n`) or carriage returns (`\r`) in `message` are replaced by single spaces.
+  - If no events match (or the log is empty), prints nothing to stdout and exits 0.
+- **`--json`:**
+  - Prints exactly one pretty-printed JSON **array** (`json.dumps(events, indent=2)`).
+  - Emits `[]` when no events match (never `null` or empty string).
+  - Emits a JSON array value, **not** NDJSON (newline-delimited JSON) or a wrapper object, consistent with other JSON-emitting commands.
+
+#### 13.36.7 Cross-links
+
+- **§5 (events.jsonl):** audit log definition, anti-scraping rule, chronological order, `--type` before `--tail`, fail-closed corrupt line handling.
+- **§6 (CLI contract):** `stage-signal events [--tail N] [--type TYPE] [--json]` usage line, default tail 20, 0=all, exit codes.
+- **§13.5 (Event types freeze):** `EVENT_TYPES` tuple of 9 canonical event types.
+- **§13.6 (Event record keys and JSON array freeze):** `EVENT_RECORD_KEYS` 8 required keys, single JSON array in `--json`.
+- **§13.14 (Environment and timing defaults freeze):** `EVENTS_DEFAULT_TAIL = 20`.
+- **§13.17 (Exception hierarchy freeze):** `NotInitialized` (exit 15), `CorruptStatusError` (exit 1), `BadArgsError` (exit 2).
+- **§13.20 (Stage method surface freeze):** `events(*, tail=None, type=None) -> list[dict[str, Any]]` in `STAGE_PUBLIC_METHODS`.
+- **§13.21 (Top-level public export inventory freeze):** `PUBLIC_EXPORTS` retains 134 symbols; no new exports needed.
+
+#### 13.36.8 Additive-only evolution policy
+
+Under `schema_version: 1`, the events read and tail contract is strictly **additive-only** (§13.1):
+
+- The shared-lock non-mutating read, chronological oldest→newest ordering of the selected tail, filter-before-tail evaluation, default tail of 20 (CLI) / all (library), guaranteed `EVENT_RECORD_KEYS` in each record, single JSON array in `--json`, one-liner in human output, fail-closed corrupt line handling, and exit codes (0 on success, 15 uninitialized, 1 corrupt, 2 bad args) MUST NOT be removed, renamed, or change semantic meaning.
+- Observing events stays event-free: reading events appends nothing to `events.jsonl` (§13.5).
+- New event fields MAY be added in future minor or patch releases; readers MUST tolerate unknown keys. Existing keys and their semantic types MUST remain intact.
+
+

@@ -7777,3 +7777,350 @@ def test_status_read_cross_links_freeze() -> None:
     # §13.35 adds no export: the inventory stays at the 134 frozen symbols.
     assert len(PUBLIC_EXPORTS) == 134
 
+
+# ---------------------------------------------------------------------------
+# §13.36: Events read snapshot and tail contract freeze
+# ---------------------------------------------------------------------------
+
+
+def test_events_frozen_constants_and_symbols() -> None:
+    """EVENT_RECORD_KEYS, EVENT_TYPES, EVENTS_DEFAULT_TAIL, EVENTS_FILENAME exact freeze (SPEC §13.36.1)."""
+    assert EVENT_RECORD_KEYS == (
+        "ts",
+        "type",
+        "stage_id",
+        "stage_name",
+        "state",
+        "attempt",
+        "message",
+        "detail",
+    )
+    assert isinstance(EVENT_RECORD_KEYS, tuple)
+    assert len(EVENT_RECORD_KEYS) == 8
+    assert len(set(EVENT_RECORD_KEYS)) == 8
+
+    assert EVENT_TYPES == (
+        "init",
+        "start",
+        "heartbeat",
+        "note",
+        "artifact",
+        "done",
+        "blocked",
+        "failed",
+        "clear_terminal",
+    )
+    assert isinstance(EVENT_TYPES, tuple)
+    assert len(EVENT_TYPES) == 9
+    assert len(set(EVENT_TYPES)) == 9
+
+    assert EVENTS_DEFAULT_TAIL == 20
+    assert isinstance(EVENTS_DEFAULT_TAIL, int)
+    assert not isinstance(EVENTS_DEFAULT_TAIL, bool)
+
+    assert EVENTS_FILENAME == "events.jsonl"
+
+
+def test_events_pure_shared_lock_no_mutation(tmp_path: Path) -> None:
+    """Stage.events() is a pure non-mutating read with detached deep-copy records (SPEC §13.36.2).
+
+    Synchronous test with zero sleeps/threads.
+    """
+    stage_dir = tmp_path / ".stage-signal"
+    stage = Stage(str(stage_dir))
+    stage.init(project="events-pure-read-freeze")
+    stage.start(stage="step-events", pid=os.getpid())
+    stage.heartbeat(note="first heartbeat")
+    stage.note("intermediate note")
+
+    events_file = stage_dir / EVENTS_FILENAME
+    status_file = stage_dir / STATUS_FILENAME
+    raw_events_before = events_file.read_text(encoding="utf-8")
+    raw_status_before = status_file.read_text(encoding="utf-8")
+
+    first = stage.events()
+    second = stage.events(tail=2)
+    third = stage.events(type="note")
+
+    # Reads mutate nothing: file bytes are identical, event counts identical
+    assert events_file.read_text(encoding="utf-8") == raw_events_before
+    assert status_file.read_text(encoding="utf-8") == raw_status_before
+    assert len(stage.events()) == 4
+
+    # Returned snapshot is a detached deep copy
+    first[0]["message"] = "TAMPERED_IN_MEMORY"
+    first[0]["detail"]["hack"] = True
+    assert stage.events()[0]["message"] != "TAMPERED_IN_MEMORY"
+    assert "hack" not in stage.events()[0]["detail"]
+
+    # Empty log returns empty list without raising
+    empty_dir = tmp_path / "empty-events" / ".stage-signal"
+    empty_stage = Stage(str(empty_dir))
+    empty_stage.init(project="empty-log")
+    (empty_dir / EVENTS_FILENAME).write_text("", encoding="utf-8")
+    assert empty_stage.events() == []
+    assert empty_stage.events(tail=10) == []
+    assert empty_stage.events(type="init") == []
+    (empty_dir / EVENTS_FILENAME).write_text("   \n\n  \t  \n", encoding="utf-8")
+    assert empty_stage.events() == []
+
+
+def test_events_return_shape_and_record_keys_freeze(tmp_path: Path) -> None:
+    """Every event dictionary guarantees all 8 EVENT_RECORD_KEYS and tolerates unknown keys (SPEC §13.36.4).
+
+    Synchronous test with zero sleeps/threads.
+    """
+    stage_dir = tmp_path / ".stage-signal"
+    stage = Stage(str(stage_dir))
+    stage.init(project="events-shape-freeze")
+    stage.start(stage="shape-step", pid=os.getpid(), session_id="ses-123")
+    stage.heartbeat(note="tick")
+    stage.note("checkpoint")
+    stage.artifact("build/app.whl", label="wheel")
+    stage.fail(reason="shape test fail")
+    stage.clear_terminal()
+
+    events = stage.events()
+    assert len(events) == 7
+    for ev in events:
+        for key in EVENT_RECORD_KEYS:
+            assert key in ev, f"required key {key!r} missing from event {ev!r}"
+        assert ev["type"] in EVENT_TYPES
+        assert isinstance(ev["ts"], str)
+        assert isinstance(ev["state"], str)
+        assert ev["state"] in STATES
+        assert isinstance(ev["attempt"], int) and ev["attempt"] >= 1
+        assert ev["message"] is None or isinstance(ev["message"], str)
+        assert isinstance(ev["detail"], dict)
+        assert ev["stage_id"] is None or isinstance(ev["stage_id"], str)
+        assert ev["stage_name"] is None or isinstance(ev["stage_name"], str)
+
+    # Tolerates unknown future keys per additive-only policy
+    events_file = stage_dir / EVENTS_FILENAME
+    line = json.dumps({
+        "ts": "2026-09-18T12:00:00+00:00",
+        "type": "note",
+        "stage_id": "shape-step",
+        "stage_name": "shape-step",
+        "state": "running",
+        "attempt": 1,
+        "message": "future event",
+        "detail": {},
+        "unknown_future_field": "preserved",
+    }) + "\n"
+    with open(events_file, "a", encoding="utf-8") as fh:
+        fh.write(line)
+
+    tail_events = stage.events(tail=1)
+    assert len(tail_events) == 1
+    assert tail_events[0]["unknown_future_field"] == "preserved"
+
+
+def test_events_ordering_and_filter_before_tail_freeze(tmp_path: Path) -> None:
+    """Chronological oldest->newest order, filter-before-tail, and tail argument semantics (SPEC §13.36.3).
+
+    Synchronous test with zero sleeps/threads.
+    """
+    stage_dir = tmp_path / ".stage-signal"
+    stage = Stage(str(stage_dir))
+    stage.init(project="events-ordering-freeze")
+    stage.start(stage="order-step", pid=os.getpid())
+
+    # Seed an early failed event, followed by many heartbeats
+    stage.fail(reason="early failure")
+    stage.start(stage="order-retry", pid=os.getpid())
+    for i in range(25):
+        stage.heartbeat(note=f"beat-{i}")
+
+    all_events = stage.events()
+    assert len(all_events) == 29  # 1 init + 1 start + 1 fail + 1 start + 25 heartbeats
+
+    # Chronological ordering (oldest -> newest): newest event is the last element
+    assert all_events[-1]["type"] == "heartbeat"
+    assert all_events[-1]["message"] == "beat-24"
+    assert all_events[0]["type"] == "init"
+
+    # Selected tail is also oldest -> newest of the selected slice
+    tail5 = stage.events(tail=5)
+    assert len(tail5) == 5
+    assert [e["message"] for e in tail5] == ["beat-20", "beat-21", "beat-22", "beat-23", "beat-24"]
+
+    # Filter-before-tail: early failed event is returned even when overall tail=1 would miss it
+    tail1_overall = stage.events(tail=1)
+    assert tail1_overall[0]["type"] == "heartbeat"
+
+    failed_tail = stage.events(type="failed", tail=1)
+    assert len(failed_tail) == 1
+    assert failed_tail[0]["type"] == "failed"
+    assert failed_tail[0]["message"] == "early failure"
+
+    # Library tail=None and tail=0 return all events
+    assert stage.events(tail=None) == all_events
+    assert stage.events(tail=0) == all_events
+
+
+def test_events_cli_human_and_json_shapes_freeze(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """CLI human one-liner vs --json array shape and default tail 20 (SPEC §13.36.6).
+
+    Synchronous test with zero sleeps/threads.
+    """
+    stage_dir = tmp_path / ".stage-signal"
+    stage = Stage(str(stage_dir))
+    stage.init(project="events-cli-freeze")
+    stage.start(stage="cli-step", pid=os.getpid())
+    for i in range(25):
+        stage.note(f"line {i}\nmultiline note")
+
+    # CLI default tail is EVENTS_DEFAULT_TAIL (20)
+    capsys.readouterr()
+    rc = main(["--dir", str(stage_dir), "events"])
+    assert rc == EXIT_OK == 0
+    human_lines = [ln for ln in capsys.readouterr().out.splitlines() if ln.strip()]
+    assert len(human_lines) == EVENTS_DEFAULT_TAIL == 20
+
+    # Human one-liner format check: newlines replaced with spaces, ts/type/state/name columns
+    last_human = human_lines[-1]
+    assert "multiline note" in last_human
+    assert "\n" not in last_human
+    assert "note" in last_human
+    assert "running" in last_human
+    assert "cli-step" in last_human
+
+    # CLI --tail 0 outputs all events
+    capsys.readouterr()
+    rc = main(["--dir", str(stage_dir), "events", "--tail", "0"])
+    assert rc == EXIT_OK == 0
+    all_human_lines = [ln for ln in capsys.readouterr().out.splitlines() if ln.strip()]
+    assert len(all_human_lines) == 27  # 1 init + 1 start + 25 notes
+
+    # CLI --json outputs a single JSON array (not NDJSON)
+    capsys.readouterr()
+    rc = main(["--dir", str(stage_dir), "events", "--json", "--tail", "3"])
+    assert rc == EXIT_OK == 0
+    out = capsys.readouterr().out
+    payload = json.loads(out)
+    assert isinstance(payload, list)
+    assert len(payload) == 3
+    for ev in payload:
+        assert set(EVENT_RECORD_KEYS).issubset(ev.keys())
+    assert payload == stage.events(tail=3)
+
+    # Empty match in --json produces [] (empty array)
+    capsys.readouterr()
+    rc = main(["--dir", str(stage_dir), "events", "--json", "--type", "blocked"])
+    assert rc == EXIT_OK == 0
+    assert json.loads(capsys.readouterr().out) == []
+
+    # Empty log in human mode produces empty stdout
+    empty_dir = tmp_path / "empty-cli" / ".stage-signal"
+    Stage(str(empty_dir)).init(project="empty-cli-proj")
+    (empty_dir / EVENTS_FILENAME).write_text("", encoding="utf-8")
+    capsys.readouterr()
+    rc = main(["--dir", str(empty_dir), "events"])
+    assert rc == EXIT_OK == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_events_uninitialized_corrupt_bad_args_freeze(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Preconditions: NotInitialized (exit 15), CorruptStatusError (exit 1), BadArgsError (exit 2) (SPEC §13.36.5).
+
+    Synchronous test with zero sleeps/threads.
+    """
+    missing_dir = tmp_path / "missing" / ".stage-signal"
+    missing_stage = Stage(str(missing_dir))
+
+    # NotInitialized
+    with pytest.raises(NotInitialized) as exc_info:
+        missing_stage.events()
+    assert exc_info.value.exit_code == EXIT_NOT_INITIALIZED == 15
+
+    for argv in (["events"], ["events", "--json"]):
+        capsys.readouterr()
+        rc = main(["--dir", str(missing_dir)] + argv)
+        assert rc == EXIT_NOT_INITIALIZED == 15
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert "not initialized" in captured.err.lower() or "missing" in captured.err.lower()
+
+    # CorruptStatusError: corrupt JSON line fail-closed
+    stage_dir = tmp_path / ".stage-signal"
+    stage = Stage(str(stage_dir))
+    stage.init(project="corrupt-events-freeze")
+    events_file = stage_dir / EVENTS_FILENAME
+    events_file.write_text("{\"valid\": true}\n{bad json line\n", encoding="utf-8")
+
+    with pytest.raises(CorruptStatusError) as exc_info:
+        stage.events()
+    assert exc_info.value.exit_code == EXIT_ERROR == 1
+    assert "line 2" in str(exc_info.value)
+
+    for argv in (["events"], ["events", "--json"]):
+        capsys.readouterr()
+        rc = main(["--dir", str(stage_dir)] + argv)
+        assert rc == EXIT_ERROR == 1
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert "corrupt" in captured.err.lower()
+
+    # BadArgsError: invalid type
+    with pytest.raises(BadArgsError) as exc_info:
+        stage.events(type="invalid_event_type")
+    assert exc_info.value.exit_code == EXIT_BAD_ARGS == 2
+
+    # BadArgsError: negative tail, boolean tail, non-int tail
+    with pytest.raises(BadArgsError) as exc_info:
+        stage.events(tail=-1)
+    assert exc_info.value.exit_code == EXIT_BAD_ARGS == 2
+
+    with pytest.raises(BadArgsError) as exc_info:
+        stage.events(tail=True)  # type: ignore[arg-type]
+    assert exc_info.value.exit_code == EXIT_BAD_ARGS == 2
+
+    with pytest.raises(BadArgsError) as exc_info:
+        stage.events(tail="5")  # type: ignore[arg-type]
+    assert exc_info.value.exit_code == EXIT_BAD_ARGS == 2
+
+    # CLI rejects bad args with exit code 2
+    with pytest.raises(SystemExit) as exc_info_sys:
+        main(["--dir", str(stage_dir), "events", "--type", "invalid_type"])
+    assert exc_info_sys.value.code == EXIT_BAD_ARGS == 2
+
+    with pytest.raises(SystemExit) as exc_info_sys:
+        main(["--dir", str(stage_dir), "events", "--tail", "-5"])
+    assert exc_info_sys.value.code == EXIT_BAD_ARGS == 2
+
+
+def test_events_cross_links_freeze() -> None:
+    """Events read reuses frozen exit, method-surface, and export symbols (SPEC §13.36.7)."""
+    import stage_signal
+
+    # Method in STAGE_PUBLIC_METHODS
+    assert "events" in STAGE_PUBLIC_METHODS
+    assert callable(Stage.events)
+
+    # Symbols in stage_signal.__all__ and PUBLIC_EXPORTS
+    for name in (
+        "EVENT_RECORD_KEYS",
+        "EVENT_TYPES",
+        "EVENTS_DEFAULT_TAIL",
+        "EVENTS_FILENAME",
+        "EXIT_OK",
+        "EXIT_ERROR",
+        "EXIT_BAD_ARGS",
+        "EXIT_NOT_INITIALIZED",
+        "NotInitialized",
+        "CorruptStatusError",
+        "BadArgsError",
+    ):
+        assert hasattr(stage_signal, name), f"stage_signal missing {name!r}"
+        assert name in stage_signal.__all__, f"{name!r} not in stage_signal.__all__"
+        assert name in PUBLIC_EXPORTS, f"{name!r} not in PUBLIC_EXPORTS"
+
+    # §13.36 adds no new export: the inventory stays at 134 frozen symbols
+    assert len(PUBLIC_EXPORTS) == 134
+
+
