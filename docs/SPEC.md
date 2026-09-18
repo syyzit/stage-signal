@@ -1387,7 +1387,7 @@ External orchestrators, Python embedders, typing tools, and harnesses interact w
 
 #### 13.21.1 Canonical export inventory
 
-`stage_signal` exports exactly 103 public symbols matching `stage_signal.__all__`. These symbols are structured into four canonical categories:
+`stage_signal` exports exactly 105 public symbols matching `stage_signal.__all__`. These symbols are structured into four canonical categories:
 
 ##### 1. Classes (§11, §13.20)
 - `Stage`: The primary high-level lifecycle orchestrator, embedding context manager, and transition driver (§11, §13.20).
@@ -1428,7 +1428,7 @@ All six structured exceptions inherit from `StageError` and carry a normative `.
 - **Inventories:**
   - `CLI_SUBCOMMANDS`: 15 frozen CLI subcommands (§13.15).
   - `STAGE_PUBLIC_METHODS`: 15 frozen `Stage` public instance methods (§13.20).
-  - `PUBLIC_EXPORTS`: 103 frozen public symbols exported from top-level package namespace (§13.21).
+  - `PUBLIC_EXPORTS`: 105 frozen public symbols exported from top-level package namespace (§13.21).
 - **Exit codes:**
   - `EXIT_CODES`: Tuple of all 10 standard exit codes (§7, §13.4).
   - Individual exit codes: `EXIT_OK` (0), `EXIT_ERROR` (1), `EXIT_BAD_ARGS` (2), `EXIT_ILLEGAL_TRANSITION` (3), `EXIT_RUNNING` (10), `EXIT_BLOCKED` (11), `EXIT_FAILED` (12), `EXIT_QUEUED` (13), `EXIT_WAIT_TIMEOUT` (14), `EXIT_NOT_INITIALIZED` (15) (§7, §13.4).
@@ -1461,7 +1461,10 @@ All six structured exceptions inherit from `StageError` and carry a normative `.
   - `DOCTOR_WARNING_KEYS`: Alias for `WARNING_KEYS` (§13.8).
   - `DOCTOR_SUMMARY_RECLAIM_NEEDED`, `DOCTOR_SUMMARY_OK_FORMAT`, and helper `doctor_summary_ok` (§13.22).
   - `DEFAULT_STALE_THRESHOLD`: Default stale heartbeat threshold in seconds (300.0; §4, §13.8, §13.14).
-- **Wait outcomes and defaults:**
+- **Wait choices, outcomes, and defaults:**
+  - `WAIT_CHOICES`: Allowed `--state` target choices (`"done"`, `"blocked"`, `"failed"`, `"terminal"`; §6, §13.23).
+  - `WAIT_WANT_NEEDS_RECLAIM`: Canonical reclaim want token (`"needs_reclaim"`; §6, §13.3.3, §13.23).
+  - `want_matches(want, state)` and `wait_condition_met(status, *, want, needs_reclaim)`: Matching predicates (§6, §13.23).
   - `WAIT_JSON_KEYS`: Required keys in `wait --json` payload (§13.3.3).
   - `WAIT_OUTCOMES`: Frozen wait outcome enums (`"met"`, `"mismatch"`, `"timeout"`; §13.11).
   - Individual wait outcomes: `WAIT_OUTCOME_MET`, `WAIT_OUTCOME_MISMATCH`, `WAIT_OUTCOME_TIMEOUT` (§13.11).
@@ -1558,6 +1561,7 @@ PUBLIC_EXPORTS: tuple[str, ...] = (
     "StageError",
     "StageStore",
     "TERMINAL_STATES",
+    "WAIT_CHOICES",
     "WAIT_DEFAULT_POLL",
     "WAIT_DEFAULT_TIMEOUT",
     "WAIT_JSON_KEYS",
@@ -1565,6 +1569,7 @@ PUBLIC_EXPORTS: tuple[str, ...] = (
     "WAIT_OUTCOME_MET",
     "WAIT_OUTCOME_MISMATCH",
     "WAIT_OUTCOME_TIMEOUT",
+    "WAIT_WANT_NEEDS_RECLAIM",
     "WARNING_CODES",
     "WARNING_CODE_DEAD_PID",
     "WARNING_CODE_STALE_HEARTBEAT",
@@ -1608,7 +1613,7 @@ Under `schema_version: 1`, the top-level public export inventory is strictly **a
 - Existing symbols in `PUBLIC_EXPORTS` MUST NOT be removed, renamed, or relocated.
 - Existing symbol types, semantics, and contracts MUST NOT undergo breaking changes.
 - Future minor or patch releases under schema version 1 MAY add new classes, helper functions, or frozen constants to `stage_signal`, expanding `PUBLIC_EXPORTS` and `__all__`.
-- External orchestrators, embedders, and typing definitions can safely rely on the uninterrupted presence of all 103 public exports throughout the entire lifecycle of `schema_version: 1`.
+- External orchestrators, embedders, and typing definitions can safely rely on the uninterrupted presence of all 105 public exports throughout the entire lifecycle of `schema_version: 1`.
 
 ### 13.22 Doctor human summary strings freeze (`DOCTOR_SUMMARY_RECLAIM_NEEDED`, `DOCTOR_SUMMARY_OK_FORMAT`)
 
@@ -1644,9 +1649,88 @@ Under `schema_version: 1`, doctor summary strings are strictly **additive-only**
 - New summary variants for future states or conditions MAY be added in minor or patch releases only as additional `"OK: {state}"` renderings for new states, or as new distinct constants; existing frozen strings MUST keep their exact values.
 - Readers MUST treat `summary` as display-only and tolerate unknown future summary strings without failing.
 
-### 13.23 Reserved (wait wants vocabulary)
+### 13.23 Wait want vocabulary and predicate freeze (`WAIT_CHOICES`, `WAIT_WANT_NEEDS_RECLAIM`, `want_matches`, `wait_condition_met`)
 
-Reserved for the wait wants vocabulary freeze (issue #141). New sections MUST NOT claim this number.
+The target condition vocabulary and predicate helpers for `wait` operations (§6, §11, `Stage.wait`) are frozen under `schema_version: 1` so orchestrators and automation can rely on exact want strings and predicate semantics.
+
+#### 13.23.1 Frozen vocabulary constants (`WAIT_CHOICES`, `WAIT_WANT_NEEDS_RECLAIM`)
+
+The single sources of truth for the wait target vocabulary are defined in `stage_signal.constants` and exported from `stage_signal` and `__all__`:
+
+```python
+WAIT_CHOICES: tuple[str, ...] = ("done", "blocked", "failed", "terminal")
+WAIT_WANT_NEEDS_RECLAIM: str = "needs_reclaim"
+```
+
+| Want Token | Constant / Origin | Target State(s) / Condition | Meaning |
+|------------|-------------------|-----------------------------|---------|
+| `"terminal"` | `WAIT_CHOICES[3]` (CLI default) | Any state in `TERMINAL_STATES` (`"done"`, `"blocked"`, `"failed"`; §13.12) | Stage execution reached any terminal lifecycle state (§4, §6). |
+| `"done"` | `WAIT_CHOICES[0]` / `STATE_DONE` | `state == "done"` | Stage completed successfully (§4, §6). |
+| `"blocked"` | `WAIT_CHOICES[1]` / `STATE_BLOCKED` | `state == "blocked"` | Stage entered blocked state awaiting external resolution (§4, §6). |
+| `"failed"` | `WAIT_CHOICES[2]` / `STATE_FAILED` | `state == "failed"` | Stage aborted or exited with unrecoverable failure (§4, §6). |
+| `"needs_reclaim"` | `WAIT_WANT_NEEDS_RECLAIM` | `needs_reclaim == true` | Stage is in `running` state with a dead PID or stale heartbeat requiring reclaim (§6, §13.8). |
+
+- **`WAIT_CHOICES`**: Closed tuple of the 4 permitted target values for the CLI `--state` option (`stage-signal wait --state <choice>`) and the library `Stage.wait(want=...)` argument.
+- **`WAIT_WANT_NEEDS_RECLAIM`**: The canonical string token (`"needs_reclaim"`) reported in the machine-readable `wanted` field of `wait --json` (§13.3.3) when polling for the reclaim condition via `--needs-reclaim`.
+- **Mapping of `"terminal"` to `TERMINAL_STATES`**: The want token `"terminal"` matches if and only if `state in TERMINAL_STATES` (`("done", "blocked", "failed")` per §13.12). Non-terminal states (`"queued"`, `"running"`) never match `"terminal"`.
+
+#### 13.23.2 Matching predicate helper semantics (`want_matches`, `wait_condition_met`)
+
+Two public predicate functions implement canonical wait target evaluation and are exported from `stage_signal` and `__all__`:
+
+```python
+def want_matches(want: str, state: str) -> bool:
+    """True when *state* satisfies a `wait --state` want value."""
+    if want == "terminal":
+        return state in TERMINAL_STATES
+    return state == want
+
+
+def wait_condition_met(
+    status: dict[str, Any],
+    *,
+    want: str,
+    needs_reclaim: bool = False,
+) -> bool:
+    """True when a wait snapshot satisfies the requested condition."""
+    if needs_reclaim:
+        return bool(status.get("needs_reclaim"))
+    return want_matches(want, str(status.get("state")))
+```
+
+##### Predicate truth table across lifecycle states
+
+| Observed State | `want="terminal"` | `want="done"` | `want="blocked"` | `want="failed"` | `needs_reclaim=True` (`needs_reclaim=False` in snapshot) | `needs_reclaim=True` (`needs_reclaim=True` in snapshot) |
+|----------------|-------------------|---------------|------------------|-----------------|----------------------------------------------------------|---------------------------------------------------------|
+| `queued` | `False` | `False` | `False` | `False` | `False` | `False` (reclaim requires `running`) |
+| `running` | `False` | `False` | `False` | `False` | `False` | `True` |
+| `done` | `True` | `True` | `False` | `False` | `False` | `False` |
+| `blocked` | `True` | `False` | `True` | `False` | `False` | `False` |
+| `failed` | `True` | `False` | `False` | `True` | `False` | `False` |
+| unknown / other | `False` | `False` | `False` | `False` | `False` | `True` if `bool(status.get("needs_reclaim"))` else `False` |
+
+##### Mutual exclusivity of `--needs-reclaim` vs `--state`
+
+Waiting for a specific state target and waiting for `needs_reclaim` are mutually exclusive wait modes:
+- **CLI (`stage-signal wait`)**: Specifying `--needs-reclaim` alongside any `--state` argument other than the default (`"terminal"`) is rejected with `BadArgsError` (exit code 2, `EXIT_BAD_ARGS`; §6, §7, §13.4).
+- **Library (`Stage.wait`)**: Calling `Stage.wait(want, needs_reclaim=True)` with any `want != "terminal"` raises `BadArgsError` (`exit_code = EXIT_BAD_ARGS = 2`; §11, §13.17).
+- When `needs_reclaim=True`, `wait_condition_met` inspects only `status["needs_reclaim"]`, ignoring the `want` argument.
+
+#### 13.23.3 Cross-links
+
+- **§6 (CLI contract):** Documents `stage-signal wait`, options (`--state`, `--needs-reclaim`, `--timeout`, `--poll`, `--json`), and observer exit code contracts (met: 0, mismatch: state exit code / 1 for done without reclaim, timeout: 14, not initialized: 15).
+- **§13.11 (Wait outcomes enum freeze):** Defines `WAIT_OUTCOMES` (`"met"`, `"mismatch"`, `"timeout"`), outcome resolution, and boolean `timeout` field consistency in `wait --json`.
+- **§13.12 (Stage states and terminal states freeze):** Defines `STATES` and `TERMINAL_STATES` (`"done"`, `"blocked"`, `"failed"`).
+- **§13.16 (State-to-exit-code mapping freeze):** Defines `STATE_EXIT_CODES` used by wait observer mismatch resolutions (`queued` → 13, `running` → 10, `done` → 0 / mismatch 1, `blocked` → 11, `failed` → 12).
+- **§13.21 (Top-level public export inventory):** Freezes the inclusion of `WAIT_CHOICES`, `WAIT_WANT_NEEDS_RECLAIM`, `want_matches`, and `wait_condition_met` in `PUBLIC_EXPORTS`.
+
+#### 13.23.4 Additive-only evolution policy
+
+Under `schema_version: 1`, wait want vocabulary and matching semantics are strictly **additive-only** (§13.1):
+- Existing want tokens in `WAIT_CHOICES` (`"done"`, `"blocked"`, `"failed"`, `"terminal"`) and `WAIT_WANT_NEEDS_RECLAIM` (`"needs_reclaim"`) MUST NOT be removed, renamed, or relocated.
+- The semantics of `want_matches` (including the mapping of `"terminal"` to `TERMINAL_STATES`) and `wait_condition_met` MUST NOT change.
+- The mutual exclusivity of `needs_reclaim` with non-default state wants MUST remain enforced.
+- Future versions under schema version 1 MAY add new target choices to `WAIT_CHOICES` or expand wait conditions in a strictly additive manner; existing callers relying on frozen want strings and predicate semantics will remain unaffected.
 
 ### 13.24 Supervise child-PID adoption and supervisor exit contract freeze (`SUPERVISE_ADOPT_MESSAGE_FORMAT`, `SUPERVISE_ADOPT_DETAIL_KEYS`, `SUPERVISE_SIGNAL_EXIT_BASE`, `SUPERVISE_EXIT_NOT_FOUND`, `SUPERVISE_EXIT_PERMISSION_DENIED`)
 

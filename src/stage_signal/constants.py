@@ -236,6 +236,9 @@ WAIT_OUTCOMES = (
     WAIT_OUTCOME_TIMEOUT,
 )
 
+WAIT_CHOICES = ("done", "blocked", "failed", "terminal")
+WAIT_WANT_NEEDS_RECLAIM = "needs_reclaim"
+
 STATUS_MD_TITLE = "# stage-signal STATUS"
 STATUS_MD_REQUIRED_HEADINGS = (
     "# stage-signal STATUS",
@@ -436,6 +439,7 @@ PUBLIC_EXPORTS: tuple[str, ...] = (
     "StageError",
     "StageStore",
     "TERMINAL_STATES",
+    "WAIT_CHOICES",
     "WAIT_DEFAULT_POLL",
     "WAIT_DEFAULT_TIMEOUT",
     "WAIT_JSON_KEYS",
@@ -443,6 +447,7 @@ PUBLIC_EXPORTS: tuple[str, ...] = (
     "WAIT_OUTCOME_MET",
     "WAIT_OUTCOME_MISMATCH",
     "WAIT_OUTCOME_TIMEOUT",
+    "WAIT_WANT_NEEDS_RECLAIM",
     "WARNING_CODES",
     "WARNING_CODE_DEAD_PID",
     "WARNING_CODE_STALE_HEARTBEAT",

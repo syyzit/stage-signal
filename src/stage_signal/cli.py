@@ -18,17 +18,17 @@ from .constants import (
     EXIT_OK,
     EXIT_RUNNING,
     SUPERVISE_DEFAULT_EVERY,
+    WAIT_CHOICES,
     WAIT_DEFAULT_POLL,
     WAIT_DEFAULT_TIMEOUT,
     WAIT_OUTCOME_MET,
     WAIT_OUTCOME_MISMATCH,
     WAIT_OUTCOME_TIMEOUT,
+    WAIT_WANT_NEEDS_RECLAIM,
     state_exit_code,
 )
 from .errors import BadArgsError, StageError, WaitTimeout
 from .stage import (
-    WAIT_CHOICES,
-    WAIT_WANT_NEEDS_RECLAIM,
     Stage,
     wait_condition_met,
 )
