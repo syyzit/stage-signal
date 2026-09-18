@@ -1387,7 +1387,7 @@ External orchestrators, Python embedders, typing tools, and harnesses interact w
 
 #### 13.21.1 Canonical export inventory
 
-`stage_signal` exports exactly 121 public symbols matching `stage_signal.__all__`. These symbols are structured into four canonical categories:
+`stage_signal` exports exactly 124 public symbols matching `stage_signal.__all__`. These symbols are structured into four canonical categories:
 
 ##### 1. Classes (§11, §13.20)
 - `Stage`: The primary high-level lifecycle orchestrator, embedding context manager, and transition driver (§11, §13.20).
@@ -1428,7 +1428,7 @@ All six structured exceptions inherit from `StageError` and carry a normative `.
 - **Inventories:**
   - `CLI_SUBCOMMANDS`: 15 frozen CLI subcommands (§13.15).
   - `STAGE_PUBLIC_METHODS`: 15 frozen `Stage` public instance methods (§13.20).
-  - `PUBLIC_EXPORTS`: 121 frozen public symbols exported from top-level package namespace (§13.21).
+  - `PUBLIC_EXPORTS`: 124 frozen public symbols exported from top-level package namespace (§13.21).
 - **Exit codes:**
   - `EXIT_CODES`: Tuple of all 10 standard exit codes (§7, §13.4).
   - Individual exit codes: `EXIT_OK` (0), `EXIT_ERROR` (1), `EXIT_BAD_ARGS` (2), `EXIT_ILLEGAL_TRANSITION` (3), `EXIT_RUNNING` (10), `EXIT_BLOCKED` (11), `EXIT_FAILED` (12), `EXIT_QUEUED` (13), `EXIT_WAIT_TIMEOUT` (14), `EXIT_NOT_INITIALIZED` (15) (§7, §13.4).
@@ -1499,6 +1499,10 @@ All six structured exceptions inherit from `StageError` and carry a normative `.
   - `CLEAR_TERMINAL_ALWAYS_CLEARED_FIELDS`: Terminal payloads always cleared (`"result"`, `"error"`, `"proof"`; §4, §13.26).
   - `CLEAR_TERMINAL_DETAIL_KEYS`: Audit detail keys (`"keep_stage"`; §5, §13.26).
   - `CLEAR_TERMINAL_MESSAGE_IDLE` (`"cleared to idle queued"`) and `CLEAR_TERMINAL_MESSAGE_KEEP_STAGE` (`"cleared to queued"`; §5, §13.26).
+- **Done terminal transition:**
+  - `DONE_ALLOWED_SOURCES`: Legal source states for plain `done` (`"queued"`, `"running"`, `"done"`; §4 rule 5, §13.30).
+  - `DONE_ACCEPT_FAILURE_ALLOWED_SOURCES`: Legal source states for `done --accept-failure` (`"failed"`; §4 rule 5, §13.30).
+  - `DONE_DETAIL_KEYS`: Audit detail keys (`"proof"`, `"git_head"`, `"accepted_failure"`; §5, §13.30).
 
 #### 13.21.2 Frozen structure export (`PUBLIC_EXPORTS`)
 
@@ -1527,6 +1531,9 @@ PUBLIC_EXPORTS: tuple[str, ...] = (
     "DOCTOR_SUMMARY_OK_FORMAT",
     "DOCTOR_SUMMARY_RECLAIM_NEEDED",
     "DOCTOR_WARNING_KEYS",
+    "DONE_ACCEPT_FAILURE_ALLOWED_SOURCES",
+    "DONE_ALLOWED_SOURCES",
+    "DONE_DETAIL_KEYS",
     "ENV_DIR",
     "ENV_PROJECT",
     "ENV_PROOF_REF",
@@ -1649,7 +1656,7 @@ Under `schema_version: 1`, the top-level public export inventory is strictly **a
 - Existing symbols in `PUBLIC_EXPORTS` MUST NOT be removed, renamed, or relocated.
 - Existing symbol types, semantics, and contracts MUST NOT undergo breaking changes.
 - Future minor or patch releases under schema version 1 MAY add new classes, helper functions, or frozen constants to `stage_signal`, expanding `PUBLIC_EXPORTS` and `__all__`.
-- External orchestrators, embedders, and typing definitions can safely rely on the uninterrupted presence of all 121 public exports throughout the entire lifecycle of `schema_version: 1`.
+- External orchestrators, embedders, and typing definitions can safely rely on the uninterrupted presence of all 124 public exports throughout the entire lifecycle of `schema_version: 1`.
 
 ### 13.22 Doctor human summary strings freeze (`DOCTOR_SUMMARY_RECLAIM_NEEDED`, `DOCTOR_SUMMARY_OK_FORMAT`)
 
@@ -2340,3 +2347,143 @@ Under `schema_version: 1`, the artifact add contract is strictly **additive-only
 - No new event type is introduced for artifact recording: the audit record stays an `artifact` event (§13.5).
 - New artifact detail keys or label modes MAY be added in minor or patch releases only as additional constants; existing frozen values MUST keep their exact values.
 - Readers MUST tolerate unknown future `artifact` detail keys and unknown future entry keys without failing.
+
+### 13.30 Done terminal contract freeze (`DONE_ALLOWED_SOURCES`, `DONE_ACCEPT_FAILURE_ALLOWED_SOURCES`, `DONE_DETAIL_KEYS`)
+
+`Stage.done` / `stage-signal done [--summary TEXT] [--git-head SHA] [--proof-ref REF] [--require-proof] [--accept-failure]` (§4 rule 5, §6, §13.20) transitions a stage to the terminal `done` success state, records the completion result object, optionally verifies completion proof artifacts, and emits a corresponding audit event. Under `schema_version: 1`, the allowed source states for plain `done` and `done --accept-failure`, the illegal source guards, the result payload shape adhering to `RESULT_KEYS` (§13.9), the proof verification gate semantics adhering to `PROOF_KEYS` (§13.10), the explicit clearing of `error` to `null`, and the `done` audit event shape are frozen so orchestrators can safely branch on success, capture verification receipts, and record accepted failures without data loss or schema ambiguity. The `done` event type itself is frozen in §13.5 and the record keys in §13.6; the allowed transitions are frozen in §13.19.
+
+#### 13.30.1 Frozen constants and exact values
+
+The single sources of truth are defined in `stage_signal.constants` and exported from `stage_signal` and `__all__`:
+
+```python
+DONE_ALLOWED_SOURCES = (
+    "queued",
+    "running",
+    "done",
+)
+
+DONE_ACCEPT_FAILURE_ALLOWED_SOURCES = (
+    "failed",
+)
+
+DONE_DETAIL_KEYS = (
+    "proof",
+    "git_head",
+    "accepted_failure",
+)
+```
+
+- `DONE_ALLOWED_SOURCES`: exactly `("queued", "running", "done")`. Plain `done` is legal from `queued` (completing a stage directly without execution), from `running` (standard completion), or idempotently from `done` (SPEC §4 rule 5, §13.12). It MUST equal `allowed_source_states("done")` from `ALLOWED_TRANSITIONS` (§13.19).
+- `DONE_ACCEPT_FAILURE_ALLOWED_SOURCES`: exactly `("failed",)`. When invoked with `--accept-failure` / `accept_failure=True`, `done` is legal **only** from the `failed` state (§4 rule 5, §13.12). It MUST equal `allowed_source_states("done --accept-failure")` from `ALLOWED_TRANSITIONS` (§13.19).
+- `DONE_DETAIL_KEYS`: exactly `("proof", "git_head", "accepted_failure")`. Audit detail keys on the `done` event record (§13.30.5). `proof` and `git_head` are always present; `accepted_failure` is present when `accept_failure=True`.
+
+Existing result keys (`RESULT_KEYS = ("summary", "git_head", "finished_at")`; §13.9), proof keys (`PROOF_KEYS = ("tool", "ref", "verified")`; §13.10), and verified enum values (`PROOF_VERIFIED_VALUES = (None, "file", "verify")`; §13.10) are frozen in their respective sections and referenced here without re-definition.
+
+#### 13.30.2 Allowed sources and illegal source guards
+
+The legal source states and target transitions adhere strictly to the frozen transition matrix (`ALLOWED_TRANSITIONS`; §13.19):
+
+| Invocation Mode | Current State | Outcome | Target State | Notes |
+|-----------------|---------------|---------|--------------|-------|
+| Plain `done` | `queued` | Success (exit 0) | `done` | Direct success from queued (§4 rule 5). |
+| Plain `done` | `running` | Success (exit 0) | `done` | Standard completion from running (§4 rule 5). |
+| Plain `done` | `done` | Success (exit 0) | `done` | Idempotent repeat on same stage (updates summary/finished_at; exit 0). |
+| Plain `done` | `blocked` | Rejected (exit 3) | No change | Raises `IllegalTransition` via `_require_terminal_source` (§4 rule 5, §13.17). |
+| Plain `done` | `failed` | Rejected (exit 3) | No change | Raises `IllegalTransition`; requires `start` or `--accept-failure` (§4 rule 5, §13.17). |
+| `done --accept-failure` | `failed` | Success (exit 0) | `done` | Marks success while recording failure acceptance (§4 rule 5, §13.19). |
+| `done --accept-failure` | `queued` | Rejected (exit 3) | No change | Raises `IllegalTransition("done --accept-failure only allowed from state 'failed'...")`. |
+| `done --accept-failure` | `running` | Rejected (exit 3) | No change | Raises `IllegalTransition("done --accept-failure only allowed from state 'failed'...")`. |
+| `done --accept-failure` | `done` | Rejected (exit 3) | No change | Raises `IllegalTransition("done --accept-failure only allowed from state 'failed'...")`. |
+| `done --accept-failure` | `blocked` | Rejected (exit 3) | No change | Raises `IllegalTransition("done --accept-failure only allowed from state 'failed'...")`. |
+
+Precondition failure behavior:
+
+| Precondition failure | Library | CLI exit |
+|----------------------|---------|----------|
+| Stage not initialized (missing dir/STATUS.json) | `NotInitialized` | 15 (`EXIT_NOT_INITIALIZED`; §7, §13.4, §13.17) |
+| Disallowed transition source | `IllegalTransition` | 3 (`EXIT_ILLEGAL_TRANSITION`; §7, §13.4, §13.17) |
+| Failed `--require-proof` verification | `IllegalTransition` | 3 (`EXIT_ILLEGAL_TRANSITION`; §7, §13.4, §13.17) |
+
+On any precondition or guard failure, **no mutation occurs**: `STATUS.json`, `events.jsonl`, and status mirrors remain completely unmodified.
+
+#### 13.30.3 Result payload shape and error clearing
+
+On each successful `done` transition under exclusive file lock:
+
+- **State transition:** `current["state"]` is set to `STATE_DONE` (`"done"`; §4, §13.12).
+- **Error cleared:** `current["error"]` is explicitly cleared to `None` (`null` in JSON). This holds unconditionally across all paths, including `done --accept-failure` from `failed` where the prior error object is replaced with `null` (§13.9).
+- **Result payload:** `current["result"]` is assigned a dictionary conforming to `RESULT_KEYS` (§13.9):
+  - `"summary"`: The supplied `summary` string (or `None` if omitted; CLI `--summary` default is `None`).
+  - `"git_head"`: If `git_head` was explicitly passed (`git_head is not None`), that string is used; otherwise inherits `current.get("git_head")` (recorded during `start` or prior transitions).
+  - `"finished_at"`: Current UTC ISO-8601 timestamp (`now_iso()`).
+  - `"accepted_failure"`: When `accept_failure=True`, `result_payload["accepted_failure"] = True` is set. As frozen in §13.9, this key is **optional additive**: it MUST NOT appear on a plain `done`, and readers MUST tolerate it.
+- **Top-level `git_head` update:** If `git_head` was explicitly provided, `current["git_head"]` is updated to that value in addition to `current["result"]["git_head"]`.
+- **Top-level `proof` update:** If a proof object was constructed (via `proof_ref`, `ENV_PROOF_REF`, or `--require-proof`; §13.30.4), `current["proof"]` is set to that object; otherwise `current["proof"]` is left unchanged.
+- **Timestamp:** `current["updated_at"]` is bumped to the current ISO-8601 timestamp (`now_iso()`; §4 rule 9).
+- **Field preservation:** All other STATUS fields (`stage_id`, `stage_name`, `attempt`, `session_id`, `pid`, `pid_token`, `model`, `variant`, `repo_path`, `git_branch`, `started_at`, `heartbeat_at`, `heartbeat_note`, `artifacts`, `notes`, `meta`) are preserved unchanged.
+
+#### 13.30.4 Proof verification gate semantics
+
+`Stage.done` integrates with the verification receipt protocol (§9, §13.10):
+
+- **Reference resolution:** The proof reference is taken from the explicit argument `proof_ref` (or CLI `--proof-ref`), falling back to the environment variable `os.environ.get(ENV_PROOF_REF)` (`STAGE_SIGNAL_PROOF_REF`; §13.14).
+- **Verification gate (`require_proof=True` / CLI `--require-proof`):**
+  - Verification is evaluated via `verify_proof(ref)` **before** any mutation under lock.
+  - If `ref` is missing, empty, points to a non-existent or empty file, or fails verifier execution, `verify_proof` raises `IllegalTransition`.
+  - When raised, the transition is aborted immediately: `STATUS.json`, `events.jsonl`, and mirrors remain untouched (exit 3).
+  - On verification success, `proof` is a verified proof dictionary matching `PROOF_KEYS` (`tool`, `ref`, `verified`; §13.10) with `verified` in `("file", "verify")` (§13.10).
+- **Unverified receipt (`require_proof=False` with non-null `ref`):**
+  - A receipt pointer is recorded without checking: `proof = {"tool": "agent-done-or-not", "ref": ref, "verified": None}`.
+- **Omitted proof (`require_proof=False` with null/empty `ref`):**
+  - `proof` is `None`, and `current.get("proof")` is preserved as-is.
+
+#### 13.30.5 Audit event shape
+
+Each successful `done` invocation appends exactly one `done` event to `events.jsonl` (§5, §13.5) with standard record keys (`EVENT_RECORD_KEYS`; §13.6):
+
+- `type`: Exactly `"done"` (a member of `EVENT_TYPES`; §13.5).
+- `ts`: ISO-8601 timestamp matching mutation `updated_at` / `finished_at`.
+- `state`: Exactly `"done"`.
+- `stage_id`, `stage_name`, `attempt`: Reflect post-mutation STATUS.
+- `message`: Summary passthrough: exactly the supplied `summary` string (or `None` when omitted) — byte-for-byte, no affixes.
+- `detail`: An object containing keys from `DONE_DETAIL_KEYS = ("proof", "git_head", "accepted_failure")`:
+  - `proof`: The constructed proof dictionary (or `None` if omitted/unmodified).
+  - `git_head`: The explicit `git_head` string passed to `done` (or `None` if omitted).
+  - `accepted_failure`: Boolean `True` when `accept_failure=True`; omitted entirely when `accept_failure=False`.
+  - For plain `done`, `tuple(detail.keys()) == ("proof", "git_head")`.
+  - For `done --accept-failure`, `tuple(detail.keys()) == ("proof", "git_head", "accepted_failure")`.
+
+Readers MUST tolerate additive unknown keys on the `done` `detail` object without failing (§13.1).
+
+#### 13.30.6 Status mirror and CLI behavior
+
+- **Status mirror write:** Successful `done` mutations trigger best-effort repository-level mirror writes (`write_status_mirror`) to `.orch/STATUS.md` and `.orch/DONE` when configured (§10, §13.14). The `write_status_mirror` keyword argument / `--write-status-mirror` CLI flag can override default mirror behavior.
+- **`STATUS.md` human mirror:** `store.write_status_md` is called best-effort, rendering `state: done`, appending the `result:` section with summary, git head, and finished timestamp, and omitting any `error:` section (§13.18).
+- **CLI output:** `stage-signal done` prints `done <one_line_summary>` (e.g. `done running my-stage (attempt 1)`) to standard output and exits 0 (`EXIT_OK`).
+
+#### 13.30.7 Cross-links
+
+- **§4 rule 5 (States & transitions):** Normative `done` transition rules, idempotent repeat on same stage, `--accept-failure` only from `failed`, `--require-proof` pre-mutation gate, and `updated_at` bump rule (§4 rule 9).
+- **§5 (events.jsonl) + §13.5/§13.6:** The `done` event type and required record keys; audit-trail reads via `events`.
+- **§6 (CLI contract):** `stage-signal done [--summary TEXT] [--git-head SHA] [--proof-ref REF] [--require-proof] [--accept-failure]` command syntax and exit codes.
+- **§7 (Exit codes):** `EXIT_OK` (0), `EXIT_BAD_ARGS` (2), `EXIT_ILLEGAL_TRANSITION` (3), `EXIT_NOT_INITIALIZED` (15).
+- **§9 (Proof-of-done protocol):** External proof verification and `agent-done-or-not` integration.
+- **§10 (Status mirror):** `.orch/STATUS.md` and `.orch/DONE` mirror files written on terminal transitions.
+- **§13.9 (result/error keys freeze):** `RESULT_KEYS = ("summary", "git_head", "finished_at")` required keys; `accepted_failure` optional additive key.
+- **§13.10 (Proof object keys and verified enum freeze):** `PROOF_KEYS = ("tool", "ref", "verified")`, `PROOF_VERIFIED_VALUES = (None, "file", "verify")`.
+- **§13.12 (States freeze):** `done` as one of three terminal states (`TERMINAL_STATES`).
+- **§13.14 (Environment and timing defaults freeze):** `ENV_PROOF_REF` fallback (`STAGE_SIGNAL_PROOF_REF`).
+- **§13.19 (Transition matrix freeze):** Allowed edges `(queued, "done") -> done`, `(running, "done") -> done`, `(done, "done") -> done`, `(failed, "done --accept-failure") -> done`.
+- **§13.20 (Stage method surface freeze):** `done(summary=None, *, git_head=None, proof_ref=None, require_proof=False, accept_failure=False, write_status_mirror=None) -> dict[str, Any]` signature and CLI equivalence.
+- **§13.21 (Top-level public export inventory):** Inclusion of `DONE_ALLOWED_SOURCES`, `DONE_ACCEPT_FAILURE_ALLOWED_SOURCES`, and `DONE_DETAIL_KEYS` in `PUBLIC_EXPORTS`.
+
+#### 13.30.8 Additive-only evolution policy
+
+Under `schema_version: 1`, the done terminal contract is strictly **additive-only** (§13.1):
+
+- The frozen allowed sources (`DONE_ALLOWED_SOURCES`, `DONE_ACCEPT_FAILURE_ALLOWED_SOURCES`), the illegal source guards, the `error`-cleared-to-null guarantee, the result object keys (`RESULT_KEYS`), the proof verification gate semantics, and the audit event shape MUST NOT be removed, renamed, reworded, or change semantic meaning.
+- No new event type is introduced for done transitions: the audit record stays a `done` event (§13.5).
+- New result keys or audit detail keys MAY be added in minor or patch releases only as additional optional fields; existing frozen values MUST keep their exact values and types.
+- Readers MUST tolerate unknown future result keys and unknown future detail keys without failing.
+

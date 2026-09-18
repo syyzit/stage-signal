@@ -237,6 +237,23 @@ NOTE_ALLOWED_SOURCES = (
 
 NOTE_DETAIL_KEYS: tuple[str, ...] = ()
 
+# Frozen done terminal contract (SPEC §13.30)
+DONE_ALLOWED_SOURCES = (
+    "queued",
+    "running",
+    "done",
+)
+
+DONE_ACCEPT_FAILURE_ALLOWED_SOURCES = (
+    "failed",
+)
+
+DONE_DETAIL_KEYS = (
+    "proof",
+    "git_head",
+    "accepted_failure",
+)
+
 # Frozen schema_version 1 key sets (SPEC §13)
 STATUS_REQUIRED_KEYS = (
     "schema_version",
@@ -472,6 +489,9 @@ PUBLIC_EXPORTS: tuple[str, ...] = (
     "DOCTOR_SUMMARY_OK_FORMAT",
     "DOCTOR_SUMMARY_RECLAIM_NEEDED",
     "DOCTOR_WARNING_KEYS",
+    "DONE_ACCEPT_FAILURE_ALLOWED_SOURCES",
+    "DONE_ALLOWED_SOURCES",
+    "DONE_DETAIL_KEYS",
     "ENV_DIR",
     "ENV_PROJECT",
     "ENV_PROOF_REF",
