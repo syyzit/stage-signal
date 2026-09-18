@@ -35,6 +35,7 @@ from .constants import (
     STATE_RUNNING,
     TERMINAL_STATES,
     DOCTOR_SUMMARY_RECLAIM_NEEDED,
+    doctor_summary_ok,
     WARNING_CODE_DEAD_PID,
     WARNING_CODE_STALE_HEARTBEAT,
     WARNING_CODE_UNPARSEABLE_HEARTBEAT,
@@ -1074,7 +1075,7 @@ class Stage:
                 summary = DOCTOR_SUMMARY_RECLAIM_NEEDED
             else:
                 state_str = status.get("state") if isinstance(status, dict) else "uninitialized dir exists"
-                summary = f"OK: {state_str}"
+                summary = doctor_summary_ok(state_str)
 
         return {
             "ok": not problems,
