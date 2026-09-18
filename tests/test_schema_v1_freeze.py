@@ -18,6 +18,7 @@ import pytest
 
 from stage_signal import (
     ARTIFACT_ENTRY_KEYS,
+    CLI_SUBCOMMANDS,
     DEFAULT_DIR_NAME,
     DEFAULT_MIRROR_DIRNAME,
     DOCTOR_JSON_KEYS,
@@ -1922,4 +1923,111 @@ def test_max_notes_capacity_limit(tmp_path: Path) -> None:
     # FIFO truncation: first note retained should be note-15, last note-214
     assert notes[0]["text"] == "note-15"
     assert notes[-1]["text"] == f"note-{total_notes - 1}"
+
+
+# =============================================================================
+# 13. CLI subcommand inventory freeze (SPEC §13.15, issue #125)
+# =============================================================================
+
+
+def test_cli_subcommands_constant_freeze() -> None:
+    """CLI subcommands inventory is frozen under SPEC §13.15."""
+    expected_subcommands = (
+        "artifact",
+        "blocked",
+        "clear-terminal",
+        "doctor",
+        "done",
+        "events",
+        "fail",
+        "heartbeat",
+        "init",
+        "note",
+        "reclaim",
+        "start",
+        "status",
+        "supervise",
+        "wait",
+    )
+    assert CLI_SUBCOMMANDS == expected_subcommands
+    assert isinstance(CLI_SUBCOMMANDS, tuple)
+    assert len(CLI_SUBCOMMANDS) == 15
+    # Must be sorted alphabetically
+    assert CLI_SUBCOMMANDS == tuple(sorted(CLI_SUBCOMMANDS))
+    # All items must be non-empty strings without whitespace
+    assert all(isinstance(cmd, str) and cmd.strip() == cmd and len(cmd) > 0 for cmd in CLI_SUBCOMMANDS)
+    # No duplicates
+    assert len(set(CLI_SUBCOMMANDS)) == len(CLI_SUBCOMMANDS)
+
+
+def test_cli_subcommands_exported_from_top_level_and_cli() -> None:
+    """CLI_SUBCOMMANDS is exported from stage_signal, stage_signal.constants, and stage_signal.cli."""
+    import stage_signal
+    import stage_signal.cli
+    import stage_signal.constants
+
+    assert hasattr(stage_signal, "CLI_SUBCOMMANDS")
+    assert "CLI_SUBCOMMANDS" in stage_signal.__all__
+    assert stage_signal.CLI_SUBCOMMANDS == CLI_SUBCOMMANDS
+
+    assert hasattr(stage_signal.constants, "CLI_SUBCOMMANDS")
+    assert stage_signal.constants.CLI_SUBCOMMANDS == CLI_SUBCOMMANDS
+
+    assert hasattr(stage_signal.cli, "CLI_SUBCOMMANDS")
+    assert "CLI_SUBCOMMANDS" in stage_signal.cli.__all__
+    assert stage_signal.cli.CLI_SUBCOMMANDS == CLI_SUBCOMMANDS
+
+
+def test_build_parser_choices_exactly_equal_cli_subcommands() -> None:
+    """CLI parser subcommands exactly match the frozen CLI_SUBCOMMANDS (SPEC §13.15)."""
+    parser = build_parser()
+    subparser_action = next(a for a in parser._actions if a.dest == "command")
+    choices = subparser_action.choices
+
+    assert set(choices.keys()) == set(CLI_SUBCOMMANDS)
+    assert tuple(sorted(choices.keys())) == CLI_SUBCOMMANDS
+    assert len(choices) == len(CLI_SUBCOMMANDS)
+
+
+def test_every_subcommand_has_callable_func_and_help() -> None:
+    """Every frozen subcommand in build_parser() has a valid implementation handler and help text."""
+    parser = build_parser()
+    subparser_action = next(a for a in parser._actions if a.dest == "command")
+    choices = subparser_action.choices
+
+    for cmd in CLI_SUBCOMMANDS:
+        cmd_parser = choices[cmd]
+        func = cmd_parser.get_default("func")
+        assert callable(func), f"subcommand {cmd} does not have a callable func set_default"
+        assert (cmd_parser.description or cmd_parser.format_help()), f"subcommand {cmd} missing help"
+
+
+def test_cli_entry_points_equivalence() -> None:
+    """python -m stage_signal and stage-signal CLI entry point are equivalent (SPEC §13.15.1)."""
+    # 1. python -m stage_signal --version exits 0 and prints version
+    proc = subprocess.run(
+        [sys.executable, "-m", "stage_signal", "--version"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert proc.returncode == 0
+    assert "stage-signal" in proc.stdout
+
+    # 2. Invalid subcommand exits 2 (EXIT_BAD_ARGS)
+    proc_bad = subprocess.run(
+        [sys.executable, "-m", "stage_signal", "nonexistent-command-xyz"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert proc_bad.returncode == EXIT_BAD_ARGS
+    assert "invalid choice" in proc_bad.stderr or "error:" in proc_bad.stderr
+
+
+def test_cli_subcommands_rejects_unknown_command_in_process(capsys: pytest.CaptureFixture[str]) -> None:
+    """CLI parser rejects unknown subcommands with exit code 2 (EXIT_BAD_ARGS)."""
+    with pytest.raises(SystemExit) as exc_info:
+        build_parser().parse_args(["unknown-subcommand"])
+    assert exc_info.value.code == EXIT_BAD_ARGS
 

@@ -1,4 +1,4 @@
-"""stage-signal CLI: init/start/heartbeat/note/artifact/done/blocked/fail/reclaim/status/wait/events/clear-terminal/doctor."""
+"""stage-signal CLI: init/start/heartbeat/note/artifact/done/blocked/fail/reclaim/status/wait/events/clear-terminal/doctor/supervise."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ from typing import Any, Callable, Optional, Sequence
 
 from . import __version__
 from .constants import (
+    CLI_SUBCOMMANDS,
     DEFAULT_STALE_THRESHOLD,
     ENV_DIR,
     EVENT_TYPES,
@@ -33,7 +34,7 @@ from .stage import (
 )
 
 # Re-exported for tests / embedding.
-__all__ = ["build_parser", "main"]
+__all__ = ["CLI_SUBCOMMANDS", "build_parser", "main"]
 
 
 def build_parser() -> argparse.ArgumentParser:

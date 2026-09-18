@@ -2,6 +2,7 @@
 
 from .constants import (
     ARTIFACT_ENTRY_KEYS,
+    CLI_SUBCOMMANDS,
     DEFAULT_DIR_NAME,
     DEFAULT_MIRROR_DIRNAME,
     DEFAULT_STALE_THRESHOLD,
@@ -162,4 +163,5 @@ __all__ = [
     "WAIT_DEFAULT_POLL",
     "EVENTS_DEFAULT_TAIL",
     "MAX_NOTES",
+    "CLI_SUBCOMMANDS",
 ]
