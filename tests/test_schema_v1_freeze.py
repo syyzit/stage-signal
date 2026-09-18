@@ -22,6 +22,8 @@ from stage_signal import (
     ARTIFACT_ALLOWED_SOURCES,
     ARTIFACT_DETAIL_KEYS,
     ARTIFACT_ENTRY_KEYS,
+    BLOCKED_ALLOWED_SOURCES,
+    BLOCKED_DETAIL_KEYS,
     CLEAR_TERMINAL_ALLOWED_SOURCES,
     CLEAR_TERMINAL_ALWAYS_CLEARED_FIELDS,
     CLEAR_TERMINAL_DETAIL_KEYS,
@@ -3762,12 +3764,14 @@ def test_diagnose_doctor_json_summary_null_on_problems(
 
 
 def test_public_exports_constant_freeze() -> None:
-    """PUBLIC_EXPORTS matches the frozen 130-element tuple in SPEC §13.21."""
+    """PUBLIC_EXPORTS matches the frozen 132-element tuple in SPEC §13.21."""
     expected = (
         "ALLOWED_TRANSITIONS",
         "ARTIFACT_ALLOWED_SOURCES",
         "ARTIFACT_DETAIL_KEYS",
         "ARTIFACT_ENTRY_KEYS",
+        "BLOCKED_ALLOWED_SOURCES",
+        "BLOCKED_DETAIL_KEYS",
         "BadArgsError",
         "CLEAR_TERMINAL_ALLOWED_SOURCES",
         "CLEAR_TERMINAL_ALWAYS_CLEARED_FIELDS",
@@ -3897,7 +3901,7 @@ def test_public_exports_constant_freeze() -> None:
     )
     assert PUBLIC_EXPORTS == expected
     assert isinstance(PUBLIC_EXPORTS, tuple)
-    assert len(PUBLIC_EXPORTS) == 130
+    assert len(PUBLIC_EXPORTS) == 132
     assert PUBLIC_EXPORTS == tuple(sorted(PUBLIC_EXPORTS))
     assert len(PUBLIC_EXPORTS) == len(set(PUBLIC_EXPORTS))
 
@@ -4039,6 +4043,8 @@ def test_public_exports_category_coverage() -> None:
         "HEARTBEAT_DETAIL_KEYS",
         "ARTIFACT_ALLOWED_SOURCES",
         "ARTIFACT_DETAIL_KEYS",
+        "BLOCKED_ALLOWED_SOURCES",
+        "BLOCKED_DETAIL_KEYS",
         "DONE_ALLOWED_SOURCES",
         "DONE_ACCEPT_FAILURE_ALLOWED_SOURCES",
         "DONE_DETAIL_KEYS",
@@ -6979,3 +6985,214 @@ def test_start_git_override_and_uninitialized(
     capsys.readouterr()
     rc = cli.main(["--dir", str(missing_dir), "start", "--stage", "cannot start"])
     assert rc == EXIT_NOT_INITIALIZED
+
+
+# =============================================================================
+# 30. Blocked terminal contract freeze (SPEC §13.32, issue #159)
+# =============================================================================
+
+
+def test_blocked_constants_freeze() -> None:
+    """BLOCKED_* constants match SPEC §13.32 and agree with transition matrix."""
+    assert BLOCKED_ALLOWED_SOURCES == ("queued", "running", "blocked")
+    assert isinstance(BLOCKED_ALLOWED_SOURCES, tuple)
+    assert len(BLOCKED_ALLOWED_SOURCES) == 3
+    assert STATE_QUEUED in BLOCKED_ALLOWED_SOURCES
+    assert STATE_RUNNING in BLOCKED_ALLOWED_SOURCES
+    assert STATE_BLOCKED in BLOCKED_ALLOWED_SOURCES
+    for terminal in (STATE_DONE, STATE_FAILED):
+        assert terminal not in BLOCKED_ALLOWED_SOURCES
+
+    assert BLOCKED_DETAIL_KEYS == ()
+    assert isinstance(BLOCKED_DETAIL_KEYS, tuple)
+    assert len(BLOCKED_DETAIL_KEYS) == 0
+
+    # Allowed sources agree with the frozen transition matrix (SPEC §13.19)
+    assert tuple(allowed_source_states("blocked")) == BLOCKED_ALLOWED_SOURCES
+    assert is_transition_allowed(STATE_QUEUED, "blocked") is True
+    assert is_transition_allowed(STATE_RUNNING, "blocked") is True
+    assert is_transition_allowed(STATE_BLOCKED, "blocked") is True
+    assert transition_target(STATE_QUEUED, "blocked") == STATE_BLOCKED
+    assert transition_target(STATE_RUNNING, "blocked") == STATE_BLOCKED
+    assert transition_target(STATE_BLOCKED, "blocked") == STATE_BLOCKED
+
+    for disallowed in (STATE_DONE, STATE_FAILED):
+        assert is_transition_allowed(disallowed, "blocked") is False
+        with pytest.raises(ValueError):
+            transition_target(disallowed, "blocked")
+
+
+def test_blocked_constants_exported_from_top_level() -> None:
+    """Blocked freeze constants are exported from top-level stage_signal (SPEC §13.32)."""
+    import stage_signal
+
+    for name, expected in (
+        ("BLOCKED_ALLOWED_SOURCES", BLOCKED_ALLOWED_SOURCES),
+        ("BLOCKED_DETAIL_KEYS", BLOCKED_DETAIL_KEYS),
+    ):
+        assert hasattr(stage_signal, name), f"stage_signal missing {name!r}"
+        assert name in stage_signal.__all__, f"{name!r} not in stage_signal.__all__"
+        assert getattr(stage_signal, name) is expected
+
+
+def test_blocked_allowed_sources_and_idempotence(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Blocked succeeds from queued/running/blocked; done/failed refuse exit 3 (SPEC §13.32.2).
+
+    Empty/whitespace-only reasons are BadArgs (exit 2) regardless of state (SPEC §13.32.3).
+    Synchronous state-machine smoke with no sleeps/threads.
+    """
+    stage_dir = tmp_path / ".stage-signal"
+    stage = Stage(str(stage_dir))
+    stage.init(project="blocked-sources-freeze")
+    status_file = stage_dir / "STATUS.json"
+
+    def assert_no_mutation(snapshot: str, event_count: int) -> None:
+        assert status_file.read_text(encoding="utf-8") == snapshot
+        assert len(stage.events()) == event_count
+
+    # Empty/whitespace-only reason is BadArgs (exit 2) even from queued
+    for bad_reason in ("", "   ", "\t \n"):
+        with pytest.raises(BadArgsError, match="blocked requires non-empty --reason TEXT"):
+            stage.blocked(bad_reason)
+    capsys.readouterr()
+    assert main(["--dir", str(stage_dir), "blocked", "--reason", "  "]) == EXIT_BAD_ARGS
+    assert_no_mutation(status_file.read_text(encoding="utf-8"), 1)
+
+    # Missing --reason flag is argparse exit 2
+    with pytest.raises(SystemExit) as exc_info:
+        main(["--dir", str(stage_dir), "blocked"])
+    assert exc_info.value.code == EXIT_BAD_ARGS
+    capsys.readouterr()
+    assert_no_mutation(status_file.read_text(encoding="utf-8"), 1)
+
+    # queued succeeds via library
+    st = stage.blocked("queued blockage")
+    assert st["state"] == STATE_BLOCKED
+    assert st["error"]["reason"] == "queued blockage"
+
+    # idempotent repeat from blocked succeeds and overwrites the reason
+    st = stage.blocked("blocked again")
+    assert st["state"] == STATE_BLOCKED
+    assert st["error"]["reason"] == "blocked again"
+
+    # done refuses with no mutation
+    stage.start(stage="blocked-done-step", pid=os.getpid())
+    stage.done(summary="finished")
+    assert stage.status()["state"] == STATE_DONE
+    before = status_file.read_text(encoding="utf-8")
+    events_before = len(stage.events())
+    with pytest.raises(IllegalTransition):
+        stage.blocked("should not land")
+    assert_no_mutation(before, events_before)
+    capsys.readouterr()
+    assert (
+        main(["--dir", str(stage_dir), "blocked", "--reason", "should not land"])
+        == EXIT_ILLEGAL_TRANSITION
+    )
+    assert_no_mutation(before, events_before)
+
+    # failed refuses with no mutation
+    stage.start(stage="blocked-failed-step", pid=os.getpid())
+    stage.fail(reason="crashed")
+    assert stage.status()["state"] == STATE_FAILED
+    before = status_file.read_text(encoding="utf-8")
+    events_before = len(stage.events())
+    with pytest.raises(IllegalTransition):
+        stage.blocked("should not land")
+    assert_no_mutation(before, events_before)
+    capsys.readouterr()
+    assert (
+        main(["--dir", str(stage_dir), "blocked", "--reason", "should not land"])
+        == EXIT_ILLEGAL_TRANSITION
+    )
+    assert_no_mutation(before, events_before)
+
+    # running succeeds via CLI
+    stage.start(stage="blocked-running-step", pid=os.getpid())
+    capsys.readouterr()
+    assert main(["--dir", str(stage_dir), "blocked", "--reason", "cli blockage"]) == EXIT_OK
+    out = capsys.readouterr().out
+    assert out.startswith("blocked blocked blocked-running-step (attempt 1): cli blockage")
+    assert stage.status()["state"] == STATE_BLOCKED
+
+
+def test_blocked_reason_stored_verbatim(tmp_path: Path) -> None:
+    """A valid reason is stored byte-for-byte (validation strips only for the check) (SPEC §13.32.3)."""
+    stage_dir = tmp_path / ".stage-signal"
+    stage = Stage(str(stage_dir))
+    stage.init(project="blocked-verbatim-freeze")
+    stage.start(stage="blocked-verbatim-step", pid=os.getpid())
+
+    reason = "  waiting on reviewer: docs kept  "
+    st = stage.blocked(reason)
+    assert st["error"]["reason"] == reason
+    events = stage.events()
+    assert events[-1]["type"] == "blocked"
+    assert events[-1]["message"] == reason
+
+
+def test_blocked_success_payload_and_audit_freeze(tmp_path: Path) -> None:
+    """Successful blocked writes the ERROR_KEYS error object, result null, one blocked event (SPEC §13.32.4/13.32.5)."""
+    from datetime import datetime as _datetime
+
+    stage_dir = tmp_path / ".stage-signal"
+    stage = Stage(str(stage_dir))
+    stage.init(project="blocked-payload-freeze")
+    stage.start(stage="blocked-payload-step", pid=os.getpid())
+    stage_id_before = stage.status()["stage_id"]
+    events_before = len(stage.events())
+
+    st = stage.blocked("waiting on external dep")
+
+    # State + error object cross-linked to ERROR_KEYS / ERROR_KINDS (§13.9, not redefined)
+    assert st["state"] == STATE_BLOCKED
+    assert set(st["error"].keys()) == set(ERROR_KEYS)
+    assert tuple(st["error"].keys()) == ERROR_KEYS
+    assert st["error"]["reason"] == "waiting on external dep"
+    assert st["error"]["kind"] == STATE_BLOCKED
+    assert st["error"]["kind"] in ERROR_KINDS
+    finished = _datetime.fromisoformat(str(st["error"]["finished_at"]))
+    assert finished.tzinfo is not None
+    # result is null; identity fields preserved; updated_at bumped
+    assert st["result"] is None
+    assert st["stage_id"] == stage_id_before
+
+    # Exactly one blocked event: reason passthrough message, empty detail
+    events = stage.events()
+    assert len(events) == events_before + 1
+    last = events[-1]
+    assert last["type"] == "blocked"
+    assert last["type"] in EVENT_TYPES
+    assert last["state"] == STATE_BLOCKED
+    assert last["stage_id"] == stage_id_before
+    assert last["message"] == "waiting on external dep"
+    assert last["detail"] == {}
+    assert tuple(last["detail"].keys()) == BLOCKED_DETAIL_KEYS
+    assert last["ts"] == st["updated_at"]
+    for key in EVENT_RECORD_KEYS:
+        assert key in last
+
+    # On-disk STATUS.json matches the returned snapshot payload
+    raw = json.loads((stage_dir / STATUS_FILENAME).read_text(encoding="utf-8"))
+    assert raw["state"] == STATE_BLOCKED
+    assert raw["error"] == st["error"]
+    assert raw["result"] is None
+
+
+def test_blocked_uninitialized_library_and_cli_exit(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Blocked raises NotInitialized (exit 15) when stage dir is uninitialized (SPEC §13.17, §13.32)."""
+    missing_dir = tmp_path / "nonexistent" / ".stage-signal"
+    missing_stage = Stage(str(missing_dir))
+    with pytest.raises(NotInitialized) as exc_info:
+        missing_stage.blocked("cannot block")
+    assert exc_info.value.exit_code == EXIT_NOT_INITIALIZED == 15
+
+    capsys.readouterr()
+    rc = main(["--dir", str(missing_dir), "blocked", "--reason", "cannot block"])
+    assert rc == EXIT_NOT_INITIALIZED == 15
+    err_out = capsys.readouterr().err
+    assert "stage-signal: error:" in err_out
