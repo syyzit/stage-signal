@@ -36,6 +36,9 @@ from stage_signal import (
     DOCTOR_SUMMARY_OK_FORMAT,
     DOCTOR_SUMMARY_RECLAIM_NEEDED,
     DOCTOR_WARNING_KEYS,
+    DONE_ACCEPT_FAILURE_ALLOWED_SOURCES,
+    DONE_ALLOWED_SOURCES,
+    DONE_DETAIL_KEYS,
     ERROR_KEYS,
     ERROR_KINDS,
     EVENT_RECORD_KEYS,
@@ -3753,7 +3756,7 @@ def test_diagnose_doctor_json_summary_null_on_problems(
 
 
 def test_public_exports_constant_freeze() -> None:
-    """PUBLIC_EXPORTS matches the frozen 121-element tuple in SPEC §13.21."""
+    """PUBLIC_EXPORTS matches the frozen 124-element tuple in SPEC §13.21."""
     expected = (
         "ALLOWED_TRANSITIONS",
         "ARTIFACT_ALLOWED_SOURCES",
@@ -3776,6 +3779,9 @@ def test_public_exports_constant_freeze() -> None:
         "DOCTOR_SUMMARY_OK_FORMAT",
         "DOCTOR_SUMMARY_RECLAIM_NEEDED",
         "DOCTOR_WARNING_KEYS",
+        "DONE_ACCEPT_FAILURE_ALLOWED_SOURCES",
+        "DONE_ALLOWED_SOURCES",
+        "DONE_DETAIL_KEYS",
         "ENV_DIR",
         "ENV_PROJECT",
         "ENV_PROOF_REF",
@@ -3879,7 +3885,7 @@ def test_public_exports_constant_freeze() -> None:
     )
     assert PUBLIC_EXPORTS == expected
     assert isinstance(PUBLIC_EXPORTS, tuple)
-    assert len(PUBLIC_EXPORTS) == 121
+    assert len(PUBLIC_EXPORTS) == 124
     assert PUBLIC_EXPORTS == tuple(sorted(PUBLIC_EXPORTS))
     assert len(PUBLIC_EXPORTS) == len(set(PUBLIC_EXPORTS))
 
@@ -4021,6 +4027,9 @@ def test_public_exports_category_coverage() -> None:
         "HEARTBEAT_DETAIL_KEYS",
         "ARTIFACT_ALLOWED_SOURCES",
         "ARTIFACT_DETAIL_KEYS",
+        "DONE_ALLOWED_SOURCES",
+        "DONE_ACCEPT_FAILURE_ALLOWED_SOURCES",
+        "DONE_DETAIL_KEYS",
     }
     for const_name in core_constants:
         assert const_name in PUBLIC_EXPORTS
@@ -5726,3 +5735,428 @@ def test_note_lifecycle_preservation(tmp_path: Path) -> None:
         "step-1 note 2",
         "step-2 note 1",
     ]
+
+
+# =============================================================================
+# 28. Done terminal contract freeze (SPEC §13.30, issue #155)
+# =============================================================================
+
+
+def test_done_constants_freeze() -> None:
+    """DONE_* constants match SPEC §13.30 and agree with transition matrix."""
+    assert DONE_ALLOWED_SOURCES == ("queued", "running", "done")
+    assert isinstance(DONE_ALLOWED_SOURCES, tuple)
+    assert len(DONE_ALLOWED_SOURCES) == 3
+
+    assert DONE_ACCEPT_FAILURE_ALLOWED_SOURCES == ("failed",)
+    assert isinstance(DONE_ACCEPT_FAILURE_ALLOWED_SOURCES, tuple)
+    assert len(DONE_ACCEPT_FAILURE_ALLOWED_SOURCES) == 1
+
+    assert DONE_DETAIL_KEYS == ("proof", "git_head", "accepted_failure")
+    assert isinstance(DONE_DETAIL_KEYS, tuple)
+    assert len(DONE_DETAIL_KEYS) == 3
+
+    # Allowed sources agree with the frozen transition matrix (SPEC §13.19)
+    assert tuple(allowed_source_states("done")) == DONE_ALLOWED_SOURCES
+    assert tuple(allowed_source_states("done --accept-failure")) == DONE_ACCEPT_FAILURE_ALLOWED_SOURCES
+
+    for src in DONE_ALLOWED_SOURCES:
+        assert is_transition_allowed(src, "done") is True
+        assert transition_target(src, "done") == STATE_DONE
+
+    assert is_transition_allowed(STATE_BLOCKED, "done") is False
+    assert is_transition_allowed(STATE_FAILED, "done") is False
+
+    assert is_transition_allowed(STATE_FAILED, "done --accept-failure") is True
+    assert is_transition_allowed(STATE_FAILED, "done_accept_failure") is True
+    assert transition_target(STATE_FAILED, "done --accept-failure") == STATE_DONE
+    assert transition_target(STATE_FAILED, "done_accept_failure") == STATE_DONE
+
+    for non_failed in (STATE_QUEUED, STATE_RUNNING, STATE_DONE, STATE_BLOCKED):
+        assert is_transition_allowed(non_failed, "done --accept-failure") is False
+
+
+def test_done_constants_exported_from_top_level() -> None:
+    """Done freeze constants are exported from top-level stage_signal (SPEC §13.30)."""
+    import stage_signal
+
+    for name, expected in (
+        ("DONE_ALLOWED_SOURCES", DONE_ALLOWED_SOURCES),
+        ("DONE_ACCEPT_FAILURE_ALLOWED_SOURCES", DONE_ACCEPT_FAILURE_ALLOWED_SOURCES),
+        ("DONE_DETAIL_KEYS", DONE_DETAIL_KEYS),
+    ):
+        assert hasattr(stage_signal, name), f"stage_signal missing {name!r}"
+        assert name in stage_signal.__all__, f"{name!r} not in stage_signal.__all__"
+        assert getattr(stage_signal, name) is expected
+
+
+def test_done_plain_allowed_sources_and_idempotence(tmp_path: Path) -> None:
+    """Plain done succeeds from queued, running, and idempotent done (SPEC §4 rule 5, §13.30).
+
+    Synchronous tests with zero sleeps/threads.
+    """
+    stage_dir = tmp_path / ".stage-signal"
+    stage = Stage(str(stage_dir))
+    stage.init(project="done-sources-test")
+
+    # 1. Plain done from queued
+    assert stage.status()["state"] == STATE_QUEUED
+    st_q = stage.done(summary="direct success from queued")
+    assert st_q["state"] == STATE_DONE
+    assert st_q["result"]["summary"] == "direct success from queued"
+    assert "accepted_failure" not in st_q["result"]
+    assert st_q["error"] is None
+
+    # 2. Plain done from running
+    stage.start(stage="run-1", pid=os.getpid(), git_head="head-run-1")
+    assert stage.status()["state"] == STATE_RUNNING
+    st_r = stage.done(summary="success from running")
+    assert st_r["state"] == STATE_DONE
+    assert st_r["result"]["summary"] == "success from running"
+    assert st_r["result"]["git_head"] == "head-run-1"
+    assert "accepted_failure" not in st_r["result"]
+    assert st_r["error"] is None
+
+    # 3. Idempotent repeat from done (same stage)
+    st_repeat = stage.done(summary="updated summary on repeat", git_head="head-updated")
+    assert st_repeat["state"] == STATE_DONE
+    assert st_repeat["result"]["summary"] == "updated summary on repeat"
+    assert st_repeat["result"]["git_head"] == "head-updated"
+    assert st_repeat["git_head"] == "head-updated"
+    assert "accepted_failure" not in st_repeat["result"]
+    assert st_repeat["error"] is None
+
+
+def test_done_plain_illegal_sources(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Plain done is rejected from blocked and failed states (SPEC §4 rule 5, §13.30).
+
+    Synchronous tests with zero sleeps/threads.
+    """
+    from stage_signal import cli
+
+    stage_dir = tmp_path / ".stage-signal"
+    stage = Stage(str(stage_dir))
+    stage.init(project="done-illegal-test")
+
+    # 1. Blocked -> plain done is illegal
+    stage.start(stage="stage-blk", pid=os.getpid())
+    stage.blocked(reason="waiting on reviewer")
+    assert stage.status()["state"] == STATE_BLOCKED
+
+    before_blk_status = (stage_dir / "STATUS.json").read_bytes()
+    before_blk_events = (stage_dir / "events.jsonl").read_bytes()
+
+    with pytest.raises(IllegalTransition, match="not allowed from terminal state 'blocked'"):
+        stage.done(summary="should fail")
+
+    assert (stage_dir / "STATUS.json").read_bytes() == before_blk_status
+    assert (stage_dir / "events.jsonl").read_bytes() == before_blk_events
+
+    # CLI check from blocked
+    rc_blk = cli.main(["--dir", str(stage_dir), "done", "--summary", "cli fail"])
+    assert rc_blk == EXIT_ILLEGAL_TRANSITION
+
+    # 2. Failed -> plain done is illegal (requires --accept-failure or start)
+    stage.start(stage="stage-fail", pid=os.getpid())
+    stage.fail(reason="build broke")
+    assert stage.status()["state"] == STATE_FAILED
+
+    before_fail_status = (stage_dir / "STATUS.json").read_bytes()
+    before_fail_events = (stage_dir / "events.jsonl").read_bytes()
+
+    with pytest.raises(IllegalTransition, match="not allowed from terminal state 'failed'"):
+        stage.done(summary="cannot plain done from failed")
+
+    assert (stage_dir / "STATUS.json").read_bytes() == before_fail_status
+    assert (stage_dir / "events.jsonl").read_bytes() == before_fail_events
+
+    # CLI check from failed without --accept-failure
+    rc_fail = cli.main(["--dir", str(stage_dir), "done", "--summary", "cli fail"])
+    assert rc_fail == EXIT_ILLEGAL_TRANSITION
+
+
+def test_done_accept_failure_semantics(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """done --accept-failure succeeds ONLY from failed and records accepted_failure (SPEC §13.30).
+
+    Synchronous tests with zero sleeps/threads.
+    """
+    from stage_signal import cli
+
+    stage_dir = tmp_path / ".stage-signal"
+    stage = Stage(str(stage_dir))
+    stage.init(project="accept-failure-test")
+    stage.start(stage="af-stage", pid=os.getpid(), git_head="head-init")
+    stage.fail(reason="flaky test failure")
+
+    assert stage.status()["state"] == STATE_FAILED
+    assert stage.status()["error"]["reason"] == "flaky test failure"
+
+    # Library call
+    st = stage.done(summary="accepted test failure", accept_failure=True)
+    assert st["state"] == STATE_DONE
+    assert st["result"]["summary"] == "accepted test failure"
+    assert st["result"]["git_head"] == "head-init"
+    assert st["result"]["accepted_failure"] is True
+    assert set(st["result"].keys()) == set(RESULT_KEYS) | {"accepted_failure"}
+    assert st["error"] is None  # Error is cleared!
+
+    # Audit event check
+    events = stage.events()
+    last_event = events[-1]
+    assert last_event["type"] == "done"
+    assert last_event["state"] == STATE_DONE
+    assert last_event["message"] == "accepted test failure"
+    assert last_event["detail"]["accepted_failure"] is True
+    assert set(last_event["detail"].keys()) == set(DONE_DETAIL_KEYS)
+    assert tuple(last_event["detail"].keys()) == DONE_DETAIL_KEYS
+
+    # CLI check: fail again then call CLI with --accept-failure
+    stage.start(stage="af-stage-cli", pid=os.getpid())
+    stage.fail(reason="cli test failure")
+    rc = cli.main([
+        "--dir", str(stage_dir), "done",
+        "--accept-failure",
+        "--summary", "accepted via cli",
+    ])
+    assert rc == EXIT_OK
+    st_cli = stage.status()
+    assert st_cli["state"] == STATE_DONE
+    assert st_cli["result"]["summary"] == "accepted via cli"
+    assert st_cli["result"]["accepted_failure"] is True
+    assert st_cli["error"] is None
+
+
+def test_done_accept_failure_illegal_sources(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """done --accept-failure is rejected from queued, running, blocked, done (SPEC §13.30).
+
+    Synchronous tests with zero sleeps/threads.
+    """
+    from stage_signal import cli
+
+    stage_dir = tmp_path / ".stage-signal"
+    stage = Stage(str(stage_dir))
+    stage.init(project="af-illegal-test")
+
+    # 1. From queued
+    assert stage.status()["state"] == STATE_QUEUED
+    with pytest.raises(IllegalTransition, match="only allowed from state 'failed'"):
+        stage.done(accept_failure=True)
+    rc = cli.main(["--dir", str(stage_dir), "done", "--accept-failure"])
+    assert rc == EXIT_ILLEGAL_TRANSITION
+
+    # 2. From running
+    stage.start(stage="af-running", pid=os.getpid())
+    assert stage.status()["state"] == STATE_RUNNING
+    with pytest.raises(IllegalTransition, match="only allowed from state 'failed'"):
+        stage.done(accept_failure=True)
+    rc = cli.main(["--dir", str(stage_dir), "done", "--accept-failure"])
+    assert rc == EXIT_ILLEGAL_TRANSITION
+
+    # 3. From blocked
+    stage.blocked(reason="paused")
+    assert stage.status()["state"] == STATE_BLOCKED
+    with pytest.raises(IllegalTransition, match="only allowed from state 'failed'"):
+        stage.done(accept_failure=True)
+    rc = cli.main(["--dir", str(stage_dir), "done", "--accept-failure"])
+    assert rc == EXIT_ILLEGAL_TRANSITION
+
+    # 4. From done
+    stage.start(stage="af-done", pid=os.getpid())
+    stage.done(summary="success")
+    assert stage.status()["state"] == STATE_DONE
+    with pytest.raises(IllegalTransition, match="only allowed from state 'failed'"):
+        stage.done(accept_failure=True)
+    rc = cli.main(["--dir", str(stage_dir), "done", "--accept-failure"])
+    assert rc == EXIT_ILLEGAL_TRANSITION
+
+
+def test_done_result_payload_and_error_clearing(tmp_path: Path) -> None:
+    """Result payload conforms to RESULT_KEYS and error is cleared to null (SPEC §13.9, §13.30).
+
+    Synchronous tests with zero sleeps/threads.
+    """
+    stage_dir = tmp_path / ".stage-signal"
+    stage = Stage(str(stage_dir))
+    stage.init(project="result-shape-test")
+    stage.start(stage="res-stage", pid=os.getpid(), git_head="head-start")
+
+    st = stage.done(summary="clean finish", git_head="head-done-override")
+    assert st["state"] == STATE_DONE
+    assert st["error"] is None
+
+    result = st["result"]
+    assert isinstance(result, dict)
+    assert set(result.keys()) == set(RESULT_KEYS)
+    assert result["summary"] == "clean finish"
+    assert result["git_head"] == "head-done-override"
+    assert st["git_head"] == "head-done-override"
+    assert isinstance(result["finished_at"], str)
+
+    # finished_at parses as valid ISO-8601
+    dt = datetime.fromisoformat(result["finished_at"])
+    assert dt.tzinfo is not None
+
+    # updated_at parses as valid ISO-8601
+    dt_up = datetime.fromisoformat(st["updated_at"])
+    assert dt_up.tzinfo is not None
+
+
+def test_done_proof_and_require_proof_gate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Proof recording and --require-proof verification gate semantics (SPEC §9, §13.10, §13.30).
+
+    Synchronous tests with zero sleeps/threads.
+    """
+    stage_dir = tmp_path / ".stage-signal"
+    stage = Stage(str(stage_dir))
+    stage.init(project="proof-test")
+    stage.start(stage="proof-stage", pid=os.getpid())
+
+    # 1. Unverified proof_ref alone
+    st_unverified = stage.done(summary="unverified proof", proof_ref="ledger:proof-123")
+    proof = st_unverified["proof"]
+    assert proof is not None
+    assert proof["tool"] == "agent-done-or-not"
+    assert proof["ref"] == "ledger:proof-123"
+    assert proof["verified"] is None
+    assert set(proof.keys()) == set(PROOF_KEYS)
+
+    # 2. Valid file proof with require_proof=True
+    receipt_file = tmp_path / "valid-receipt.json"
+    receipt_file.write_text('{"status": "ok", "receipt": "abc"}')
+
+    stage.start(stage="proof-stage-2", pid=os.getpid())
+    st_verified = stage.done(
+        summary="verified proof",
+        proof_ref=str(receipt_file),
+        require_proof=True,
+    )
+    proof_v = st_verified["proof"]
+    assert proof_v is not None
+    assert proof_v["tool"] == "agent-done-or-not"
+    assert proof_v["ref"] == str(receipt_file)
+    assert proof_v["verified"] == "file"
+    assert proof_v["verified"] in PROOF_VERIFIED_VALUES
+    assert set(proof_v.keys()) == set(PROOF_KEYS)
+
+    # 3. require_proof=True with non-existent file fails BEFORE mutation
+    stage.start(stage="proof-fail-stage", pid=os.getpid())
+    before_status = (stage_dir / "STATUS.json").read_bytes()
+    before_events = (stage_dir / "events.jsonl").read_bytes()
+
+    with pytest.raises(IllegalTransition, match="proof gate failed"):
+        stage.done(
+            summary="should fail",
+            proof_ref=str(tmp_path / "missing-receipt.json"),
+            require_proof=True,
+        )
+
+    assert (stage_dir / "STATUS.json").read_bytes() == before_status
+    assert (stage_dir / "events.jsonl").read_bytes() == before_events
+    assert stage.status()["state"] == STATE_RUNNING
+
+    # 4. require_proof=True with missing proof_ref fails BEFORE mutation
+    with pytest.raises(IllegalTransition, match="needs --proof-ref REF"):
+        stage.done(summary="missing ref", require_proof=True)
+
+    assert stage.status()["state"] == STATE_RUNNING
+
+    # 5. Fallback to ENV_PROOF_REF environment variable
+    monkeypatch.setenv("STAGE_SIGNAL_PROOF_REF", str(receipt_file))
+    st_env = stage.done(summary="env verified", require_proof=True)
+    assert st_env["state"] == STATE_DONE
+    assert st_env["proof"]["ref"] == str(receipt_file)
+    assert st_env["proof"]["verified"] == "file"
+
+
+def test_done_audit_event_shape(tmp_path: Path) -> None:
+    """Each done appends one done event with summary message + detail keys (SPEC §13.30.5).
+
+    Synchronous tests with zero sleeps/threads.
+    """
+    stage_dir = tmp_path / ".stage-signal"
+    stage = Stage(str(stage_dir))
+    stage.init(project="done-audit-test")
+    stage.start(stage="audit-stage", pid=os.getpid(), git_head="head-audit")
+
+    initial_event_count = len(stage.events())
+
+    summary_text = "all requirements verified"
+    st = stage.done(summary=summary_text, git_head="head-audit")
+    events = stage.events()
+    assert len(events) == initial_event_count + 1
+
+    last_event = events[-1]
+    assert last_event["type"] == "done"
+    assert last_event["stage_id"] == "audit-stage"
+    assert last_event["stage_name"] == "audit-stage"
+    assert last_event["state"] == STATE_DONE
+    assert last_event["attempt"] == 1
+    assert last_event["message"] == summary_text
+    assert last_event["ts"] == st["updated_at"]
+
+    for required_key in EVENT_RECORD_KEYS:
+        assert required_key in last_event
+
+    # Plain done detail keys: ("proof", "git_head")
+    detail = last_event["detail"]
+    assert isinstance(detail, dict)
+    assert tuple(detail.keys()) == ("proof", "git_head")
+    assert detail["git_head"] == "head-audit"
+    assert detail["proof"] is None
+    assert "accepted_failure" not in detail
+    assert set(detail.keys()).issubset(set(DONE_DETAIL_KEYS))
+
+    # done with summary=None passes message=None
+    stage.start(stage="audit-none-summary", pid=os.getpid())
+    st_none = stage.done(summary=None)
+    ev_none = stage.events()[-1]
+    assert ev_none["message"] is None
+
+
+def test_done_uninitialized(tmp_path: Path) -> None:
+    """done raises NotInitialized (exit 15) when stage dir is uninitialized (SPEC §13.17, §13.30).
+
+    Synchronous tests with zero sleeps/threads.
+    """
+    from stage_signal import cli
+
+    missing_dir = tmp_path / "nonexistent" / ".stage-signal"
+    stage = Stage(str(missing_dir))
+
+    with pytest.raises(NotInitialized):
+        stage.done(summary="cannot done")
+
+    rc = cli.main(["--dir", str(missing_dir), "done"])
+    assert rc == EXIT_NOT_INITIALIZED
+
+
+def test_done_status_md_rendering(tmp_path: Path) -> None:
+    """STATUS.md human mirror renders state: done, result:, and omits error: (SPEC §13.18, §13.30).
+
+    Synchronous tests with zero sleeps/threads.
+    """
+    stage_dir = tmp_path / ".stage-signal"
+    stage = Stage(str(stage_dir))
+    stage.init(project="status-md-test")
+    stage.start(stage="md-stage", pid=os.getpid(), git_head="head-md")
+    stage.done(summary="finished task successfully")
+
+    status_md_path = stage_dir / "STATUS.md"
+    assert status_md_path.is_file()
+    content = status_md_path.read_text()
+
+    assert "# stage-signal STATUS" in content
+    assert "state: done" in content
+    assert "stage: md-stage" in content
+    assert "result:" in content
+    assert "finished task successfully" in content
+    assert "error:" not in content
+
