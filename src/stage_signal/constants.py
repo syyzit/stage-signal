@@ -254,6 +254,24 @@ DONE_DETAIL_KEYS = (
     "accepted_failure",
 )
 
+# Frozen fail terminal contract (SPEC §13.31)
+FAIL_ALLOWED_SOURCES = (
+    "queued",
+    "running",
+    "failed",
+)
+
+FAIL_IF_DEAD_PID_ALLOWED_SOURCES = (
+    "queued",
+    "running",
+    "failed",
+)
+
+FAIL_IF_NEEDS_RECLAIM_ALLOWED_SOURCES = (
+    "running",
+)
+
+FAIL_DETAIL_KEYS: tuple[str, ...] = ()
 # Frozen schema_version 1 key sets (SPEC §13)
 STATUS_REQUIRED_KEYS = (
     "schema_version",
@@ -514,6 +532,10 @@ PUBLIC_EXPORTS: tuple[str, ...] = (
     "EXIT_QUEUED",
     "EXIT_RUNNING",
     "EXIT_WAIT_TIMEOUT",
+    "FAIL_ALLOWED_SOURCES",
+    "FAIL_DETAIL_KEYS",
+    "FAIL_IF_DEAD_PID_ALLOWED_SOURCES",
+    "FAIL_IF_NEEDS_RECLAIM_ALLOWED_SOURCES",
     "HEARTBEAT_ALLOWED_SOURCES",
     "HEARTBEAT_DETAIL_KEYS",
     "IllegalTransition",

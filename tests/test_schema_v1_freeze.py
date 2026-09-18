@@ -55,6 +55,10 @@ from stage_signal import (
     EXIT_QUEUED,
     EXIT_RUNNING,
     EXIT_WAIT_TIMEOUT,
+    FAIL_ALLOWED_SOURCES,
+    FAIL_DETAIL_KEYS,
+    FAIL_IF_DEAD_PID_ALLOWED_SOURCES,
+    FAIL_IF_NEEDS_RECLAIM_ALLOWED_SOURCES,
     HEARTBEAT_ALLOWED_SOURCES,
     HEARTBEAT_DETAIL_KEYS,
     LOCK_FILENAME,
@@ -3756,7 +3760,7 @@ def test_diagnose_doctor_json_summary_null_on_problems(
 
 
 def test_public_exports_constant_freeze() -> None:
-    """PUBLIC_EXPORTS matches the frozen 124-element tuple in SPEC §13.21."""
+    """PUBLIC_EXPORTS matches the frozen 128-element tuple in SPEC §13.21."""
     expected = (
         "ALLOWED_TRANSITIONS",
         "ARTIFACT_ALLOWED_SOURCES",
@@ -3804,6 +3808,10 @@ def test_public_exports_constant_freeze() -> None:
         "EXIT_QUEUED",
         "EXIT_RUNNING",
         "EXIT_WAIT_TIMEOUT",
+        "FAIL_ALLOWED_SOURCES",
+        "FAIL_DETAIL_KEYS",
+        "FAIL_IF_DEAD_PID_ALLOWED_SOURCES",
+        "FAIL_IF_NEEDS_RECLAIM_ALLOWED_SOURCES",
         "HEARTBEAT_ALLOWED_SOURCES",
         "HEARTBEAT_DETAIL_KEYS",
         "IllegalTransition",
@@ -3885,7 +3893,7 @@ def test_public_exports_constant_freeze() -> None:
     )
     assert PUBLIC_EXPORTS == expected
     assert isinstance(PUBLIC_EXPORTS, tuple)
-    assert len(PUBLIC_EXPORTS) == 124
+    assert len(PUBLIC_EXPORTS) == 128
     assert PUBLIC_EXPORTS == tuple(sorted(PUBLIC_EXPORTS))
     assert len(PUBLIC_EXPORTS) == len(set(PUBLIC_EXPORTS))
 
@@ -4030,6 +4038,10 @@ def test_public_exports_category_coverage() -> None:
         "DONE_ALLOWED_SOURCES",
         "DONE_ACCEPT_FAILURE_ALLOWED_SOURCES",
         "DONE_DETAIL_KEYS",
+        "FAIL_ALLOWED_SOURCES",
+        "FAIL_DETAIL_KEYS",
+        "FAIL_IF_DEAD_PID_ALLOWED_SOURCES",
+        "FAIL_IF_NEEDS_RECLAIM_ALLOWED_SOURCES",
     }
     for const_name in core_constants:
         assert const_name in PUBLIC_EXPORTS
@@ -5790,6 +5802,77 @@ def test_done_constants_exported_from_top_level() -> None:
         assert getattr(stage_signal, name) is expected
 
 
+# =============================================================================
+# 26. Fail terminal contract freeze (SPEC §13.31, issue #156)
+# =============================================================================
+
+
+def test_fail_constants_freeze() -> None:
+    """Fail frozen constants match the exact values in SPEC §13.31.1."""
+    assert FAIL_ALLOWED_SOURCES == ("queued", "running", "failed")
+    assert isinstance(FAIL_ALLOWED_SOURCES, tuple)
+    assert len(FAIL_ALLOWED_SOURCES) == 3
+    assert STATE_QUEUED in FAIL_ALLOWED_SOURCES
+    assert STATE_RUNNING in FAIL_ALLOWED_SOURCES
+    assert STATE_FAILED in FAIL_ALLOWED_SOURCES
+    for terminal in (STATE_DONE, STATE_BLOCKED):
+        assert terminal not in FAIL_ALLOWED_SOURCES
+
+    assert FAIL_IF_DEAD_PID_ALLOWED_SOURCES == ("queued", "running", "failed")
+    assert isinstance(FAIL_IF_DEAD_PID_ALLOWED_SOURCES, tuple)
+    assert len(FAIL_IF_DEAD_PID_ALLOWED_SOURCES) == 3
+
+    assert FAIL_IF_NEEDS_RECLAIM_ALLOWED_SOURCES == ("running",)
+    assert isinstance(FAIL_IF_NEEDS_RECLAIM_ALLOWED_SOURCES, tuple)
+    assert len(FAIL_IF_NEEDS_RECLAIM_ALLOWED_SOURCES) == 1
+    assert STATE_RUNNING in FAIL_IF_NEEDS_RECLAIM_ALLOWED_SOURCES
+
+    assert FAIL_DETAIL_KEYS == ()
+    assert isinstance(FAIL_DETAIL_KEYS, tuple)
+    assert len(FAIL_DETAIL_KEYS) == 0
+
+    # Allowed sources agree with the frozen transition matrix (SPEC §13.19)
+    assert tuple(allowed_source_states("fail")) == FAIL_ALLOWED_SOURCES
+    assert (
+        tuple(allowed_source_states("fail --if-dead-pid"))
+        == FAIL_IF_DEAD_PID_ALLOWED_SOURCES
+    )
+    assert (
+        tuple(allowed_source_states("fail --if-needs-reclaim"))
+        == FAIL_IF_NEEDS_RECLAIM_ALLOWED_SOURCES
+    )
+    assert is_transition_allowed(STATE_QUEUED, "fail") is True
+    assert is_transition_allowed(STATE_RUNNING, "fail") is True
+    assert is_transition_allowed(STATE_FAILED, "fail") is True
+    assert transition_target(STATE_RUNNING, "fail") == STATE_FAILED
+    assert transition_target(STATE_RUNNING, "fail --if-dead-pid") == STATE_FAILED
+    assert transition_target(STATE_RUNNING, "fail --if-needs-reclaim") == STATE_FAILED
+
+    for disallowed in (STATE_DONE, STATE_BLOCKED):
+        assert is_transition_allowed(disallowed, "fail") is False
+        with pytest.raises(ValueError):
+            transition_target(disallowed, "fail")
+    for disallowed in (STATE_QUEUED, STATE_DONE, STATE_BLOCKED, STATE_FAILED):
+        assert is_transition_allowed(disallowed, "fail --if-needs-reclaim") is False
+        with pytest.raises(ValueError):
+            transition_target(disallowed, "fail --if-needs-reclaim")
+
+
+def test_fail_constants_exported_from_top_level() -> None:
+    """Fail freeze constants are exported from top-level stage_signal (SPEC §13.31)."""
+    import stage_signal
+
+    for name, expected in (
+        ("FAIL_ALLOWED_SOURCES", FAIL_ALLOWED_SOURCES),
+        ("FAIL_DETAIL_KEYS", FAIL_DETAIL_KEYS),
+        ("FAIL_IF_DEAD_PID_ALLOWED_SOURCES", FAIL_IF_DEAD_PID_ALLOWED_SOURCES),
+        ("FAIL_IF_NEEDS_RECLAIM_ALLOWED_SOURCES", FAIL_IF_NEEDS_RECLAIM_ALLOWED_SOURCES),
+    ):
+        assert hasattr(stage_signal, name), f"stage_signal missing {name!r}"
+        assert name in stage_signal.__all__, f"{name!r} not in stage_signal.__all__"
+        assert getattr(stage_signal, name) is expected
+
+
 def test_done_plain_allowed_sources_and_idempotence(tmp_path: Path) -> None:
     """Plain done succeeds from queued, running, and idempotent done (SPEC §4 rule 5, §13.30).
 
@@ -6160,3 +6243,343 @@ def test_done_status_md_rendering(tmp_path: Path) -> None:
     assert "finished task successfully" in content
     assert "error:" not in content
 
+
+def test_fail_plain_sources_and_reason_validation(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Plain fail succeeds from queued/running/failed; done/blocked refuse exit 3 (SPEC §13.31.2).
+
+    Empty/whitespace-only reasons are BadArgs (exit 2) regardless of state (SPEC §13.31.3).
+    Synchronous state-machine smoke with no sleeps/threads.
+    """
+    stage_dir = tmp_path / ".stage-signal"
+    stage = Stage(str(stage_dir))
+    stage.init(project="fail-sources-freeze")
+    status_file = stage_dir / "STATUS.json"
+
+    def assert_no_mutation(snapshot: str, event_count: int) -> None:
+        assert status_file.read_text(encoding="utf-8") == snapshot
+        assert len(stage.events()) == event_count
+
+    # Empty/whitespace-only reason is BadArgs (exit 2) even from queued
+    for bad_reason in ("", "   ", "\t \n"):
+        with pytest.raises(BadArgsError, match="fail requires non-empty --reason TEXT"):
+            stage.fail(bad_reason)
+    capsys.readouterr()
+    assert main(["--dir", str(stage_dir), "fail", "--reason", "  "]) == EXIT_BAD_ARGS
+    assert_no_mutation(status_file.read_text(encoding="utf-8"), 1)
+
+    # Missing --reason flag is argparse exit 2
+    with pytest.raises(SystemExit) as exc_info:
+        main(["--dir", str(stage_dir), "fail"])
+    assert exc_info.value.code == EXIT_BAD_ARGS
+    capsys.readouterr()
+    assert_no_mutation(status_file.read_text(encoding="utf-8"), 1)
+
+    # queued succeeds via library
+    st = stage.fail("queued failure")
+    assert st["state"] == STATE_FAILED
+    assert st["error"]["reason"] == "queued failure"
+
+    # idempotent repeat from failed succeeds and overwrites the reason
+    st = stage.fail("failed again")
+    assert st["state"] == STATE_FAILED
+    assert st["error"]["reason"] == "failed again"
+
+    # done refuses with no mutation
+    stage.start(stage="fail-done-step", pid=os.getpid())
+    stage.done(summary="finished")
+    assert stage.status()["state"] == STATE_DONE
+    before = status_file.read_text(encoding="utf-8")
+    events_before = len(stage.events())
+    with pytest.raises(IllegalTransition):
+        stage.fail("should not land")
+    assert_no_mutation(before, events_before)
+    capsys.readouterr()
+    assert (
+        main(["--dir", str(stage_dir), "fail", "--reason", "should not land"])
+        == EXIT_ILLEGAL_TRANSITION
+    )
+    assert_no_mutation(before, events_before)
+
+    # blocked refuses with no mutation
+    stage.start(stage="fail-blocked-step", pid=os.getpid())
+    stage.blocked(reason="waiting")
+    assert stage.status()["state"] == STATE_BLOCKED
+    before = status_file.read_text(encoding="utf-8")
+    events_before = len(stage.events())
+    with pytest.raises(IllegalTransition):
+        stage.fail("should not land")
+    assert_no_mutation(before, events_before)
+    capsys.readouterr()
+    assert (
+        main(["--dir", str(stage_dir), "fail", "--reason", "should not land"])
+        == EXIT_ILLEGAL_TRANSITION
+    )
+    assert_no_mutation(before, events_before)
+
+    # running succeeds via CLI
+    stage.start(stage="fail-running-step", pid=os.getpid())
+    capsys.readouterr()
+    assert main(["--dir", str(stage_dir), "fail", "--reason", "cli failure"]) == EXIT_OK
+    out = capsys.readouterr().out
+    assert out.startswith("failed failed fail-running-step (attempt 1): cli failure")
+    assert stage.status()["state"] == STATE_FAILED
+
+
+def test_fail_reason_stored_verbatim(tmp_path: Path) -> None:
+    """A valid reason is stored byte-for-byte (validation strips only for the check) (SPEC §13.31.3)."""
+    stage_dir = tmp_path / ".stage-signal"
+    stage = Stage(str(stage_dir))
+    stage.init(project="fail-verbatim-freeze")
+    stage.start(stage="fail-verbatim-step", pid=os.getpid())
+
+    reason = "  disk full: /tmp kept  "
+    st = stage.fail(reason)
+    assert st["error"]["reason"] == reason
+    events = stage.events()
+    assert events[-1]["type"] == "failed"
+    assert events[-1]["message"] == reason
+
+
+def test_fail_flag_mutual_exclusion(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """--if-dead-pid + --if-needs-reclaim together are BadArgs (exit 2), no mutation (SPEC §13.31.3)."""
+    stage_dir = tmp_path / ".stage-signal"
+    stage = Stage(str(stage_dir))
+    stage.init(project="fail-mutex-freeze")
+    stage.start(stage="fail-mutex-step", pid=os.getpid())
+    status_file = stage_dir / "STATUS.json"
+    before = status_file.read_text(encoding="utf-8")
+    events_before = len(stage.events())
+
+    with pytest.raises(BadArgsError, match="mutually exclusive"):
+        stage.fail("both flags", if_dead_pid=True, if_needs_reclaim=True)
+    assert status_file.read_text(encoding="utf-8") == before
+    assert len(stage.events()) == events_before
+
+    capsys.readouterr()
+    assert (
+        main(
+            [
+                "--dir", str(stage_dir), "fail",
+                "--reason", "both flags",
+                "--if-dead-pid", "--if-needs-reclaim",
+            ]
+        )
+        == EXIT_BAD_ARGS
+    )
+    assert status_file.read_text(encoding="utf-8") == before
+    assert len(stage.events()) == events_before
+    # Stage is still running and unfailing afterwards
+    assert stage.status()["state"] == STATE_RUNNING
+
+
+def test_fail_if_needs_reclaim_guard(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """fail --if-needs-reclaim succeeds only when needs_reclaim is true (SPEC §13.31.4).
+
+    Synchronous: DEAD_PID is produced with a reaped child pid (no sleeps/threads).
+    """
+    stage_dir = tmp_path / ".stage-signal"
+    stage = Stage(str(stage_dir))
+    stage.init(project="fail-reclaim-guard-freeze")
+    status_file = stage_dir / "STATUS.json"
+
+    def assert_no_mutation(snapshot: str, event_count: int) -> None:
+        assert status_file.read_text(encoding="utf-8") == snapshot
+        assert len(stage.events()) == event_count
+
+    # queued refuses: needs_reclaim is false outside running
+    before = status_file.read_text(encoding="utf-8")
+    with pytest.raises(IllegalTransition, match="needs_reclaim is false"):
+        stage.fail("queued reclaim probe", if_needs_reclaim=True)
+    assert_no_mutation(before, 1)
+    capsys.readouterr()
+    assert (
+        main(["--dir", str(stage_dir), "fail", "--reason", "queued reclaim probe",
+              "--if-needs-reclaim"])
+        == EXIT_ILLEGAL_TRANSITION
+    )
+    assert_no_mutation(before, 1)
+
+    # healthy running (alive pid, fresh heartbeat) refuses with no mutation
+    stage.start(stage="fail-healthy-step", pid=os.getpid())
+    assert stage.diagnose()["needs_reclaim"] is False
+    before = status_file.read_text(encoding="utf-8")
+    events_before = len(stage.events())
+    with pytest.raises(IllegalTransition, match="needs_reclaim is false"):
+        stage.fail("healthy probe", if_needs_reclaim=True)
+    assert_no_mutation(before, events_before)
+    capsys.readouterr()
+    assert (
+        main(["--dir", str(stage_dir), "fail", "--reason", "healthy probe",
+              "--if-needs-reclaim"])
+        == EXIT_ILLEGAL_TRANSITION
+    )
+    assert_no_mutation(before, events_before)
+    assert stage.status()["state"] == STATE_RUNNING
+
+    # running with a confirmed-dead claiming pid: needs_reclaim true, guard passes
+    proc = subprocess.Popen([sys.executable, "-c", "pass"])
+    proc.wait()
+    dead_pid = proc.pid
+    stage.start(stage="fail-stuck-step", pid=dead_pid)
+    assert stage.diagnose()["needs_reclaim"] is True
+    events_before = len(stage.events())
+    st = stage.fail("stuck worker", if_needs_reclaim=True)
+    assert st["state"] == STATE_FAILED
+    assert st["error"] == {
+        "reason": "stuck worker",
+        "kind": STATE_FAILED,
+        "finished_at": st["error"]["finished_at"],
+    }
+    assert len(stage.events()) == events_before + 1
+    assert stage.events()[-1]["type"] == "failed"
+    assert stage.events()[-1]["detail"] == {}
+
+    # non-running failed refuses again (needs_reclaim false outside running)
+    before = status_file.read_text(encoding="utf-8")
+    events_before = len(stage.events())
+    with pytest.raises(IllegalTransition, match="needs_reclaim is false"):
+        stage.fail("failed-state probe", if_needs_reclaim=True)
+    assert_no_mutation(before, events_before)
+
+    # done refuses as well
+    stage.start(stage="fail-done-reclaim-step", pid=os.getpid())
+    stage.done(summary="finished")
+    before = status_file.read_text(encoding="utf-8")
+    events_before = len(stage.events())
+    with pytest.raises(IllegalTransition, match="needs_reclaim is false"):
+        stage.fail("done-state probe", if_needs_reclaim=True)
+    assert_no_mutation(before, events_before)
+
+
+def test_fail_if_dead_pid_guard(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """fail --if-dead-pid enforces the dead-pid liveness gate only from running (SPEC §13.31.5).
+
+    Synchronous: dead pid from a reaped child; no sleeps/threads.
+    """
+    stage_dir = tmp_path / ".stage-signal"
+    stage = Stage(str(stage_dir))
+    stage.init(project="fail-dead-pid-freeze")
+    status_file = stage_dir / "STATUS.json"
+
+    def assert_no_mutation(snapshot: str, event_count: int) -> None:
+        assert status_file.read_text(encoding="utf-8") == snapshot
+        assert len(stage.events()) == event_count
+
+    # queued: guard skipped, plain-fail rules apply (exit 0)
+    st = stage.fail("queued dead-pid probe", if_dead_pid=True)
+    assert st["state"] == STATE_FAILED
+    assert st["error"]["reason"] == "queued dead-pid probe"
+
+    # running with a live claiming pid refuses with no mutation
+    stage.start(stage="fail-live-step", pid=os.getpid())
+    before = status_file.read_text(encoding="utf-8")
+    events_before = len(stage.events())
+    with pytest.raises(IllegalTransition, match="is alive"):
+        stage.fail("live pid probe", if_dead_pid=True)
+    assert_no_mutation(before, events_before)
+    capsys.readouterr()
+    assert (
+        main(["--dir", str(stage_dir), "fail", "--reason", "live pid probe",
+              "--if-dead-pid"])
+        == EXIT_ILLEGAL_TRANSITION
+    )
+    assert_no_mutation(before, events_before)
+    assert stage.status()["state"] == STATE_RUNNING
+
+    # running with a null claiming pid refuses with no mutation
+    raw = json.loads(status_file.read_text(encoding="utf-8"))
+    raw["pid"] = None
+    status_file.write_text(json.dumps(raw), encoding="utf-8")
+    before = status_file.read_text(encoding="utf-8")
+    events_before = len(stage.events())
+    with pytest.raises(IllegalTransition, match="valid positive integer"):
+        stage.fail("null pid probe", if_dead_pid=True)
+    assert_no_mutation(before, events_before)
+
+    # running with a confirmed-dead claiming pid succeeds
+    proc = subprocess.Popen([sys.executable, "-c", "pass"])
+    proc.wait()
+    stage.start(stage="fail-dead-step", pid=proc.pid)
+    events_before = len(stage.events())
+    st = stage.fail("dead worker", if_dead_pid=True)
+    assert st["state"] == STATE_FAILED
+    assert st["error"]["reason"] == "dead worker"
+    assert st["error"]["kind"] == STATE_FAILED
+    assert len(stage.events()) == events_before + 1
+
+    # failed: guard skipped, idempotent repeat succeeds
+    st = stage.fail("failed repeat", if_dead_pid=True)
+    assert st["state"] == STATE_FAILED
+    assert st["error"]["reason"] == "failed repeat"
+
+    # done refuses with no mutation (plain-fail terminal guard)
+    stage.start(stage="fail-dead-done-step", pid=os.getpid())
+    stage.done(summary="finished")
+    before = status_file.read_text(encoding="utf-8")
+    events_before = len(stage.events())
+    with pytest.raises(IllegalTransition):
+        stage.fail("done dead-pid probe", if_dead_pid=True)
+    assert_no_mutation(before, events_before)
+    capsys.readouterr()
+    assert (
+        main(["--dir", str(stage_dir), "fail", "--reason", "done dead-pid probe",
+              "--if-dead-pid"])
+        == EXIT_ILLEGAL_TRANSITION
+    )
+    assert_no_mutation(before, events_before)
+
+
+def test_fail_success_payload_and_audit_freeze(tmp_path: Path) -> None:
+    """Successful fail writes the ERROR_KEYS error object, result null, one failed event (SPEC §13.31.6/13.31.7)."""
+    from datetime import datetime as _datetime
+
+    stage_dir = tmp_path / ".stage-signal"
+    stage = Stage(str(stage_dir))
+    stage.init(project="fail-payload-freeze")
+    stage.start(stage="fail-payload-step", pid=os.getpid())
+    stage_id_before = stage.status()["stage_id"]
+    events_before = len(stage.events())
+
+    st = stage.fail("disk full")
+
+    # State + error object cross-linked to ERROR_KEYS / ERROR_KINDS (§13.9, not redefined)
+    assert st["state"] == STATE_FAILED
+    assert set(st["error"].keys()) == set(ERROR_KEYS)
+    assert tuple(st["error"].keys()) == ERROR_KEYS
+    assert st["error"]["reason"] == "disk full"
+    assert st["error"]["kind"] == STATE_FAILED
+    assert st["error"]["kind"] in ERROR_KINDS
+    finished = _datetime.fromisoformat(str(st["error"]["finished_at"]))
+    assert finished.tzinfo is not None
+    # result is null; identity fields preserved; updated_at bumped
+    assert st["result"] is None
+    assert st["stage_id"] == stage_id_before
+
+    # Exactly one failed event: reason passthrough message, empty detail
+    events = stage.events()
+    assert len(events) == events_before + 1
+    last = events[-1]
+    assert last["type"] == "failed"
+    assert last["type"] in EVENT_TYPES
+    assert last["state"] == STATE_FAILED
+    assert last["stage_id"] == stage_id_before
+    assert last["message"] == "disk full"
+    assert last["detail"] == {}
+    assert tuple(last["detail"].keys()) == FAIL_DETAIL_KEYS
+    assert last["ts"] == st["updated_at"]
+    for key in EVENT_RECORD_KEYS:
+        assert key in last
+
+    # On-disk STATUS.json matches the returned snapshot payload
+    raw = json.loads((stage_dir / STATUS_FILENAME).read_text(encoding="utf-8"))
+    assert raw["state"] == STATE_FAILED
+    assert raw["error"] == st["error"]
+    assert raw["result"] is None
