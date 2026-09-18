@@ -191,7 +191,7 @@ stage-signal supervise --every 30 -- pytest -v
 
 ### Driving coding agents (agy, OpenCode, etc.)
 
-An external orchestrator loop can drive coding agents across multi-stage milestones without scraping TUIs or transcripts. The orchestrator owns the **queue** (often in gitignored folders like `.agloop/` or `.museloop/` with prompt templates and run logs), while `.stage-signal/` owns the **stage signal** (`start`, `wait`, `done`, exit codes).
+An external orchestrator loop can drive coding agents across multi-stage milestones without scraping TUIs or transcripts. The orchestrator owns the **queue** (often in gitignored folders like `.agloop/` or `.museloop/` with prompt templates and run logs), while `.stage-signal/` owns the **stage signal** (`start`, `wait`, `done`, exit codes). The dual-CLI guides below are a dogfood harness example; the product is only the thin `.stage-signal/` lifecycle contract.
 
 The agent CLI invocation line is pluggable — everything else stays identical:
 

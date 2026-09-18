@@ -1,5 +1,7 @@
 # Dual-CLI Orchestrator Guide: agy & OpenCode as Peers
 
+> **Dogfood harness, not the product.** This guide is an **example outer harness** used while dogfooding stage-signal. The published product is only the thin `.stage-signal/` lifecycle contract (CLI + on-disk status). AGLoop / `.agloop/` are private orchestrator state, never part of the published package.
+
 This guide explains how an **outer orchestrator** coordinates coding agents across parallel tasks using `stage-signal` as the shared stage lifecycle contract.
 
 In this architecture, **Google Antigravity (`agy`)** and **OpenCode (`opencode`)** operate as **equal peers**:

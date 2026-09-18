@@ -6,6 +6,7 @@ See `docs/RELEASE.md` for the release procedure.
 
 ## [Unreleased]
 
+- Labeled the dual-CLI orchestrator guides (`docs/examples/orchestrator.md`, `examples/cli-orchestrator-loop.md`, plus a one-line README pointer) as a dogfood harness example, clarifying the published product is only the thin `.stage-signal/` lifecycle contract (#188).
 - Added CLI regression tests in `tests/test_cli.py` locking that `done` without `--git-head` inherits the `git_head` recorded at `start` (SPEC §13.30.3), plus the explicit-`--git-head` override path (#186).
 
 - Refreshed README Status to name the SPEC freeze coverage through §13.41 (status/events/doctor/wait observers in §13.35–§13.38, `.orch` mirror in §13.39, concurrency/locking in §13.40, proof gate in §13.41) and to confirm the `0.1.6` soak with aligned action (`@v0.1.6`) and PyPI (`"0.1.6"`) pins, with no version bump (#184).
