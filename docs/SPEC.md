@@ -1387,7 +1387,7 @@ External orchestrators, Python embedders, typing tools, and harnesses interact w
 
 #### 13.21.1 Canonical export inventory
 
-`stage_signal` exports exactly 132 public symbols matching `stage_signal.__all__`. These symbols are structured into four canonical categories:
+`stage_signal` exports exactly 134 public symbols matching `stage_signal.__all__`. These symbols are structured into four canonical categories:
 
 ##### 1. Classes (§11, §13.20)
 - `Stage`: The primary high-level lifecycle orchestrator, embedding context manager, and transition driver (§11, §13.20).
@@ -1428,7 +1428,7 @@ All six structured exceptions inherit from `StageError` and carry a normative `.
 - **Inventories:**
   - `CLI_SUBCOMMANDS`: 15 frozen CLI subcommands (§13.15).
   - `STAGE_PUBLIC_METHODS`: 15 frozen `Stage` public instance methods (§13.20).
-  - `PUBLIC_EXPORTS`: 132 frozen public symbols exported from top-level package namespace (§13.21).
+  - `PUBLIC_EXPORTS`: 134 frozen public symbols exported from top-level package namespace (§13.21).
 - **Exit codes:**
   - `EXIT_CODES`: Tuple of all 10 standard exit codes (§7, §13.4).
   - Individual exit codes: `EXIT_OK` (0), `EXIT_ERROR` (1), `EXIT_BAD_ARGS` (2), `EXIT_ILLEGAL_TRANSITION` (3), `EXIT_RUNNING` (10), `EXIT_BLOCKED` (11), `EXIT_FAILED` (12), `EXIT_QUEUED` (13), `EXIT_WAIT_TIMEOUT` (14), `EXIT_NOT_INITIALIZED` (15) (§7, §13.4).
@@ -1514,6 +1514,9 @@ All six structured exceptions inherit from `StageError` and carry a normative `.
 - **Start claim-running:**
   - `START_ALLOWED_SOURCES`: Legal source states (all five: `"queued"`, `"running"`, `"done"`, `"blocked"`, `"failed"`; §4 rule 2, §13.33).
   - `START_DETAIL_KEYS`: Audit detail keys (`"stage_id"`, `"session_id"`, `"pid"`, `"model"`, `"variant"`; §5, §13.33).
+- **Init bootstrap:**
+  - `INIT_DETAIL_KEYS`: Audit detail keys (empty — init carries no detail extras; §5, §13.34).
+  - `INIT_IDLE_STATUS_FIELDS`: Twenty-four canonical STATUS fields written on fresh initialization (§3, §4 rule 1, §13.34).
 
 #### 13.21.2 Frozen structure export (`PUBLIC_EXPORTS`)
 
@@ -1575,6 +1578,8 @@ PUBLIC_EXPORTS: tuple[str, ...] = (
     "FAIL_IF_NEEDS_RECLAIM_ALLOWED_SOURCES",
     "HEARTBEAT_ALLOWED_SOURCES",
     "HEARTBEAT_DETAIL_KEYS",
+    "INIT_DETAIL_KEYS",
+    "INIT_IDLE_STATUS_FIELDS",
     "IllegalTransition",
     "LOCKS_DIRNAME",
     "LOCK_FILENAME",
@@ -1675,7 +1680,7 @@ Under `schema_version: 1`, the top-level public export inventory is strictly **a
 - Existing symbols in `PUBLIC_EXPORTS` MUST NOT be removed, renamed, or relocated.
 - Existing symbol types, semantics, and contracts MUST NOT undergo breaking changes.
 - Future minor or patch releases under schema version 1 MAY add new classes, helper functions, or frozen constants to `stage_signal`, expanding `PUBLIC_EXPORTS` and `__all__`.
-- External orchestrators, embedders, and typing definitions can safely rely on the uninterrupted presence of all 132 public exports throughout the entire lifecycle of `schema_version: 1`.
+- External orchestrators, embedders, and typing definitions can safely rely on the uninterrupted presence of all 134 public exports throughout the entire lifecycle of `schema_version: 1`.
 
 ### 13.22 Doctor human summary strings freeze (`DOCTOR_SUMMARY_RECLAIM_NEEDED`, `DOCTOR_SUMMARY_OK_FORMAT`)
 
@@ -2828,3 +2833,156 @@ Under `schema_version: 1`, the start claim-running contract is strictly **additi
 - No new event type is introduced for claiming: the audit record stays a `start` event (§13.5).
 - New claim fields or audit detail keys MAY be added in minor or patch releases only as additional constants; existing frozen values MUST keep their exact values.
 - Readers MUST tolerate unknown future `start` detail keys and unknown future STATUS claim fields without failing.
+
+### 13.34 Init bootstrap and idempotent setup contract freeze (`INIT_DETAIL_KEYS`, `INIT_IDLE_STATUS_FIELDS`)
+
+`Stage.init` / `stage-signal init [--project NAME]` (§4 rule 1, §6, §13.20) bootstraps the stage directory and sets up the initial idle `queued` state, or safely no-ops preserving an existing initialized stage. Under `schema_version: 1`, the idempotent create-vs-preserve contract, directory layout initialization, project inference precedence (`--project` > `$STAGE_SIGNAL_PROJECT` > directory inference), the initial idle `queued` STATUS field set (`INIT_IDLE_STATUS_FIELDS`), and the audit `init` event shape (`INIT_DETAIL_KEYS`) are frozen so orchestrators can reliably bootstrap workspaces without clobbering existing attempts or scraping human output. The `init` event type itself is frozen in §13.5 and the record keys in §13.6.
+
+#### 13.34.1 Frozen constants and exact values
+
+The single sources of truth are defined in `stage_signal.constants` and exported from `stage_signal` and `__all__`:
+
+```python
+INIT_DETAIL_KEYS: tuple[str, ...] = ()
+
+INIT_IDLE_STATUS_FIELDS = (
+    "schema_version",
+    "project",
+    "stage_id",
+    "stage_name",
+    "state",
+    "attempt",
+    "session_id",
+    "pid",
+    "pid_token",
+    "model",
+    "variant",
+    "repo_path",
+    "git_branch",
+    "git_head",
+    "started_at",
+    "updated_at",
+    "heartbeat_at",
+    "heartbeat_note",
+    "result",
+    "error",
+    "artifacts",
+    "proof",
+    "notes",
+    "meta",
+)
+```
+
+- `INIT_DETAIL_KEYS`: exactly `()` (empty tuple). Audit detail keys on the `init` event record (§13.34.5). The `init` event carries no detail extras; `detail` is always `{}`.
+- `INIT_IDLE_STATUS_FIELDS`: exactly the 24 canonical fields written to `STATUS.json` on fresh initialization (§13.34.4). It contains all 23 `STATUS_REQUIRED_KEYS` (§13.2) plus `pid_token` (`null`), defining the canonical initial idle `queued` shape.
+
+#### 13.34.2 Idempotent create-vs-preserve semantics
+
+`Stage.init` / `stage-signal init` is the bootstrap entry point. It has two mutually exclusive operational modes depending on whether the stage directory is already initialized:
+
+1. **Fresh initialization (`store.is_initialized is False`):**
+   - Under an exclusive file lock (`store.locked(exclusive=True)`), creates the on-disk directory layout (`locks/`, `events.jsonl`, `stage.lock`, `STATUS.json`, `STATUS.md`; §13.13).
+   - Writes `STATUS.json` with the initial queued state (`INIT_IDLE_STATUS_FIELDS`; §13.34.4).
+   - Appends exactly one `init` event to `events.jsonl` (§13.34.5).
+   - Renders and writes the initial human-readable `STATUS.md` mirror (§13.18).
+   - Returns a deep copy of the initialized status dictionary with `heartbeat_age_seconds: null` attached.
+2. **Idempotent preservation (`store.is_initialized is True`):**
+   - When `STATUS.json` already exists and is readable, `init` does NOT overwrite, reinitialize, or alter any state.
+   - It does NOT append any event to `events.jsonl`.
+   - It preserves all existing fields: whether the stage is `queued`, `running`, `done`, `blocked`, or `failed`, all attempt counters, session IDs, process claims, progress notes, artifacts, results, errors, and metadata remain strictly unmodified.
+   - If `STATUS.json` is corrupt or unreadable, `init` fails loudly: `store.read_status()` raises `CorruptStatusError` (exit 1, `EXIT_ERROR`; §7, §13.4, §13.17), ensuring corruption is never silently masked by clobbering.
+   - Returns a deep copy of the existing status dictionary with calculated `heartbeat_age_seconds` attached.
+
+| Condition | Library | CLI exit |
+|-----------|---------|----------|
+| Uninitialized stage directory | Creates layout + queued STATUS | 0 (`EXIT_OK`) |
+| Already initialized valid stage | Preserves existing STATUS and events | 0 (`EXIT_OK`) |
+| Corrupt `STATUS.json` | `CorruptStatusError` | 1 (`EXIT_ERROR`; §7, §13.4, §13.17) |
+
+#### 13.34.3 Project identification and inference precedence
+
+The `project` string assigned to `STATUS.json` and recorded as the `init` audit event `message` follows a frozen 3-tier fallback precedence:
+
+1. **Explicit argument:** `project` argument passed to `Stage.init(project=...)` or `--project NAME` on the CLI. If non-`None` and truthy, this explicitly supplied value is used verbatim.
+2. **Environment variable:** `$STAGE_SIGNAL_PROJECT` (`ENV_PROJECT`; §13.14.1) when set and non-empty.
+3. **Directory name inference fallback (`_default_project`):**
+   - If `stage_dir.name == ".stage-signal"`: uses the name of the parent directory (`stage_dir.parent.name`), representing the containing repository or workspace folder.
+   - Otherwise (custom stage dir name, e.g. `--dir /path/to/custom`): uses the name of the current working directory (`Path.cwd().name`).
+
+#### 13.34.4 Initial queued STATUS fields
+
+On fresh initialization under `schema_version: 1`, the written `STATUS.json` contains exactly the 24 fields in `INIT_IDLE_STATUS_FIELDS` with the following initial values:
+
+- `schema_version`: integer `1` (`SCHEMA_VERSION`; §13.1).
+- `project`: string, resolved project identifier (§13.34.3).
+- `stage_id`: `null` (`None`).
+- `stage_name`: `null` (`None`).
+- `state`: `"queued"` (`STATE_QUEUED`; §13.12).
+- `attempt`: integer `1`.
+- `session_id`: `null` (`None`).
+- `pid`: `null` (`None`).
+- `pid_token`: `null` (`None`).
+- `model`: `null` (`None`).
+- `variant`: `null` (`None`).
+- `repo_path`: string path of the containing repository or current working directory (resolved via `_repo_path`), or `null` on `OSError`.
+- `git_branch`: `null` (`None`) (VCS context is refreshed upon subsequent `start`; §13.33).
+- `git_head`: `null` (`None`) (VCS context is refreshed upon subsequent `start`; §13.33).
+- `started_at`: `null` (`None`).
+- `updated_at`: ISO-8601 timestamp string (`now_iso()`).
+- `heartbeat_at`: `null` (`None`).
+- `heartbeat_note`: `null` (`None`).
+- `result`: `null` (`None`).
+- `error`: `null` (`None`).
+- `artifacts`: empty array `[]`.
+- `proof`: `null` (`None`).
+- `notes`: empty array `[]`.
+- `meta`: empty object `{}`.
+
+Contrast with `clear-terminal` (§13.26):
+`clear-terminal` resets an existing stage back to idle `queued` by resetting the 10 fields in `CLEAR_TERMINAL_IDLE_RESET_FIELDS` to `null`/`[]`/`{}` and clearing the 3 terminal payload fields in `CLEAR_TERMINAL_ALWAYS_CLEARED_FIELDS`, while preserving `project`, `attempt`, `notes`, `model`, `variant`, `repo_path`, `git_branch`, `git_head`. In contrast, `init` creates a brand-new stage from scratch where `attempt` starts at `1`, `notes` is `[]`, and all identity/vcs/claim/terminal fields start at `null`.
+
+#### 13.34.5 Audit event shape
+
+On fresh initialization (and ONLY on fresh initialization), `Stage.init` appends exactly one `init` event record to `events.jsonl`:
+
+- `type`: exactly `"init"` (a member of `EVENT_TYPES`; §13.5).
+- `ts`: ISO-8601 timestamp string equal to the initial STATUS `updated_at`.
+- `stage_id`: `null` (`None`).
+- `stage_name`: `null` (`None`).
+- `state`: `"queued"` (`STATE_QUEUED`; §13.12).
+- `attempt`: integer `1`.
+- `message`: the resolved project name string (identical to `status["project"]`).
+- `detail`: empty JSON object `{}`. Concretely, `tuple(detail.keys()) == INIT_DETAIL_KEYS == ()` and `set(detail.keys()) == set(INIT_DETAIL_KEYS)`.
+
+All standard `EVENT_RECORD_KEYS` (§13.6) are present. When `init` is called on an already initialized stage, NO event is appended to `events.jsonl`.
+
+#### 13.34.6 CLI behavior and output
+
+- `stage-signal init [--project NAME]` prints `initialized <project> -> <one_line_summary>` (e.g. `initialized myproj -> queued - (attempt 1)`) to standard output and exits `0` (`EXIT_OK`; mutation commands exit 0 on success; §7, §13.4).
+- If `STATUS.json` is corrupt, CLI exits `1` (`EXIT_ERROR`; §7, §13.4, §13.17) with an informative error message on `stderr`.
+- CLI options: `--project NAME` maps directly to `project=NAME` in `Stage.init`.
+
+#### 13.34.7 Cross-links
+
+- **§3 (STATUS.json schema):** defines the STATUS contract, the required keys, and `init` bootstrap state.
+- **§4 rule 1 (States & transitions):** normative `init` rule: creates dir/files if missing (idempotent), never overwrites existing STATUS, fails exit 1 on corrupt STATUS.
+- **§5 (events.jsonl) + §13.5/§13.6:** the `init` event type, `EVENT_RECORD_KEYS`, and empty detail record contract.
+- **§6 (CLI contract):** `stage-signal init [--project NAME]` command syntax and exit codes.
+- **§13.3 (JSON contract keys):** `STATUS_JSON_KEYS` snapshot representation.
+- **§13.12 (states freeze):** `STATE_QUEUED` target state.
+- **§13.17 (exception hierarchy freeze):** `CorruptStatusError` on corrupt STATUS.
+- **§13.19 (transition matrix freeze):** `init` as the bootstrap entry point before lifecycle transitions.
+- **§13.20 (Stage method surface freeze):** `Stage.init(project=None) -> dict[str, Any]` method signature.
+- **§13.21 (Top-level public export inventory):** Inclusion of `INIT_DETAIL_KEYS` and `INIT_IDLE_STATUS_FIELDS` in `PUBLIC_EXPORTS`.
+- **§13.26 (clear-terminal freeze):** Relationship between `INIT_IDLE_STATUS_FIELDS` and `CLEAR_TERMINAL_IDLE_RESET_FIELDS`.
+
+#### 13.34.8 Additive-only evolution policy
+
+Under `schema_version: 1`, the init bootstrap contract is strictly **additive-only** (§13.1):
+
+- `INIT_DETAIL_KEYS` and `INIT_IDLE_STATUS_FIELDS` MUST NOT be removed, renamed, or change semantic meaning.
+- The idempotent create-vs-preserve contract MUST NOT change.
+- The 3-tier project resolution precedence MUST NOT change.
+- The initial `queued` state, `attempt: 1`, and `detail: {}` on the `init` event MUST NOT change.
+- Readers MUST tolerate unknown future `init` detail keys and unknown future STATUS fields without failing.
+
