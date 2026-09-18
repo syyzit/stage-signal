@@ -1395,3 +1395,41 @@ def test_cli_status_heartbeat_age_only_while_running(
     else:
         assert data["heartbeat_age_seconds"] is None
         assert stage.status()["heartbeat_age_seconds"] is None
+
+
+def test_cli_done_without_git_head_inherits_start_sha(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """CLI `done` without `--git-head` inherits `git_head` from `start` (SPEC §13.30.3)."""
+    d = tmp_path / ".stage-signal"
+    monkeypatch.setenv("STAGE_SIGNAL_DIR", str(d))
+    assert main(["init", "--project", "testproj"]) == 0
+    assert main(["start", "--stage", "feat-inherit", "--git-head", "shaA"]) == 0
+    capsys.readouterr()
+
+    assert main(["done", "--summary", "finished"]) == 0
+    capsys.readouterr()
+
+    st = Stage(str(d)).status()
+    assert st["state"] == "done"
+    assert st["result"]["git_head"] == "shaA"
+    assert st["git_head"] == "shaA"
+
+
+def test_cli_done_with_git_head_overrides_start_sha(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """CLI `done --git-head shaB` overrides the `start` SHA (SPEC §13.30.3)."""
+    d = tmp_path / ".stage-signal"
+    monkeypatch.setenv("STAGE_SIGNAL_DIR", str(d))
+    assert main(["init", "--project", "testproj"]) == 0
+    assert main(["start", "--stage", "feat-override", "--git-head", "shaA"]) == 0
+    capsys.readouterr()
+
+    assert main(["done", "--summary", "finished", "--git-head", "shaB"]) == 0
+    capsys.readouterr()
+
+    st = Stage(str(d)).status()
+    assert st["state"] == "done"
+    assert st["result"]["git_head"] == "shaB"
+    assert st["git_head"] == "shaB"
