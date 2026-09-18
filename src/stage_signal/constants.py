@@ -116,6 +116,12 @@ WARNING_REQUIRED_KEYS = WARNING_KEYS
 DOCTOR_WARNING_KEYS = WARNING_KEYS
 
 DOCTOR_SUMMARY_RECLAIM_NEEDED = "ATTENTION: running needs reclaim"
+DOCTOR_SUMMARY_OK_FORMAT = "OK: {state}"
+
+
+def doctor_summary_ok(state: object) -> str:
+    """Format the healthy doctor summary for *state* (SPEC §6, §13.22)."""
+    return DOCTOR_SUMMARY_OK_FORMAT.format(state=state)
 
 # Frozen schema_version 1 key sets (SPEC §13)
 STATUS_REQUIRED_KEYS = (

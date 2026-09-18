@@ -23,6 +23,8 @@ from stage_signal import (
     DEFAULT_DIR_NAME,
     DEFAULT_MIRROR_DIRNAME,
     DOCTOR_JSON_KEYS,
+    DOCTOR_SUMMARY_OK_FORMAT,
+    DOCTOR_SUMMARY_RECLAIM_NEEDED,
     DOCTOR_WARNING_KEYS,
     ERROR_KEYS,
     ERROR_KINDS,
@@ -88,6 +90,7 @@ from stage_signal import (
     resolve_dir,
     state_exit_code,
     allowed_source_states,
+    doctor_summary_ok,
     is_transition_allowed,
     transition_target,
     write_status_mirror,
@@ -3526,3 +3529,189 @@ def test_stage_public_methods_lifecycle_smoke(tmp_path: Path) -> None:
     reclaim_res = stage.reclaim(reason="dead worker reclaim")
     assert reclaim_res["state"] == "queued"
     assert stage.status()["needs_reclaim"] is False
+
+
+# =============================================================================
+# 18. Doctor summary strings freeze (SPEC §13.22, issue #138)
+# =============================================================================
+
+
+def test_doctor_summary_constants_freeze() -> None:
+    """DOCTOR_SUMMARY_* constants match the frozen strings in SPEC §13.22."""
+    assert DOCTOR_SUMMARY_RECLAIM_NEEDED == "ATTENTION: running needs reclaim"
+    assert isinstance(DOCTOR_SUMMARY_RECLAIM_NEEDED, str)
+    assert DOCTOR_SUMMARY_OK_FORMAT == "OK: {state}"
+    assert isinstance(DOCTOR_SUMMARY_OK_FORMAT, str)
+    # The healthy template renders exactly "OK: <state>" with one space, no affixes.
+    assert DOCTOR_SUMMARY_OK_FORMAT.format(state="running") == "OK: running"
+    for state in STATES:
+        assert doctor_summary_ok(state) == f"OK: {state}"
+        assert doctor_summary_ok(state) == DOCTOR_SUMMARY_OK_FORMAT.format(state=state)
+    assert callable(doctor_summary_ok)
+
+
+def test_doctor_summary_exported_from_top_level() -> None:
+    """DOCTOR_SUMMARY_* constants and helper are exported from top-level stage_signal (SPEC §13.22)."""
+    import stage_signal
+
+    for name, expected in (
+        ("DOCTOR_SUMMARY_RECLAIM_NEEDED", DOCTOR_SUMMARY_RECLAIM_NEEDED),
+        ("DOCTOR_SUMMARY_OK_FORMAT", DOCTOR_SUMMARY_OK_FORMAT),
+        ("doctor_summary_ok", doctor_summary_ok),
+    ):
+        assert hasattr(stage_signal, name), f"stage_signal missing {name!r}"
+        assert name in stage_signal.__all__, f"{name!r} not in stage_signal.__all__"
+        assert getattr(stage_signal, name) is expected
+
+
+def _assert_diagnose_doctor_json_summary(
+    stage_dir: Path,
+    capsys: pytest.CaptureFixture[str],
+    *,
+    expected_summary: str | None,
+    expected_needs_reclaim: bool,
+    expected_ok: bool,
+    expected_exit: int,
+) -> None:
+    """Check Stage.diagnose() and doctor --json agree on the frozen summary (SPEC §13.22)."""
+    stage = Stage(str(stage_dir))
+    lib_data = stage.diagnose()
+    assert lib_data["summary"] == expected_summary
+    assert lib_data["needs_reclaim"] is expected_needs_reclaim
+    assert lib_data["ok"] is expected_ok
+
+    capsys.readouterr()
+    code = main(["--dir", str(stage_dir), "doctor", "--json"])
+    assert code == expected_exit
+    cli_data = json.loads(capsys.readouterr().out)
+    assert cli_data["summary"] == expected_summary
+    assert cli_data["needs_reclaim"] is expected_needs_reclaim
+    assert cli_data["ok"] is expected_ok
+
+
+def test_diagnose_doctor_json_summary_healthy_states(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Healthy diagnose/doctor JSON emits the frozen "OK: <state>" summary (SPEC §13.22)."""
+    stage_dir = tmp_path / ".stage-signal"
+    stage = Stage(str(stage_dir))
+    stage.init(project="summary-freeze")
+
+    _assert_diagnose_doctor_json_summary(
+        stage_dir,
+        capsys,
+        expected_summary="OK: queued",
+        expected_needs_reclaim=False,
+        expected_ok=True,
+        expected_exit=EXIT_OK,
+    )
+
+    stage.start(stage="step-1", pid=os.getpid())
+    _assert_diagnose_doctor_json_summary(
+        stage_dir,
+        capsys,
+        expected_summary="OK: running",
+        expected_needs_reclaim=False,
+        expected_ok=True,
+        expected_exit=EXIT_OK,
+    )
+
+    # Human doctor prints the same healthy summary line.
+    capsys.readouterr()
+    assert main(["--dir", str(stage_dir), "doctor"]) == EXIT_OK
+    assert "OK: running" in capsys.readouterr().out
+
+    for terminal, terminal_action in (
+        ("done", lambda: stage.done(summary="finished")),
+        ("blocked", lambda: stage.blocked(reason="waiting")),
+        ("failed", lambda: stage.fail(reason="crashed")),
+    ):
+        if stage.status()["state"] != "running":
+            stage.start(stage=f"step-{terminal}", pid=os.getpid())
+        terminal_action()
+        _assert_diagnose_doctor_json_summary(
+            stage_dir,
+            capsys,
+            expected_summary=f"OK: {terminal}",
+            expected_needs_reclaim=False,
+            expected_ok=True,
+            expected_exit=EXIT_OK,
+        )
+
+
+def test_diagnose_doctor_json_summary_reclaim_needed(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """diagnose/doctor JSON emits the frozen reclaim summary when needs_reclaim (SPEC §13.22)."""
+    stage_dir = tmp_path / ".stage-signal"
+    stage = Stage(str(stage_dir))
+    stage.init(project="summary-reclaim-freeze")
+
+    dead_proc = subprocess.Popen([sys.executable, "-c", "pass"])
+    dead_proc.wait(timeout=5)
+    stage.start(stage="dead-task", pid=dead_proc.pid)
+
+    _assert_diagnose_doctor_json_summary(
+        stage_dir,
+        capsys,
+        expected_summary=DOCTOR_SUMMARY_RECLAIM_NEEDED,
+        expected_needs_reclaim=True,
+        expected_ok=True,
+        expected_exit=EXIT_OK,
+    )
+    assert DOCTOR_SUMMARY_RECLAIM_NEEDED == "ATTENTION: running needs reclaim"
+
+    # Human doctor prints the same reclaim summary line, never the healthy one.
+    capsys.readouterr()
+    assert main(["--dir", str(stage_dir), "doctor"]) == EXIT_OK
+    out = capsys.readouterr().out
+    assert "ATTENTION: running needs reclaim" in out
+    assert "OK: running" not in out
+
+
+def test_diagnose_doctor_json_summary_null_on_problems(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """diagnose/doctor JSON emits summary null exactly when problems exist (SPEC §13.22)."""
+    # 1. Missing dir: problems present -> summary null.
+    missing_dir = tmp_path / "does-not-exist"
+    _assert_diagnose_doctor_json_summary(
+        missing_dir,
+        capsys,
+        expected_summary=None,
+        expected_needs_reclaim=False,
+        expected_ok=False,
+        expected_exit=EXIT_ERROR,
+    )
+
+    # 2. Corrupt STATUS.json: problems present -> summary null.
+    stage_dir = tmp_path / ".stage-signal"
+    stage = Stage(str(stage_dir))
+    stage.init(project="summary-null-freeze")
+    (stage_dir / "STATUS.json").write_text("{not-json\n", encoding="utf-8")
+    _assert_diagnose_doctor_json_summary(
+        stage_dir,
+        capsys,
+        expected_summary=None,
+        expected_needs_reclaim=False,
+        expected_ok=False,
+        expected_exit=EXIT_ERROR,
+    )
+
+    # 3. Reclaim warnings coexisting with problems: summary stays null while
+    # needs_reclaim remains independently true (SPEC §6, §13.22.2).
+    stage_dir2 = tmp_path / "reclaim-problems" / ".stage-signal"
+    stage2 = Stage(str(stage_dir2))
+    stage2.init(project="summary-null-reclaim-freeze")
+    dead_proc = subprocess.Popen([sys.executable, "-c", "pass"])
+    dead_proc.wait(timeout=5)
+    stage2.start(stage="dead-task", pid=dead_proc.pid)
+    (stage_dir2 / "events.jsonl").write_text("{corrupt json\n", encoding="utf-8")
+    _assert_diagnose_doctor_json_summary(
+        stage_dir2,
+        capsys,
+        expected_summary=None,
+        expected_needs_reclaim=True,
+        expected_ok=False,
+        expected_exit=EXIT_ERROR,
+    )

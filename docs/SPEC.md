@@ -1379,3 +1379,37 @@ Under `schema_version: 1`, the `Stage` public method surface is strictly **addit
 - New public instance methods MAY be added in future minor or patch releases under schema version 1, expanding `STAGE_PUBLIC_METHODS`.
 - Embedders and orchestrators can rely on the continuous availability of all 15 methods across the schema version 1 lifecycle.
 
+### 13.22 Doctor human summary strings freeze (`DOCTOR_SUMMARY_RECLAIM_NEEDED`, `DOCTOR_SUMMARY_OK_FORMAT`)
+
+The `summary` field of `doctor --json` / `Stage.diagnose()` (§6, §13.3.2, `DOCTOR_JSON_KEYS`) is a **human display string** for operators and log compatibility. Orchestrators MUST branch on the machine-readable `needs_reclaim` boolean (§6, §13.3.2) rather than string-matching `summary` or scraping human warning text (§13.8). Reclaim detection rules themselves are unchanged by this section.
+
+#### 13.22.1 Frozen values and exact format
+
+The single sources of truth are defined in `stage_signal.constants` and exported from `stage_signal` and `__all__`:
+
+```python
+DOCTOR_SUMMARY_RECLAIM_NEEDED = "ATTENTION: running needs reclaim"
+DOCTOR_SUMMARY_OK_FORMAT = "OK: {state}"
+```
+
+- When `needs_reclaim` is true (state is `running` and a `DEAD_PID` or `STALE_HEARTBEAT` warning applies; §6, §13.8), `summary` is exactly `DOCTOR_SUMMARY_RECLAIM_NEEDED` (`"ATTENTION: running needs reclaim"`), byte-for-byte, with no state suffix, prefix, or trailing punctuation.
+- Otherwise, when no problems exist, `summary` is exactly `"OK: {state}"` with the readable state substituted for `{state}` (for example `"OK: running"`, `"OK: queued"`, `"OK: done"`, `"OK: blocked"`, `"OK: failed"`). The single space after the colon and the `OK:` prefix casing are normative. The helper `doctor_summary_ok(state) -> str` renders this template (`DOCTOR_SUMMARY_OK_FORMAT.format(state=state)`) and is exported alongside the constants.
+
+#### 13.22.2 When `summary` is `null` vs a string
+
+| Condition | `summary` |
+|-----------|-----------|
+| `problems` is non-empty (missing dir, missing/corrupt `STATUS.json` or `events.jsonl`, unwritable lock; §6) | `null` — regardless of `needs_reclaim`, which remains independently computed and may still be `true` when reclaim warnings coexist with problems |
+| `problems` is empty and `needs_reclaim` is `true` | `DOCTOR_SUMMARY_RECLAIM_NEEDED` |
+| `problems` is empty and `needs_reclaim` is `false` | `"OK: {state}"` via `doctor_summary_ok(state)` |
+
+The same rule applies to the human `doctor` summary line printed to stdout: it prints the `summary` value when it is a string, and prints `PROBLEM:` lines instead when `summary` is `null`.
+
+#### 13.22.3 Additive-only evolution policy
+
+Under `schema_version: 1`, doctor summary strings are strictly **additive-only** (§13.1):
+- The frozen reclaim string and the `"OK: {state}"` template MUST NOT be removed, renamed, reworded, or change semantic meaning.
+- The null-vs-string rule in §13.22.2 MUST NOT change: `summary` stays `null` exactly when `problems` is non-empty.
+- New summary variants for future states or conditions MAY be added in minor or patch releases only as additional `"OK: {state}"` renderings for new states, or as new distinct constants; existing frozen strings MUST keep their exact values.
+- Readers MUST treat `summary` as display-only and tolerate unknown future summary strings without failing.
+
