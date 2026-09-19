@@ -112,9 +112,7 @@ agent process ID instead (for example, `os.getpid()` from Python).
 > inherits the `git_head` recorded at `start` (SPEC §13.30.3). Agents and
 > orchestrators that commit during a stage SHOULD pass
 > `--git-head $(git rev-parse HEAD)` so `result.git_head` matches the
-> finished tip. See [`docs/examples/orchestrator.md`](docs/examples/orchestrator.md)
-> and [`examples/cli-orchestrator-loop.md`](examples/cli-orchestrator-loop.md),
-> which already show the flag.
+> finished tip. See [`docs/CALLER.md`](docs/CALLER.md), which shows this pattern.
 
 On-disk layout (default):
 
@@ -234,10 +232,8 @@ observed-state code above. Acceptance sequence: `examples/orchestrator-smoke.sh`
 The `examples/*.sh` scripts require a POSIX shell, such as Git Bash, WSL, or
 the default shell on macOS and Linux.
 
-Multi-stage queues (same contract, one dir walked against a queue file):
-`examples/queue-orchestrator.sh --queue examples/sample-queue.md [--dir PATH] [--once]`
-— `done` advances (exit 0), `blocked`/`failed` stop with 11/12,
-`running`/`queued` wait (or exit 10/13 with `--once` for cron).
+For standard integration patterns, see the [Caller Guide](docs/CALLER.md). Historical multi-stage queue runners and dogfood harnesses are archived in [`examples/dogfood/`](examples/dogfood/).
+
 ### Auto-heartbeating child commands: `supervise`
 
 Agents running long commands (builds, test suites, multi-step tasks) often forget to emit periodic heartbeats, leading to false `needs_reclaim` / stale watchdog alerts. Wrap execution with `stage-signal supervise`:
@@ -255,7 +251,7 @@ stage-signal supervise --every 30 -- pytest -v
 
 ### Driving coding agents (agy, OpenCode, Claude Code, etc.)
 
-An external orchestrator loop can drive coding agents across multi-stage milestones without scraping TUIs or transcripts. The orchestrator owns the **queue** (often in gitignored folders like `.agloop/` or `.museloop/` with prompt templates and run logs), while `.stage-signal/` owns the **stage signal** (`start`, `wait`, `done`, exit codes). The dual-CLI guides below are a dogfood harness example; the product is only the thin `.stage-signal/` lifecycle contract.
+An external orchestrator loop can drive coding agents across multi-stage milestones without scraping TUIs or transcripts. The orchestrator owns the **queue** or task plan (often in a private directory or generic caller state with prompt templates and run logs), while `.stage-signal/` owns the **stage signal** (`start`, `wait`, `done`, exit codes).
 
 The agent CLI invocation line is pluggable — everything else stays identical:
 
@@ -265,7 +261,7 @@ The agent CLI invocation line is pluggable — everything else stays identical:
 | **OpenCode** | `opencode run --dir "$REPO" --auto -m "$MODEL" "$PROMPT"` |
 | **Claude Code** | `claude -p "$PROMPT" --dangerously-skip-permissions` |
 
-See [`docs/examples/orchestrator.md`](docs/examples/orchestrator.md) for the dual-CLI peer orchestrator guide with parallel worktrees and watchdog health checks, [`examples/cli-orchestrator-loop.md`](examples/cli-orchestrator-loop.md) for the end-to-end loop guide, and [`examples/multi-cli-loop.sh`](examples/multi-cli-loop.sh) for a thin runner reusing `examples/queue-orchestrator.sh`.
+See [`docs/CALLER.md`](docs/CALLER.md) for the external caller guide (synchronous wait, health watchdog, and agent wrapper loops). Historical multi-agent dogfood harnesses are archived in [`examples/dogfood/`](examples/dogfood/).
 
 #### Idle vs. Queued in Orchestrators
 
@@ -429,10 +425,9 @@ Agent UIs and chat transcripts are for humans. Orchestrators need a stable, bori
 `heartbeat`, `note`, `artifact`, `done`, `blocked`, `fail`, `status`,
 `wait`, `clear-terminal`, `doctor`), unit + concurrency tests,
 `examples/orchestrator-watchdog.sh` (+ `examples/orchestrator-smoke.sh`),
-`examples/queue-orchestrator.sh` (+ `examples/sample-queue.md`,
-`examples/queue-orchestrator-smoke.sh`, `examples/cli-orchestrator-loop.md`,
-`examples/multi-cli-loop.sh`), CI (`.github/workflows/ci.yml`:
-pytest + both smokes + packaging check via `python -m build` /
+Caller Guide (`docs/CALLER.md`), archived dogfood harnesses in `examples/dogfood/`
+(+ `examples/dogfood/queue-orchestrator-smoke.sh`), CI (`.github/workflows/ci.yml`:
+pytest + smokes + packaging check via `python -m build` /
 `twine check`, no upload). Contract: SPEC v1.
 
 `main` carries SPEC contract freezes through §13.42 — status / events /
@@ -450,8 +445,8 @@ published package is **0.1.7**, releasing the soak of freezes through §13.42. A
 
 - `docs/SPEC.md` — normative contract (schema, CLI, exit codes)
 - `docs/ROADMAP-1.0.md` — 1.0 readiness map (§13.1–§13.42), cut-list, and done bar
+- `docs/CALLER.md` — caller guide (synchronous wait, health watchdog, and agent wrapper loops)
 - `docs/COMPOSE.md` — proof interop (`--proof-ref` / `--require-proof`)
-- `docs/examples/orchestrator.md` — dual-CLI orchestrator example (agy + OpenCode as peers)
 - `docs/RELEASE.md` — release procedure (manual; no upload from agent loops)
 - `docs/PRIOR_ART.md` — background research
 - `CHANGELOG.md` — release notes

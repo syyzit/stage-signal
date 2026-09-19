@@ -9,7 +9,7 @@ The core thesis of `stage-signal` is simple:
 
 The orchestrator never scrapes terminal UIs, never parses markdown chat logs for "I am done", and never inspects internal agent databases. It relies solely on `stage-signal` CLI commands, on-disk status files, and normalized exit codes.
 
-Because the stage contract is completely decoupled from the agent implementation, the exact same orchestrator pattern works interchangeably with **Google Antigravity CLI (`agy`)** and **OpenCode (`opencode`)**. For multi-lane parallel execution in isolated worktrees with watchdog health monitoring, see [`docs/examples/orchestrator.md`](../docs/examples/orchestrator.md#reclaim-loop-wait---needs-reclaim). The reclaim loop is `wait --needs-reclaim` → `reclaim --kill` → `start` (or `reclaim --kill --keep-failed` → optional `events` audit → `clear-terminal` / restart) — not a hand-rolled `doctor` sleep. `reclaim --kill` best-effort terminates the alive recorded PID (SIGTERM, wait up to 1s polling 50ms, SIGKILL if needed) after the guard passes; without `--kill` no termination signal is sent. Branch on `.needs_reclaim`, not `.summary` or `.ok`; inspect warning codes only to choose the response. The [watchdog](orchestrator-watchdog.sh) `--wait-reclaim` flag runs that loop. `--once --doctor-reclaim` (and `--once --needs-reclaim`) performs a snapshot reclaim for full `needs_reclaim` (DEAD_PID or STALE_HEARTBEAT) via `reclaim --keep-failed`, exiting 12 when reclaimed (or 10 when running normally without reclaim). To abandon a parked `queued` stage (never started), use `clear-terminal` (now allowed from queued). After either, audit with `stage-signal events --tail 20` (optional `--type failed` / `--type clear_terminal`; `--json` prints a JSON array). Do not scrape `events.jsonl`.
+Because the stage contract is completely decoupled from the agent implementation, the exact same orchestrator pattern works interchangeably with **Google Antigravity CLI (`agy`)** and **OpenCode (`opencode`)**. For multi-lane parallel execution in isolated worktrees with watchdog health monitoring, see [`orchestrator.md`](orchestrator.md#reclaim-loop-wait---needs-reclaim). The reclaim loop is `wait --needs-reclaim` → `reclaim --kill` → `start` (or `reclaim --kill --keep-failed` → optional `events` audit → `clear-terminal` / restart) — not a hand-rolled `doctor` sleep. `reclaim --kill` best-effort terminates the alive recorded PID (SIGTERM, wait up to 1s polling 50ms, SIGKILL if needed) after the guard passes; without `--kill` no termination signal is sent. Branch on `.needs_reclaim`, not `.summary` or `.ok`; inspect warning codes only to choose the response. The [watchdog](../orchestrator-watchdog.sh) `--wait-reclaim` flag runs that loop. `--once --doctor-reclaim` (and `--once --needs-reclaim`) performs a snapshot reclaim for full `needs_reclaim` (DEAD_PID or STALE_HEARTBEAT) via `reclaim --keep-failed`, exiting 12 when reclaimed (or 10 when running normally without reclaim). To abandon a parked `queued` stage (never started), use `clear-terminal` (now allowed from queued). After either, audit with `stage-signal events --tail 20` (optional `--type failed` / `--type clear_terminal`; `--json` prints a JSON array). Do not scrape `events.jsonl`.
 
 ---
 
@@ -127,11 +127,11 @@ You are working ONE milestone in this repository: <STAGE_NAME>.
 
 ---
 
-## Reusing `examples/queue-orchestrator.sh`
+## Reusing `examples/dogfood/queue-orchestrator.sh`
 
-Rather than writing custom queue-walking logic from scratch, external loops reuse `examples/queue-orchestrator.sh`.
+Rather than writing custom queue-walking logic from scratch, external loops reuse `examples/dogfood/queue-orchestrator.sh`.
 
-`queue-orchestrator.sh` accepts a queue markdown file (like `examples/sample-queue.md` or `.agloop/QUEUE.md`):
+`queue-orchestrator.sh` accepts a queue markdown file (like `examples/dogfood/sample-queue.md` or `.agloop/QUEUE.md`):
 
 ```markdown
 # Queue
@@ -158,7 +158,7 @@ Here is an end-to-end shell orchestrator loop that drives a queue using either `
 set -u
 
 AGENT="${AGENT:-agy}"                    # "agy" or "opencode"
-QUEUE_FILE="${1:-examples/sample-queue.md}"
+QUEUE_FILE="${1:-examples/dogfood/sample-queue.md}"
 STAGE_DIR="${STAGE_SIGNAL_DIR:-.stage-signal}"
 REPO_ROOT="$(pwd)"
 
@@ -167,7 +167,7 @@ stage-signal --dir "$STAGE_DIR" init >/dev/null 2>&1 || true
 
 while true; do
   # 2. Check queue state using queue-orchestrator in single-pass mode
-  status_out="$(./examples/queue-orchestrator.sh --queue "$QUEUE_FILE" --dir "$STAGE_DIR" --once 2>&1)"
+  status_out="$(./examples/dogfood/queue-orchestrator.sh --queue "$QUEUE_FILE" --dir "$STAGE_DIR" --once 2>&1)"
   code=$?
 
   case "$code" in
@@ -185,7 +185,7 @@ while true; do
       ;;
     10|13)
       echo "Stage currently working or queued; awaiting terminal state..."
-      ./examples/queue-orchestrator.sh --queue "$QUEUE_FILE" --dir "$STAGE_DIR" --timeout 3600
+      ./examples/dogfood/queue-orchestrator.sh --queue "$QUEUE_FILE" --dir "$STAGE_DIR" --timeout 3600
       wait_code=$?
       if [ "$wait_code" -ne 0 ]; then
         echo "Stage finished with non-zero status: $wait_code"
@@ -230,7 +230,7 @@ while true; do
   esac
 
   # 5. Wait for stage completion via stage-signal contract
-  ./examples/queue-orchestrator.sh --queue "$QUEUE_FILE" --dir "$STAGE_DIR" --timeout 3600
+  ./examples/dogfood/queue-orchestrator.sh --queue "$QUEUE_FILE" --dir "$STAGE_DIR" --timeout 3600
   cycle_code=$?
   if [ "$cycle_code" -ne 0 ]; then
     echo "Milestone $NEXT_STAGE ended with exit code $cycle_code" >&2
@@ -325,7 +325,7 @@ When an agent fails (`stage-signal fail --reason "..."`), the orchestrator recei
 For completely serverless or cron-driven setups, schedule a single-pass check every 5 minutes:
 
 ```cron
-*/5 * * * * cd /path/to/repo && ./examples/queue-orchestrator.sh --queue .agloop/QUEUE.md --once >>/tmp/orch.log 2>&1
+*/5 * * * * cd /path/to/repo && ./examples/dogfood/queue-orchestrator.sh --queue .agloop/QUEUE.md --once >>/tmp/orch.log 2>&1
 ```
 
 Orchestrator behavior maps directly to exit codes:

@@ -9,7 +9,7 @@
 #   stage-signal wait --needs-reclaim --timeout SEC --poll SEC  (reclaim path)
 # and maps the observed state to an exit code (see docs/SPEC.md §7).
 #
-# Queue file format (see examples/sample-queue.md):
+# Queue file format (see examples/dogfood/sample-queue.md):
 #   - one stage id per line; blank lines and `#` comments ignored
 #   - leading markdown markers (`- `, `* `, `N. `, `- [ ]`, `- [x]`) and
 #     surrounding `**` / backticks are stripped, so `.md` checklists parse
@@ -32,18 +32,18 @@
 #
 # How a bot calls it:
 #   Blocking overnight loop (one shot, waits up to 1h):
-#     ./examples/queue-orchestrator.sh --queue examples/sample-queue.md
+#     ./examples/dogfood/queue-orchestrator.sh --queue examples/dogfood/sample-queue.md
 #   Cron every 5 minutes (never blocks; switch on exit code):
-#     ./examples/queue-orchestrator.sh --queue examples/sample-queue.md --once
+#     ./examples/dogfood/queue-orchestrator.sh --queue examples/dogfood/sample-queue.md --once
 #     # 0 = advanced/drained (enqueue next or sleep), 10/13 = still working
 #     # (re-poll), 11/12 = page human, 14 = wait timeout, 15 = not initialized.
 #   Example crontab:
-#     */5 * * * * cd /path/to/repo && ./examples/queue-orchestrator.sh --queue examples/sample-queue.md --once >>/tmp/queue-orch.log 2>&1
+#     */5 * * * * cd /path/to/repo && ./examples/dogfood/queue-orchestrator.sh --queue examples/dogfood/sample-queue.md --once >>/tmp/queue-orch.log 2>&1
 #   Grok Bot / watchdog (every ~15m, same contract, stage-signal only):
-#     ./examples/queue-orchestrator.sh --queue examples/sample-queue.md --dir .stage-signal --once
+#     ./examples/dogfood/queue-orchestrator.sh --queue examples/dogfood/sample-queue.md --dir .stage-signal --once
 #
 # Usage:
-#   ./examples/queue-orchestrator.sh --queue FILE [--dir PATH] [--timeout SEC] [--poll SEC] [--once]
+#   ./examples/dogfood/queue-orchestrator.sh --queue FILE [--dir PATH] [--timeout SEC] [--poll SEC] [--once]
 #
 #   --queue FILE   queue file, one stage id per line (required)
 #   --dir PATH     stage dir (default: ./.stage-signal or $STAGE_SIGNAL_DIR)
