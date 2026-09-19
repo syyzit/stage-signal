@@ -3847,5 +3847,113 @@ Under `schema_version: 1`, the proof composition gate contract is strictly **add
 - `PROOF_KEYS` and `PROOF_VERIFIED_VALUES` MUST NOT be redefined here or anywhere outside §13.10; any future key or enum change is owned by §13.10 under its own additive-only rule.
 
 
+### 13.42 PID liveness probe and `needs_reclaim` derivation freeze (no new constants)
+
+`_is_pid_alive(pid)` / `_reclaim_diagnostics(status, *, stale_after=DEFAULT_STALE_THRESHOLD)` (`src/stage_signal/stage.py`) are the shared detection core behind every reclaim decision: `Stage.status()` (§13.35), `Stage.diagnose()` / `doctor` (§13.37), the `wait --needs-reclaim` met-condition (§13.23, §13.38), the `fail --if-dead-pid` / `fail --if-needs-reclaim` guards (§13.31), and the `reclaim` guard (§13.25). Under `schema_version: 1`, the tri-state probe semantics (alive / dead / unknown), the exact per-warning emission conditions reusing the frozen `WARNING_*` codes (§13.8), the `needs_reclaim == (state == running and (DEAD_PID or STALE_HEARTBEAT))` derivation, and the probe-never-signals guarantee are frozen so orchestrators can rely on identical `needs_reclaim` booleans from every observer and guard. This section introduces **no new constants and no new exports**: the warning codes stay frozen in §13.8 (`WARNING_CODES` with the `WARNING_CODE_*` aliases — referenced here, never redefined), the staleness default in §13.14 (`DEFAULT_STALE_THRESHOLD`), the running state in §13.12 (`STATE_RUNNING`), and the summary/predicate consumers in §13.22/§13.23. Both helpers are private (not exported, not in `PUBLIC_EXPORTS`); `PUBLIC_EXPORTS` stays at 134 symbols.
+
+#### 13.42.1 Frozen constants and exact values (existing symbols only)
+
+```python
+WARNING_CODE_STALE_HEARTBEAT = "STALE_HEARTBEAT"
+WARNING_CODE_DEAD_PID = "DEAD_PID"
+WARNING_CODE_UNPARSEABLE_HEARTBEAT = "UNPARSEABLE_HEARTBEAT"
+WARNING_CODES = (
+    WARNING_CODE_STALE_HEARTBEAT,
+    WARNING_CODE_DEAD_PID,
+    WARNING_CODE_UNPARSEABLE_HEARTBEAT,
+)
+DEFAULT_STALE_THRESHOLD = 300.0
+```
+
+```python
+def _is_pid_alive(pid: int) -> Optional[bool]:
+    """Best-effort check whether a process is alive (never raises)."""
+
+def _reclaim_diagnostics(
+    status: Optional[dict[str, Any]],
+    *,
+    stale_after: Optional[float] = DEFAULT_STALE_THRESHOLD,
+) -> tuple[list[dict[str, Any]], bool]:
+    """Advisory warnings plus needs_reclaim for one status snapshot (never raises, never mutates)."""
+```
+
+- `WARNING_CODE_STALE_HEARTBEAT` / `WARNING_CODE_DEAD_PID` / `WARNING_CODE_UNPARSEABLE_HEARTBEAT` and `WARNING_CODES` (§13.8): the only codes `_reclaim_diagnostics` may emit. This section does not restate their key shape — every emitted warning carries all of `WARNING_KEYS` (`code`, `message`, `detail`) with `detail` an object; §13.8 is normative and is not redefined here.
+- `DEFAULT_STALE_THRESHOLD` (`300.0`; §13.14): the default `stale_after` consumed by the `STALE_HEARTBEAT` age comparison; `stale_after=None` disables heartbeat checks for that call only.
+- `STATE_RUNNING` (`"running"`; §13.12): the only state in which any warning may be emitted — every other state (and a `None` status) yields `([], False)` immediately.
+- `PUBLIC_EXPORTS` stays at 134 symbols: this section adds no entry (§13.21). `_is_pid_alive` and `_reclaim_diagnostics` stay private; orchestrators MUST branch on the public `needs_reclaim` boolean or `warnings[].code`, never on importing these helpers.
+
+#### 13.42.2 Tri-state probe semantics: alive (`True`) vs dead (`False`) vs unknown (`None`)
+
+From the exact implementation in `_is_pid_alive` (`src/stage_signal/stage.py`): the probe is best-effort, synchronous, side-effect free, and never raises — any unexpected exception inside a platform backend yields `None`, and the dispatcher itself guards invalid inputs before touching the OS:
+
+- **Invalid input (no OS call):** a non-`int` pid (including `bool`, `str`, `None`) returns `None` (unknown); an `int` pid `<= 0` returns `False` (dead). `True`/`False` are `bool` instances and therefore always take the `None` path, never the OS path.
+- **POSIX (`sys.platform != "win32"`, via `os.kill(pid, 0)`):** return `True` when the call succeeds (process exists, including the `PermissionError` case where the process exists but signaling is denied); return `False` on `ProcessLookupError` or `OSError` with `errno == ESRCH` (no such process); return `True` on `OSError` with `errno == EPERM` (process exists, permission denied); return `None` on any other `OSError` or unexpected exception.
+- **Windows (via `ctypes` `kernel32.OpenProcess` / `GetExitCodeProcess`):** return `None` when `ctypes.windll.kernel32` is unavailable or any unexpected exception occurs; when `OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)` returns a null handle, return `True` when `GetLastError() == 5` (`ERROR_ACCESS_DENIED`: the process exists), `False` when `GetLastError() == 87`, else `None`; when the handle opens, return `True` when the exit code equals `STILL_ACTIVE` (`259`, still running) and `False` otherwise, always closing the handle.
+- **No signal is ever delivered by the probe** (§13.42.5): POSIX passes signal `0` (existence check only); Windows performs read-only handle/exit-code queries. Termination signals (`SIGTERM`/`SIGKILL`) belong exclusively to `reclaim --kill` (§13.25) and never to detection.
+
+#### 13.42.3 Exact warning emission conditions (codes reused from §13.8, never redefined)
+
+From the exact implementation in `_reclaim_diagnostics` (`src/stage_signal/stage.py`): warnings are advisory only — the helper mutates nothing (no `STATUS.json` write, no event, no mirror rewrite) and never raises (a probe exception is swallowed with no warning appended). Evaluation order is frozen: the running-state gate first, then heartbeat checks (skipped entirely when `stale_after is None`), then the PID check, then the `needs_reclaim` fold:
+
+1. **Non-running gate:** when `status is None` or `status.get("state") != STATE_RUNNING` (`"running"`; §13.12), return `([], False)` — no warning of any kind is emitted for `queued`, `done`, `blocked`, `failed`, unknown states, or a missing snapshot.
+2. **`STALE_HEARTBEAT` (`WARNING_CODE_STALE_HEARTBEAT`)** — emitted while `running` when `stale_after is not None` and either:
+   - `heartbeat_at` is missing or falsy: `message` is `"STALE: running with no heartbeat recorded"` with `detail` `{"age": None, "threshold": stale_after, "heartbeat_at": None}`; or
+   - `heartbeat_at` parses as ISO-8601 (a timezone-naive value is assumed UTC) and `age = max(0.0, (now - heartbeat_at).total_seconds())` satisfies the strict comparison `age > stale_after`: `message` is `f"STALE: running with heartbeat {age:.0f}s ago (threshold {stale_after:g}s)"` with `detail` `{"age": age, "threshold": stale_after, "heartbeat_at": heartbeat_at}`. An age exactly equal to the threshold is NOT stale; a future `heartbeat_at` clamps to age `0.0` and is not stale.
+3. **`UNPARSEABLE_HEARTBEAT` (`WARNING_CODE_UNPARSEABLE_HEARTBEAT`)** — emitted while `running` when `stale_after is not None`, `heartbeat_at` is truthy, and `datetime.fromisoformat(str(heartbeat_at))` raises `ValueError`: `message` is `"unparseable heartbeat_at"` with `detail` `{"heartbeat_at": heartbeat_at}`. It is advisory only and never contributes to `needs_reclaim` (§13.42.4).
+4. **`DEAD_PID` (`WARNING_CODE_DEAD_PID`)** — emitted while `running` when `status.get("pid")` is an `int` that is not a `bool` (any positive, zero, or negative integer reaches the probe; `None`, strings, and booleans are skipped silently with no warning) and `_is_pid_alive(pid)` returns exactly `False` (confirmed dead): `message` is `f"DEAD PID: claiming pid {pid} is not alive (state still running); reclaim with '{recovery_hint}'"` where `recovery_hint` is the literal `"fail --reason TEXT --if-dead-pid"` (naming the narrow recovery gate of §13.31), with `detail` `{"pid": pid, "recovery_hint": recovery_hint}`. A live pid (`True`) or unknown liveness (`None`) emits no warning; a probe exception is swallowed and emits no warning.
+5. **`stale_after=None` disables heartbeat checks:** no `STALE_HEARTBEAT` or `UNPARSEABLE_HEARTBEAT` warning may be emitted on that call — only a `DEAD_PID` can set `needs_reclaim` (§13.42.4). This is the `diagnose(stale_after=None)` spell (§13.37); `status` exposes no such override and always uses the default (§13.35).
+
+#### 13.42.4 `needs_reclaim` derivation: `state == running and (DEAD_PID or STALE_HEARTBEAT)`
+
+From the exact implementation (`src/stage_signal/stage.py`):
+
+```python
+needs_reclaim = any(
+    w.get("code") in {WARNING_CODE_STALE_HEARTBEAT, WARNING_CODE_DEAD_PID}
+    for w in warnings
+)
+```
+
+- `needs_reclaim` is `true` exactly when `state == "running"` and at least one emitted warning carries code `STALE_HEARTBEAT` or `DEAD_PID` (§13.8). It is `false` otherwise — including healthy `running`, all non-running states, `running` with only an `UNPARSEABLE_HEARTBEAT` warning, a `None` snapshot, and (under `stale_after=None`) `running` with only heartbeat problems suppressed.
+- The boolean is advisory only: it never changes stage state by itself (§4 staleness policy). It is the single shared gate consumed identically by `status` (at the default threshold; §13.35.3), `diagnose`/`doctor` (at `stale_after`, defaulting to `DEFAULT_STALE_THRESHOLD`; §13.37.3), the `wait --needs-reclaim` met-condition (via `wait_condition_met` on the snapshot boolean; §13.23.2), the `fail --if-needs-reclaim` guard (default threshold, under the mutation lock; §13.31.4), and the `reclaim` guard (default threshold, under the exclusive lock; §13.25.2). A `false` value on any guard path refuses with `IllegalTransition` (exit 3) and no mutation.
+
+#### 13.42.5 Consumers, thresholds, and the probe-never-signals boundary
+
+| Consumer | Threshold | Lock / context | Effect of `needs_reclaim` |
+|----------|-----------|----------------|---------------------------|
+| `Stage.status()` / `status --json` (§13.35) | `DEFAULT_STALE_THRESHOLD` (no override) | shared-lock pure read; derived key on the snapshot, never persisted | `true` is display-only; exit stays state-reflecting |
+| `Stage.diagnose(stale_after=...)` / `doctor [--stale-after SEC]` (§13.37) | `stale_after` param / flag; `None` disables heartbeat checks | shared-lock pure read (missing-dir path takes no lock); detector runs lock-free on the already-read snapshot | `true` selects `DOCTOR_SUMMARY_RECLAIM_NEEDED` (§13.22) and maps `--exit-reclaim` to exit 10; never mutates |
+| `wait --needs-reclaim` (§13.23, §13.38) | default threshold via each polled snapshot | polling observer; `wait_condition_met(status, want=..., needs_reclaim=True)` reads only `status["needs_reclaim"]`, ignoring `want` | `true` is the `met` outcome (exit 0) |
+| `fail --if-needs-reclaim` (§13.31.4) | `DEFAULT_STALE_THRESHOLD` | mutation lock | `true` → `failed` (exit 0, single `failed` event, empty detail); `false` → `IllegalTransition` (exit 3), no mutation |
+| `fail --if-dead-pid` (§13.31.5) | n/a (liveness only, no heartbeat check) | mutation lock | calls `_is_pid_alive` directly: requires exactly `False`; `True`/`None`/invalid pid → `IllegalTransition` (exit 3), no mutation, no signal |
+| `reclaim [--kill]` (§13.25) | `DEFAULT_STALE_THRESHOLD` | single exclusive lock for guard + (optional) signals + fail-and-clear | `false` → `IllegalTransition` (exit 3) with no mutation and no signals even with `--kill`; `true` → fail+clear proceeds |
+
+- **Detection vs termination boundary:** `_is_pid_alive` and `_reclaim_diagnostics` never send signals, never open the stage lock, and never write. The only code path that terminates a process is `reclaim --kill` (§13.25.5, `Stage.reclaim(kill=True)` → `_terminate_pid_best_effort`), which runs strictly after the `needs_reclaim` guard passes and re-verifies `_is_pid_alive(pid) is True` plus the `pid_token` identity before each signal. `fail` (either guard flag) never sends signals.
+- **Same-snapshot agreement:** with default thresholds, `status --json` `needs_reclaim`, `doctor --json` `needs_reclaim`, and the `wait --needs-reclaim` met-condition agree on the same snapshot (§13.35.3, §13.37.3); `fail --if-needs-reclaim` and `reclaim` re-evaluate under their mutation locks, so a concurrent heartbeat may legitimately flip the guard between an observer read and the guarded mutation (guard-before-mutate, never observe-then-assume).
+
+#### 13.42.6 Cross-links
+
+- **§4 rules 6–7 (States & transitions):** the staleness-never-auto-mutates policy this section detects for; the `pid_token` capture (`start`) consumed by `reclaim --kill` identity verification (owned by §13.25, not re-frozen here); the advisory `DEAD PID ... reclaim with 'fail --reason TEXT --if-dead-pid'` message naming the §13.31 gate.
+- **§6 (CLI contract):** `status --json` (`needs_reclaim` display), `doctor [--stale-after SEC] [--exit-reclaim]` (threshold override, exit-10 mapping), `wait --needs-reclaim` (met-condition), `fail --reason TEXT [--if-dead-pid|--if-needs-reclaim]` (guard flags, exit 2 mutual exclusion), `reclaim --reason TEXT [--keep-failed] [--kill]` (guard + optional termination).
+- **§13.8 (Doctor warning object and warning codes freeze):** `WARNING_CODES` / `WARNING_CODE_*` / `WARNING_KEYS` shapes and code strings reused normatively, never redefined; this section freezes detection *behavior* producing those codes.
+- **§13.21 (Top-level public export inventory):** no addition — `WARNING_CODES`, `WARNING_CODE_*`, `WARNING_KEYS`, `DEFAULT_STALE_THRESHOLD`, `STATE_RUNNING`, and every §13.42.5 consumer symbol are already inventoried; `PUBLIC_EXPORTS` stays at 134 symbols.
+- **§13.22 (Doctor summary strings freeze):** `DOCTOR_SUMMARY_RECLAIM_NEEDED` selection when this section's boolean is true with no problems; orchestrators MUST branch on `needs_reclaim`, never on `summary` text.
+- **§13.23 (Wait vocabulary and predicate freeze):** `WAIT_WANT_NEEDS_RECLAIM` / `wait_condition_met` consumption of the snapshot boolean produced here.
+- **§13.25 (Reclaim freeze):** the `needs_reclaim` guard, the single-exclusive-lock re-evaluation, and the `--kill` detection-vs-termination boundary (termination owned there).
+- **§13.31 (Fail freeze):** the `--if-dead-pid` exact-`False` liveness requirement (direct `_is_pid_alive` call, no heartbeat input) vs the `--if-needs-reclaim` shared-detection requirement, and their exit-3-no-mutation refusals.
+- **§13.35 (Status freeze):** the default-threshold derived `needs_reclaim` enrichment and the never-persisted rule for derived keys.
+- **§13.37 (Doctor freeze):** the `stale_after`-parameterized `needs_reclaim` agreement, the problems-vs-warnings partition, and the event-free observer rule.
+
+#### 13.42.7 Additive-only evolution policy
+
+Under `schema_version: 1`, the PID liveness probe and `needs_reclaim` derivation contract is strictly **additive-only** (§13.1):
+
+- The tri-state return domain (`True` alive / `False` dead / `None` unknown), the invalid-input mapping (non-`int` → `None`, `bool` → `None`, `int <= 0` → `False`), the POSIX `os.kill(pid, 0)` mapping (`ESRCH` → dead, `EPERM` → alive, other errors → unknown), the Windows `OpenProcess`/`GetExitCodeProcess` mapping (`ERROR_ACCESS_DENIED` → alive, `87` → dead, `STILL_ACTIVE == 259` → alive, unavailable API → unknown), the never-raises guarantee, the running-only gate, the strict `age > stale_after` staleness comparison with `0.0` clamping and naive-as-UTC parsing, the `stale_after=None`-disables-heartbeat rule, the exact per-warning emission conditions (§13.42.3), the `needs_reclaim == (state == running and (DEAD_PID or STALE_HEARTBEAT))` fold with `UNPARSEABLE_HEARTBEAT` excluded, the frozen message prefixes and `detail` shapes, the `fail --reason TEXT --if-dead-pid` recovery-hint literal, the probe-never-signals guarantee, and the §13.42.5 consumer threshold/lock/effect table MUST NOT be removed, renamed, reworded, or change semantic meaning.
+- No new event type is introduced for detection: probing appends no event on any path (§13.5).
+- New warning codes MAY be added in minor or patch releases only additively (existing `STALE_HEARTBEAT` / `DEAD_PID` / `UNPARSEABLE_HEARTBEAT` codes keep their exact meaning and emission conditions; `needs_reclaim` keeps ignoring non-member codes unless a future additive section explicitly opts them in); readers MUST tolerate unknown future warning codes without failing, per §13.8.
+- `WARNING_CODES`, `WARNING_CODE_*`, `WARNING_KEYS`, and `DEFAULT_STALE_THRESHOLD` MUST NOT be redefined here or anywhere outside §13.8/§13.14; any future code, key, or default change is owned by those sections under their own additive-only rules.
+- `_is_pid_alive` and `_reclaim_diagnostics` MUST NOT be promoted to public exports under `schema_version: 1` without an additive `PUBLIC_EXPORTS` bump owned by §13.21; orchestrators MUST keep consuming the public `needs_reclaim` boolean and `warnings[].code` values.
+
+
 
 

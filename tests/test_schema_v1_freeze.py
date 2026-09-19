@@ -10024,5 +10024,379 @@ def test_proof_gate_cli_library_shapes_and_cross_links_freeze() -> None:
 
 
 
+# ============================================================================
+# 13.42 PID liveness probe and needs_reclaim derivation freeze (issue #178)
+# ============================================================================
+
+
+def test_pid_liveness_tristate_freeze(monkeypatch: pytest.MonkeyPatch) -> None:
+    """_is_pid_alive returns True (alive) / False (dead) / None (unknown), never raises (SPEC §13.42.2).
+
+    Synchronous test with zero sleeps/threads/network (os.kill fully mocked).
+    """
+    import errno
+
+    import stage_signal.stage as stage_mod
+
+    # Invalid inputs never touch the OS: non-int (incl. bool) -> None, int <= 0 -> False.
+    def _boom(pid: int, sig: int) -> None:
+        raise AssertionError(f"os.kill must not be called for invalid input (pid={pid!r})")
+
+    monkeypatch.setattr(os, "kill", _boom)
+    assert stage_mod._is_pid_alive_posix is not None  # backend exists
+    assert stage_mod._is_pid_alive("123") is None
+    assert stage_mod._is_pid_alive(None) is None
+    assert stage_mod._is_pid_alive(3.5) is None
+    assert stage_mod._is_pid_alive(True) is None
+    assert stage_mod._is_pid_alive(False) is None
+    assert stage_mod._is_pid_alive(0) is False
+    assert stage_mod._is_pid_alive(-5) is False
+    monkeypatch.undo()
+
+    # POSIX mapping over os.kill(pid, 0): success/EPERM -> True; ESRCH/ProcessLookupError -> False.
+    monkeypatch.setattr(os, "kill", lambda pid, sig: None)
+    assert stage_mod._is_pid_alive_posix(12345) is True
+    monkeypatch.setattr(
+        os,
+        "kill",
+        lambda pid, sig: (_ for _ in ()).throw(PermissionError("denied")),
+    )
+    assert stage_mod._is_pid_alive_posix(12345) is True
+    monkeypatch.setattr(
+        os,
+        "kill",
+        lambda pid, sig: (_ for _ in ()).throw(ProcessLookupError("gone")),
+    )
+    assert stage_mod._is_pid_alive_posix(12345) is False
+    monkeypatch.setattr(
+        os,
+        "kill",
+        lambda pid, sig: (_ for _ in ()).throw(OSError(errno.ESRCH, "no such process")),
+    )
+    assert stage_mod._is_pid_alive_posix(12345) is False
+    monkeypatch.setattr(
+        os,
+        "kill",
+        lambda pid, sig: (_ for _ in ()).throw(OSError(errno.EPERM, "denied")),
+    )
+    assert stage_mod._is_pid_alive_posix(12345) is True
+    # Any other OS failure or unexpected exception -> None (unknown), never raises.
+    monkeypatch.setattr(
+        os,
+        "kill",
+        lambda pid, sig: (_ for _ in ()).throw(OSError(errno.EINVAL, "weird")),
+    )
+    assert stage_mod._is_pid_alive_posix(12345) is None
+    monkeypatch.setattr(
+        os,
+        "kill",
+        lambda pid, sig: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
+    assert stage_mod._is_pid_alive_posix(12345) is None
+
+    # Windows backend without a kernel32 API surface is deterministically unknown.
+    assert stage_mod._is_pid_alive_windows(os.getpid()) is None or isinstance(
+        stage_mod._is_pid_alive_windows(os.getpid()), bool
+    )
+
+
+def test_pid_probe_never_signals_freeze(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Detection never delivers signals: every os.kill call from status/doctor/fail uses sig 0 (SPEC §13.42.5).
+
+    Synchronous test with zero sleeps/threads/network (recording os.kill fake).
+    """
+    import stage_signal.stage as stage_mod
+
+    calls: list[tuple[int, int]] = []
+
+    def _recording_kill(pid: int, sig: int) -> None:
+        calls.append((pid, sig))
+        raise ProcessLookupError("gone")
+
+    monkeypatch.setattr(os, "kill", _recording_kill)
+    # Non-Windows dispatch only; skip signal assertions on win32 (ctypes path, no os.kill).
+    use_kill_path = sys.platform != "win32"
+
+    stage_dir = tmp_path / ".stage-signal"
+    stage = Stage(str(stage_dir))
+    stage.init(project="probe-no-signal-freeze")
+    stage.start(stage="observed", pid=424242)
+    prefix = ["--dir", str(stage_dir)]
+
+    assert main(prefix + ["status", "--json"]) == EXIT_RUNNING
+    capsys.readouterr()
+    data = Stage(str(stage_dir)).status()
+    assert data["needs_reclaim"] is True  # dead pid under the recording fake
+    diag = Stage(str(stage_dir)).diagnose()
+    assert diag["needs_reclaim"] is True
+    if use_kill_path:
+        assert calls, "expected the probe to consult os.kill at least once"
+        assert all(sig == 0 for _, sig in calls), f"probe sent a real signal: {calls!r}"
+
+    # fail --if-dead-pid consumes the same signal-free probe: dead pid transitions, exit 0.
+    assert main(prefix + ["fail", "--reason", "dead claimant", "--if-dead-pid"]) == EXIT_OK
+    capsys.readouterr()
+    if use_kill_path:
+        assert all(sig == 0 for _, sig in calls), f"probe sent a real signal: {calls!r}"
+
+
+def test_reclaim_diagnostics_emission_freeze(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Exact DEAD_PID / STALE_HEARTBEAT / UNPARSEABLE_HEARTBEAT conditions + needs_reclaim fold (SPEC §13.42.3/13.42.4).
+
+    Synchronous test with zero sleeps/threads/network (frozen clock, mocked probe).
+    """
+    import stage_signal.stage as stage_mod
+
+    assert WARNING_CODE_STALE_HEARTBEAT == "STALE_HEARTBEAT"
+    assert WARNING_CODE_DEAD_PID == "DEAD_PID"
+    assert WARNING_CODE_UNPARSEABLE_HEARTBEAT == "UNPARSEABLE_HEARTBEAT"
+    assert WARNING_CODES == (
+        WARNING_CODE_STALE_HEARTBEAT,
+        WARNING_CODE_DEAD_PID,
+        WARNING_CODE_UNPARSEABLE_HEARTBEAT,
+    )
+    assert DEFAULT_STALE_THRESHOLD == 300.0
+
+    now = datetime.now(timezone.utc)
+    monkeypatch.setattr(stage_mod, "_now_dt", lambda: now)
+    probe_calls: list[int] = []
+
+    def _base(state: str = STATE_RUNNING, **overrides: Any) -> dict[str, Any]:
+        status = {
+            "state": state,
+            "heartbeat_at": (now - timedelta(seconds=5)).isoformat(),
+            "pid": 424242,
+        }
+        status.update(overrides)
+        return status
+
+    def _set_probe(result: Any, *, raises: Any = None) -> None:
+        def _fake(pid: int) -> Any:
+            probe_calls.append(pid)
+            if raises is not None:
+                raise raises
+            return result
+
+        monkeypatch.setattr(stage_mod, "_is_pid_alive", _fake)
+
+    def _assert_shape(warnings: list[dict[str, Any]]) -> None:
+        for w in warnings:
+            assert set(WARNING_KEYS) <= set(w.keys())
+            assert w["code"] in WARNING_CODES
+            assert isinstance(w["message"], str)
+            assert isinstance(w["detail"], dict)
+
+    # 1. Non-running gate: every other state (and None) yields ([], False) without probing.
+    _set_probe(False)
+    for state in ("queued", "done", "blocked", "failed", "bogus"):
+        probe_calls.clear()
+        warnings, needs = stage_mod._reclaim_diagnostics(_base(state=state))
+        assert warnings == [] and needs is False
+        assert probe_calls == []
+    warnings, needs = stage_mod._reclaim_diagnostics(None)
+    assert warnings == [] and needs is False
+
+    # 2. Healthy running: fresh heartbeat + alive pid -> no warnings, False.
+    _set_probe(True)
+    probe_calls.clear()
+    warnings, needs = stage_mod._reclaim_diagnostics(_base())
+    assert warnings == [] and needs is False
+    assert probe_calls == [424242]
+
+    # 3. STALE_HEARTBEAT: old heartbeat + alive pid -> STALE only, needs_reclaim True.
+    _set_probe(True)
+    warnings, needs = stage_mod._reclaim_diagnostics(
+        _base(heartbeat_at=(now - timedelta(seconds=3600)).isoformat())
+    )
+    _assert_shape(warnings)
+    assert [w["code"] for w in warnings] == [WARNING_CODE_STALE_HEARTBEAT]
+    assert needs is True
+    assert warnings[0]["detail"]["threshold"] == DEFAULT_STALE_THRESHOLD
+    assert warnings[0]["detail"]["age"] == pytest.approx(3600.0)
+
+    # 3b. Missing heartbeat_at + alive pid -> STALE with age None, needs_reclaim True.
+    warnings, needs = stage_mod._reclaim_diagnostics(_base(heartbeat_at=None))
+    assert [w["code"] for w in warnings] == [WARNING_CODE_STALE_HEARTBEAT]
+    assert needs is True
+    assert warnings[0]["detail"] == {
+        "age": None,
+        "threshold": DEFAULT_STALE_THRESHOLD,
+        "heartbeat_at": None,
+    }
+
+    # 3c. Strict threshold: age exactly == stale_after is NOT stale; future clamps to 0.0.
+    warnings, needs = stage_mod._reclaim_diagnostics(
+        _base(heartbeat_at=(now - timedelta(seconds=300)).isoformat())
+    )
+    assert warnings == [] and needs is False
+    warnings, needs = stage_mod._reclaim_diagnostics(
+        _base(heartbeat_at=(now + timedelta(seconds=60)).isoformat())
+    )
+    assert warnings == [] and needs is False
+
+    # 4. UNPARSEABLE_HEARTBEAT alone never sets needs_reclaim.
+    _set_probe(True)
+    warnings, needs = stage_mod._reclaim_diagnostics(_base(heartbeat_at="not-a-timestamp"))
+    _assert_shape(warnings)
+    assert [w["code"] for w in warnings] == [WARNING_CODE_UNPARSEABLE_HEARTBEAT]
+    assert needs is False
+    assert warnings[0]["detail"] == {"heartbeat_at": "not-a-timestamp"}
+
+    # 5. DEAD_PID: fresh heartbeat + confirmed-dead pid -> DEAD_PID only, needs_reclaim True.
+    _set_probe(False)
+    warnings, needs = stage_mod._reclaim_diagnostics(_base())
+    _assert_shape(warnings)
+    assert [w["code"] for w in warnings] == [WARNING_CODE_DEAD_PID]
+    assert needs is True
+    assert "fail --reason TEXT --if-dead-pid" in warnings[0]["message"]
+    assert warnings[0]["detail"] == {
+        "pid": 424242,
+        "recovery_hint": "fail --reason TEXT --if-dead-pid",
+    }
+
+    # 5b. Unknown liveness (None) emits nothing; probe exceptions are swallowed silently.
+    _set_probe(None)
+    warnings, needs = stage_mod._reclaim_diagnostics(_base())
+    assert warnings == [] and needs is False
+    _set_probe(True, raises=RuntimeError("probe exploded"))
+    warnings, needs = stage_mod._reclaim_diagnostics(_base())
+    assert warnings == [] and needs is False
+
+    # 5c. Non-integer pids (None/str/bool) skip the probe silently with no warning.
+    _set_probe(False)
+    for bad_pid in (None, "424242", True, False):
+        probe_calls.clear()
+        warnings, needs = stage_mod._reclaim_diagnostics(_base(pid=bad_pid))
+        assert warnings == [] and needs is False
+        assert probe_calls == []
+
+    # 6. stale_after=None disables heartbeat checks: only DEAD_PID can set reclaim.
+    _set_probe(True)
+    warnings, needs = stage_mod._reclaim_diagnostics(
+        _base(heartbeat_at=(now - timedelta(seconds=3600)).isoformat()), stale_after=None
+    )
+    assert warnings == [] and needs is False
+    warnings, needs = stage_mod._reclaim_diagnostics(
+        _base(heartbeat_at="not-a-timestamp"), stale_after=None
+    )
+    assert warnings == [] and needs is False
+    _set_probe(False)
+    warnings, needs = stage_mod._reclaim_diagnostics(
+        _base(heartbeat_at=(now - timedelta(seconds=3600)).isoformat()), stale_after=None
+    )
+    assert [w["code"] for w in warnings] == [WARNING_CODE_DEAD_PID]
+    assert needs is True
+
+    # 7. needs_reclaim fold: true exactly for running + (DEAD_PID or STALE_HEARTBEAT).
+    _set_probe(False)
+    warnings, needs = stage_mod._reclaim_diagnostics(
+        _base(heartbeat_at=(now - timedelta(seconds=3600)).isoformat())
+    )
+    assert sorted(w["code"] for w in warnings) == sorted(
+        [WARNING_CODE_DEAD_PID, WARNING_CODE_STALE_HEARTBEAT]
+    )
+    assert needs is True
+
+
+def test_needs_reclaim_derivation_agreement_freeze(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """status/doctor/wait/fail/reclaim agree on needs_reclaim; guards refuse exit 3 when false (SPEC §13.42.4/13.42.5).
+
+    Synchronous test with zero sleeps/threads/network (mocked probe, frozen clock for staleness).
+    """
+    import stage_signal
+    import stage_signal.stage as stage_mod
+
+    stage_dir = tmp_path / ".stage-signal"
+    stage = Stage(str(stage_dir))
+    stage.init(project="needs-reclaim-agreement-freeze")
+    prefix = ["--dir", str(stage_dir)]
+    DEAD = 424242
+
+    def _set_probe(result: Any) -> None:
+        monkeypatch.setattr(stage_mod, "_is_pid_alive", lambda pid: result)
+
+    # Dead pid + fresh heartbeat: every observer reports needs_reclaim True.
+    _set_probe(False)
+    stage.start(stage="agreement-dead", pid=DEAD)
+    assert Stage(str(stage_dir)).status()["needs_reclaim"] is True
+    diag = Stage(str(stage_dir)).diagnose()
+    assert diag["needs_reclaim"] is True
+    assert diag["summary"] == DOCTOR_SUMMARY_RECLAIM_NEEDED
+    assert any(w["code"] == WARNING_CODE_DEAD_PID for w in diag["warnings"])
+    # stale_after=None keeps reclaim via DEAD_PID alone.
+    assert Stage(str(stage_dir)).diagnose(stale_after=None)["needs_reclaim"] is True
+    # wait --needs-reclaim is met on the same snapshot.
+    assert main(prefix + ["wait", "--needs-reclaim", "--timeout", "1"]) == EXIT_OK
+    capsys.readouterr()
+
+    # Guard flags succeed on reclaim-true running: fail --if-dead-pid, --if-needs-reclaim, reclaim.
+    assert main(prefix + ["fail", "--reason", "dead", "--if-dead-pid"]) == EXIT_OK
+    capsys.readouterr()
+    assert Stage(str(stage_dir)).status()["state"] == "failed"
+    stage.start(stage="agreement-reclaim-flag", pid=DEAD)
+    assert main(prefix + ["fail", "--reason", "stuck", "--if-needs-reclaim"]) == EXIT_OK
+    capsys.readouterr()
+    stage.start(stage="agreement-reclaim", pid=DEAD)
+    assert main(prefix + ["reclaim", "--reason", "watchdog"]) == EXIT_OK
+    capsys.readouterr()
+    assert Stage(str(stage_dir)).status()["state"] == "queued"
+
+    # Alive pid + fresh heartbeat: every observer reports False; guards refuse exit 3, no mutation.
+    _set_probe(True)
+    stage.start(stage="agreement-healthy", pid=DEAD)
+    before = (stage_dir / STATUS_FILENAME).read_bytes()
+    before_events = len(Stage(str(stage_dir)).events())
+    assert Stage(str(stage_dir)).status()["needs_reclaim"] is False
+    diag = Stage(str(stage_dir)).diagnose()
+    assert diag["needs_reclaim"] is False
+    assert diag["summary"] == doctor_summary_ok("running")
+    assert diag["warnings"] == []
+    with pytest.raises(IllegalTransition):
+        stage.fail(reason="premature", if_dead_pid=True)
+    with pytest.raises(IllegalTransition, match="needs_reclaim is false"):
+        stage.fail(reason="premature", if_needs_reclaim=True)
+    with pytest.raises(IllegalTransition, match="needs_reclaim is false"):
+        stage.reclaim(reason="premature")
+    assert main(prefix + ["fail", "--reason", "premature", "--if-dead-pid"]) == EXIT_ILLEGAL_TRANSITION
+    capsys.readouterr()
+    assert main(prefix + ["fail", "--reason", "premature", "--if-needs-reclaim"]) == EXIT_ILLEGAL_TRANSITION
+    capsys.readouterr()
+    assert (stage_dir / STATUS_FILENAME).read_bytes() == before
+    assert len(Stage(str(stage_dir)).events()) == before_events
+
+    # Unknown liveness (None) + fresh heartbeat: no warning, needs_reclaim False.
+    _set_probe(None)
+    assert Stage(str(stage_dir)).status()["needs_reclaim"] is False
+    with pytest.raises(IllegalTransition):
+        stage.fail(reason="unknown", if_dead_pid=True)
+
+    # Stale heartbeat + alive pid (frozen future clock, no sleep): STALE sets reclaim.
+    _set_probe(True)
+    real_now = stage_mod._now_dt()
+    monkeypatch.setattr(stage_mod, "_now_dt", lambda: real_now + timedelta(seconds=3600))
+    assert Stage(str(stage_dir)).status()["needs_reclaim"] is True
+    diag = Stage(str(stage_dir)).diagnose()
+    assert diag["needs_reclaim"] is True
+    assert any(w["code"] == WARNING_CODE_STALE_HEARTBEAT for w in diag["warnings"])
+    assert main(prefix + ["fail", "--reason", "stale", "--if-needs-reclaim"]) == EXIT_OK
+    capsys.readouterr()
+    monkeypatch.undo()  # restore both _now_dt and _is_pid_alive patches
+
+    # §13.42 adds no export: helpers stay private; the inventory stays at 134 symbols.
+    assert callable(stage_mod._is_pid_alive)
+    assert callable(stage_mod._reclaim_diagnostics)
+    for private_name in ("_is_pid_alive", "_reclaim_diagnostics"):
+        assert private_name not in PUBLIC_EXPORTS, f"{private_name!r} leaked into PUBLIC_EXPORTS"
+        assert private_name not in stage_signal.__all__, f"{private_name!r} leaked into __all__"
+    assert len(PUBLIC_EXPORTS) == 134
+
+
+
+
+
 
 
