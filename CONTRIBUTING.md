@@ -63,53 +63,27 @@ Always run `.venv/bin/pytest` (or activate that venv). Do not run bare system
 installed plugins (such as `test_spec_gaps.py::test_pytest_timeout_plugin_installed_and_aborts_hanging_test`)
 will fail with `ModuleNotFoundError: No module named 'pytest_timeout'`.
 
-### Local orchestrator launchers
+### Orchestrator helpers
 
-When `.agloop/launch-agy.py` and `.agloop/launch-opencode.py` are absent from a
-worktree, they are private, gitignored helpers; do not copy machine-local paths
-or secrets into tracked examples. Apply this `ss()` pattern to both helpers in
-the main checkout. Here `root` is a `pathlib.Path` holding the absolute path of
-the intended source worktree, not necessarily the launcher's own directory. Run the launcher with
-an interpreter that has stage-signal's dependencies installed:
-
-```python
-import os
-import subprocess
-import sys
-
-
-def ss(root, *args):
-    env = os.environ.copy()
-    env["PYTHONPATH"] = str(root / "src")
-    return subprocess.run(
-        [sys.executable, "-m", "stage_signal", "--dir", str(root / ".stage-signal"), *args],
-        cwd=root,
-        env=env,
-        check=False,
-    )
-```
-
-Inspect the returned exit code using the stage-signal contract (`status`, for
-example, returns 10 while running). Pass the same worktree-specific environment
-to agent and watchdog subprocesses; pinning only `ss()` does not change imports
-in separately launched processes.
-
-## Agent receipts
-
-Write OpenCode completion receipts to `.agloop/OC-DONE.md` in the active
-worktree. The `.agloop/` directory is gitignored; receipts are local orchestrator
-state and must never be committed. Do not write receipts at the repository root
-(such as `.agloop-oc-DONE.md`).
+Private orchestrator helpers and receipts are gitignored local state and must
+not be committed. Public integration patterns are documented in
+[`docs/CALLER.md`](docs/CALLER.md); historical harnesses are archived in
+[`examples/dogfood/`](examples/dogfood/).
 
 ## Tests
 
-Run the test suite and both orchestrator smoke tests before submitting a pull
+Run the test suite and the orchestrator smoke test before submitting a pull
 request:
 
 ```bash
 # Using .venv directly or inside active venv:
 .venv/bin/pytest
 sh examples/orchestrator-smoke.sh
+```
+
+Optionally, dogfood runs may also execute the archived queue smoke test:
+
+```bash
 sh examples/dogfood/queue-orchestrator-smoke.sh
 ```
 

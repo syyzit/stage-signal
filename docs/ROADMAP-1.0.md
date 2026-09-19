@@ -107,15 +107,15 @@ During early development and dogfooding (releases 0.1.0 through 0.1.7), several 
 
 For 1.0, the following items must be cut or demoted:
 
-| Candidate | Current Role | 1.0 Action | Rationale |
-|---|---|---|---|
-| `examples/queue-orchestrator.sh` | Sequential task queue manager reading `sample-queue.md` | **Demote / Cut** to external dogfood repo or `examples/dogfood/` | Queue scheduling is an application concern, not part of `stage-signal`. |
-| `examples/queue-orchestrator-smoke.sh` | Smoke test for `queue-orchestrator.sh` | **Demote / Cut** alongside queue script | Unnecessary test overhead for non-product scripts. |
-| `examples/sample-queue.md` | Sample task list for queue orchestrator | **Demote / Cut** alongside queue script | Non-core asset. |
-| `examples/multi-cli-loop.sh` | Multi-agent CLI dispatcher (`agy` vs `opencode` vs `mock`) | **Demote / Cut** from root examples | Blurs product boundary; users confuse it with core tooling. |
-| `examples/cli-orchestrator-loop.md` | Comprehensive guide on driving dual-CLI queues | **Demote / Replace** with a 10-line integration example | Explains private orchestrator internals (`.agloop/`, `.museloop/`) rather than the contract. |
-| `docs/examples/orchestrator.md` | 557-line dual-CLI orchestrator architecture manual | **Demote / Move** out of primary `docs/` | Reads like a multi-agent product manual instead of a lifecycle specification. |
-| Harness Terminology (`.agloop/`, `.museloop/`) | Private dogfood loop directories mentioned in docs | **Purge** from general documentation | Confuses external adopters; replace with generic "caller state" or "CI runner". |
+| Candidate | Current Role | 1.0 Action | Rationale | Status |
+|---|---|---|---|---|
+| `examples/queue-orchestrator.sh` | Sequential task queue manager reading `sample-queue.md` | **Demote / Cut** to external dogfood repo or `examples/dogfood/` | Queue scheduling is an application concern, not part of `stage-signal`. | **Done** (demoted to `examples/dogfood/`) |
+| `examples/queue-orchestrator-smoke.sh` | Smoke test for `queue-orchestrator.sh` | **Demote / Cut** alongside queue script | Unnecessary test overhead for non-product scripts. | **Done** (demoted to `examples/dogfood/`) |
+| `examples/sample-queue.md` | Sample task list for queue orchestrator | **Demote / Cut** alongside queue script | Non-core asset. | **Done** (demoted to `examples/dogfood/`) |
+| `examples/multi-cli-loop.sh` | Multi-agent CLI dispatcher (`agy` vs `opencode` vs `mock`) | **Demote / Cut** from root examples | Blurs product boundary; users confuse it with core tooling. | **Done** (demoted to `examples/dogfood/`) |
+| `examples/cli-orchestrator-loop.md` | Comprehensive guide on driving dual-CLI queues | **Demote / Replace** with a 10-line integration example | Explains private orchestrator internals (`.agloop/`, `.museloop/`) rather than the contract. | **Done** (demoted to `examples/dogfood/`) |
+| `docs/examples/orchestrator.md` | 557-line dual-CLI orchestrator architecture manual | **Demote / Move** out of primary `docs/` | Reads like a multi-agent product manual instead of a lifecycle specification. | **Done** (demoted to `examples/dogfood/`) |
+| Harness Terminology (`.agloop/`, `.museloop/`) | Private dogfood loop directories mentioned in docs | **Purge** from general documentation | Confuses external adopters; replace with generic "caller state" or "CI runner". | **Done** (purged from CONTRIBUTING/docs) |
 
 ### Retained Core Examples for 1.0:
 - `examples/orchestrator-smoke.sh`: Keep as the canonical CLI product-acceptance test.

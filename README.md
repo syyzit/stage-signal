@@ -215,7 +215,7 @@ Only the recorded PID is targeted (not a process group). Identity checks reduce 
 order, later wins):
 
 ```bash
-stage-signal start --stage demo --meta owner=OpenLoop --meta '{"ticket": 42, "flag": true}'
+stage-signal start --stage demo --meta owner=ci --meta '{"ticket": 42, "flag": true}'
 ```
 
 - `K=V` — value kept as a string (value may contain `=`; `K=` is empty).
