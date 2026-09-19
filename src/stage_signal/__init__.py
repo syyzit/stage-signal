@@ -138,7 +138,7 @@ from .stage import (
 )
 from .store import StageStore, render_status_md, resolve_dir
 
-__version__ = "0.1.6"
+__version__ = "0.1.7"
 
 __all__ = list(PUBLIC_EXPORTS)
 

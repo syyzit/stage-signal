@@ -219,7 +219,7 @@ No preinstalled venv needed — the composite action installs `stage-signal`
 from PyPI then runs `stage-signal wait`:
 
 ```yaml
-- uses: syyzit/stage-signal@v0.1.6
+- uses: syyzit/stage-signal@v0.1.7
   with:
     dir: .stage-signal   # default
     state: terminal      # done | blocked | failed | terminal (default)
@@ -227,7 +227,7 @@ from PyPI then runs `stage-signal wait`:
     timeout: 3600        # seconds (default)
     # poll: 5.0          # poll interval in seconds (default: CLI default 5.0)
     # python-version: "3.12"  # default
-    # version: "0.1.6"        # optional version pin (default: unpinned/latest)
+    # version: "0.1.7"        # optional version pin (default: unpinned/latest)
     # pip-cache: true         # optional boolean for pip caching (default: false)
     # cache: "pip"            # optional setup-python cache (default: "")
 ```
@@ -249,7 +249,7 @@ Because non-zero exit codes (11 blocked, 12 failed, 14 timeout, 1 done-without-r
 ```yaml
 - name: Wait for milestone
   id: wait
-  uses: syyzit/stage-signal@v0.1.6
+  uses: syyzit/stage-signal@v0.1.7
   continue-on-error: true
   with:
     state: terminal
@@ -286,7 +286,7 @@ In CI watchdogs, gate on the reclaim condition without writing cron/sleep loops 
 ```yaml
 - name: Wait for reclaim signal
   id: wait
-  uses: syyzit/stage-signal@v0.1.6
+  uses: syyzit/stage-signal@v0.1.7
   continue-on-error: true
   with:
     needs-reclaim: true
@@ -313,7 +313,7 @@ In CI watchdogs, gate on the reclaim condition without writing cron/sleep loops 
     echo "Stage reached terminal state without reclaim: state=${{ steps.wait.outputs.state }} exit_code=${{ steps.wait.outputs.exit-code }}"
 ```
 
-See [`examples/github-action-wait.yml`](examples/github-action-wait.yml) and [`examples/github-action-wait-reclaim.yml`](examples/github-action-wait-reclaim.yml) for complete copyable workflows that wait on an existing `.stage-signal/` directory and branch on `done` / `blocked` / `failed` / `timeout` / `reclaim-needed`. The composite action's steps use `shell: bash` (available on GitHub-hosted Ubuntu, macOS, and Windows runners). Pin the action ref (`@v0.1.6`) independently from the optional `version` input (PyPI package pin). Waiting for `terminal` or `--needs-reclaim` with `continue-on-error: true` keeps 11/12/14/1 from collapsing into a generic failed step so later `if:` branches can read `state` / `timed-out` / `needs-reclaim` / `reason`.
+See [`examples/github-action-wait.yml`](examples/github-action-wait.yml) and [`examples/github-action-wait-reclaim.yml`](examples/github-action-wait-reclaim.yml) for complete copyable workflows that wait on an existing `.stage-signal/` directory and branch on `done` / `blocked` / `failed` / `timeout` / `reclaim-needed`. The composite action's steps use `shell: bash` (available on GitHub-hosted Ubuntu, macOS, and Windows runners). Pin the action ref (`@v0.1.7`) independently from the optional `version` input (PyPI package pin). Waiting for `terminal` or `--needs-reclaim` with `continue-on-error: true` keeps 11/12/14/1 from collapsing into a generic failed step so later `if:` branches can read `state` / `timed-out` / `needs-reclaim` / `reason`.
 
 For distinguishable blocked/failed/timeout/reclaim in CI without log scraping, use the action `outputs` (see above) with `continue-on-error` on the wait step when you need downstream `if:` branches.
 
@@ -360,7 +360,7 @@ Agent UIs and chat transcripts are for humans. Orchestrators need a stable, bori
 
 ## Status
 
-0.1.6: library (`src/stage_signal/`), full CLI (`init`, `start`,
+0.1.7: library (`src/stage_signal/`), full CLI (`init`, `start`,
 `heartbeat`, `note`, `artifact`, `done`, `blocked`, `fail`, `status`,
 `wait`, `clear-terminal`, `doctor`), unit + concurrency tests,
 `examples/orchestrator-watchdog.sh` (+ `examples/orchestrator-smoke.sh`),
@@ -374,9 +374,8 @@ pytest + both smokes + packaging check via `python -m build` /
 doctor / wait observers (§13.35–§13.38), `.orch` mirror (§13.39),
 concurrency and locking (§13.40), proof gate (§13.41), and PID liveness /
 `needs_reclaim` derivation (§13.42) — while the
-published package remains soaking at `0.1.6` (no version bump in this
-change). Action pins (`@v0.1.6`) and the optional PyPI `version` pin
-(`"0.1.6"`) stay aligned with the soak.
+published package is **0.1.7**, releasing the soak of freezes through §13.42. Action pins (`@v0.1.7`) and the optional PyPI `version` pin
+(`"0.1.7"`) stay aligned with the release.
 
 ---
 
