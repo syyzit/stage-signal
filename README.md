@@ -224,7 +224,7 @@ stage-signal start --stage demo --meta owner=OpenLoop --meta '{"ticket": 42, "fl
 - Bare words, malformed JSON, and non-object JSON exit `2` with no mutation.
 
 Minimal orchestrator loop (cron, bot, CI step, shell): see
-`examples/orchestrator-watchdog.sh` — it only calls
+`examples/dogfood/orchestrator-watchdog.sh` — it only calls
 `stage-signal status --json` / `stage-signal wait` (including
 `wait --needs-reclaim` for the reclaim path) and exits with the
 observed-state code above. Acceptance sequence: `examples/orchestrator-smoke.sh`.
@@ -271,7 +271,7 @@ Orchestrator loops need to differentiate between an active pending stage and an 
 - **Handling failures:** When an agent reports `fail`, orchestrators have two clean SPEC-compatible choices:
   - `stage-signal clear-terminal` to clear stage identity back to a true idle `queued -` state.
   - `stage-signal done --accept-failure --summary "accepted: ..."` to transition a failed stage to `done` with `"accepted_failure": true` recorded in `result`, without inventing a fake success.
-- **Stuck running:** Do not cron-poll `doctor`. Block with `stage-signal wait --needs-reclaim`, then `reclaim --reason "..." --kill` (one-shot: terminate the alive recorded PID, then fail+clear to idle queued for relaunch; or `--kill --keep-failed` / `fail --if-needs-reclaim` without signaling). Use `--if-dead-pid` only when the PID is confirmed dead. Audit with `stage-signal events --tail 20`. Snapshot `doctor --json` / `status --json` remains available; `doctor --exit-reclaim` is the one-shot exit-10 check (and `examples/orchestrator-watchdog.sh --once --doctor-reclaim` reclaims snapshot `needs_reclaim` via `reclaim --keep-failed`).
+- **Stuck running:** Do not cron-poll `doctor`. Block with `stage-signal wait --needs-reclaim`, then `reclaim --reason "..." --kill` (one-shot: terminate the alive recorded PID, then fail+clear to idle queued for relaunch; or `--kill --keep-failed` / `fail --if-needs-reclaim` without signaling). Use `--if-dead-pid` only when the PID is confirmed dead. Audit with `stage-signal events --tail 20`. Snapshot `doctor --json` / `status --json` remains available; `doctor --exit-reclaim` is the one-shot exit-10 check (and `examples/dogfood/orchestrator-watchdog.sh --once --doctor-reclaim` reclaims snapshot `needs_reclaim` via `reclaim --keep-failed`).
 
 
 ### GitHub Action: wait without a venv
@@ -424,7 +424,7 @@ Agent UIs and chat transcripts are for humans. Orchestrators need a stable, bori
 0.1.7: library (`src/stage_signal/`), full CLI (`init`, `start`,
 `heartbeat`, `note`, `artifact`, `done`, `blocked`, `fail`, `status`,
 `wait`, `clear-terminal`, `doctor`), unit + concurrency tests,
-`examples/orchestrator-watchdog.sh` (+ `examples/orchestrator-smoke.sh`),
+`examples/dogfood/orchestrator-watchdog.sh` (+ `examples/orchestrator-smoke.sh`),
 Caller Guide (`docs/CALLER.md`), archived dogfood harnesses in `examples/dogfood/`
 (+ `examples/dogfood/queue-orchestrator-smoke.sh`), CI (`.github/workflows/ci.yml`:
 pytest + smokes + packaging check via `python -m build` /

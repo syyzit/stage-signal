@@ -9,13 +9,13 @@ The scripts and documents in this directory are outer orchestration harnesses de
 For supported, canonical caller integration patterns, see:
 - [`docs/CALLER.md`](../../docs/CALLER.md) — Caller Guide (synchronous wait, health watchdog, and agent wrapper loops)
 - [`examples/orchestrator-smoke.sh`](../orchestrator-smoke.sh) — Canonical product-acceptance test
-- [`examples/orchestrator-watchdog.sh`](../orchestrator-watchdog.sh) — Minimal polling/watchdog loop
 - [`examples/github-action-wait.yml`](../github-action-wait.yml) — CI wait workflow reference
 
 ---
 
 ## Contents
 
+- **`orchestrator-watchdog.sh`**: Minimal external poll loop demonstrating snapshot and blocking `needs_reclaim` watchdog patterns.
 - **`queue-orchestrator.sh`**: Minimal sequential task queue consumer reading markdown queue files.
 - **`queue-orchestrator-smoke.sh`**: Acceptance smoke test exercising `queue-orchestrator.sh`.
 - **`sample-queue.md`**: Sample markdown task queue file.

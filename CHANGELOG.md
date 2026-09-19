@@ -16,6 +16,8 @@ See `docs/RELEASE.md` for the release procedure.
 
 - README: reformat the contract scan (exit codes, wait/status/doctor, reclaim) into short sections and a table for humans; SPEC remains normative (#194).
 
+- Docs: demote orchestrator-watchdog into dogfood (`examples/dogfood/orchestrator-watchdog.sh`), updating docs, dogfood guides, and regression tests to leave only canonical acceptance smokes and CI workflows in root `examples/` (#202).
+
 ## [0.1.7] — 2026-09-19
 
 Releases the soak of SPEC freezes §13.25–§13.42 plus docs/tests landed since 0.1.6 (PID liveness/`needs_reclaim`, locking, proof gate, observers, dual-CLI harness labeling, and `done --git-head` inherit regressions). Packaging-only; no new runtime features.
