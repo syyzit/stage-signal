@@ -1,4 +1,4 @@
-# Sample queue for examples/queue-orchestrator.sh.
+# Sample queue for examples/dogfood/queue-orchestrator.sh.
 #
 # Format (intentionally boring):
 #   - one stage id per line
@@ -9,7 +9,7 @@
 #
 # The orchestrator walks this file top-to-bottom against a single
 # stage-signal dir (default: ./.stage-signal). See the header of
-# examples/queue-orchestrator.sh for cron / bot calling conventions.
+# examples/dogfood/queue-orchestrator.sh for cron / bot calling conventions.
 
 # Overnight demo queue (3 stages, in order):
 - [ ] queue-orch-example

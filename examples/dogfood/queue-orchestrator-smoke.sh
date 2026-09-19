@@ -1,11 +1,11 @@
 #!/bin/sh
-# queue-orchestrator-smoke.sh — acceptance for examples/queue-orchestrator.sh.
+# queue-orchestrator-smoke.sh — acceptance for examples/dogfood/queue-orchestrator.sh.
 #
 # Exercises the queue consumer against an isolated temp --dir (never the real
 # repo state) and exits 0 only if every step matches the contract. Requires
 # `stage-signal` on PATH:
 #   source .venv/bin/activate
-#   ./examples/queue-orchestrator-smoke.sh
+#   ./examples/dogfood/queue-orchestrator-smoke.sh
 set -u
 
 # NOTE: this smoke never commits, so bare `done` omits --git-head and inherits the start SHA (§13.30.3).
@@ -27,8 +27,9 @@ cat >"$Q" <<'EOF'
 EOF
 
 D="$WORK/.stage-signal"
-QO="$PWD/examples/queue-orchestrator.sh"
-[ -x "$QO" ] || fail "examples/queue-orchestrator.sh missing or not executable"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+QO="$SCRIPT_DIR/queue-orchestrator.sh"
+[ -x "$QO" ] || fail "queue-orchestrator.sh missing or not executable at $QO"
 
 ST() { stage-signal --dir "$D" "$@"; }
 
@@ -101,7 +102,7 @@ cat >"$Q_MOCK" <<'EOF'
 - m2
 EOF
 D_MOCK="$WORK/mock-stage/.stage-signal"
-MCLO="$PWD/examples/multi-cli-loop.sh"
+MCLO="$SCRIPT_DIR/multi-cli-loop.sh"
 if [ -x "$MCLO" ]; then
   out="$("$MCLO" --agent mock --queue "$Q_MOCK" --dir "$D_MOCK" --timeout 5 2>&1)" || fail "multi-cli-loop mock should exit 0, got $?"
   echo "$out" | grep -q "queue drained: all milestones complete" || fail "expected drained in multi-cli-loop, got: $out"

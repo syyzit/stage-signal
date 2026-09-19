@@ -3,7 +3,7 @@
 #
 # Thesis: stage-signal is the boring contract so an external loop can drive
 # coding agents without scraping TUIs or chat transcripts. This script
-# reuses examples/queue-orchestrator.sh to inspect queue state and wait for
+# reuses examples/dogfood/queue-orchestrator.sh to inspect queue state and wait for
 # terminal transitions.
 #
 # The ONLY difference between agents is the invocation command line:
@@ -13,7 +13,7 @@
 # Everything else (working directory, stage signals, exit codes) is identical.
 #
 # Usage:
-#   ./examples/multi-cli-loop.sh [--agent agy|opencode|mock] [--queue FILE] [--dir PATH]
+#   ./examples/dogfood/multi-cli-loop.sh [--agent agy|opencode|mock] [--queue FILE] [--dir PATH]
 #                                [--prompts-dir DIR] [--timeout SEC] [--model MODEL] [--once]
 #
 # Exit codes follow the stage-signal contract:
@@ -22,7 +22,7 @@
 set -u
 
 AGENT="agy"
-QUEUE="examples/sample-queue.md"
+QUEUE="examples/dogfood/sample-queue.md"
 DIR=""
 PROMPTS_DIR="prompts"
 TIMEOUT="3600"
@@ -49,7 +49,8 @@ done
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 QORCH="$SCRIPT_DIR/queue-orchestrator.sh"
-REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+[ -f "$QUEUE" ] || [ ! -f "$SCRIPT_DIR/sample-queue.md" ] || QUEUE="$SCRIPT_DIR/sample-queue.md"
 
 [ -x "$QORCH" ] || {
   echo "multi-cli-loop: queue-orchestrator.sh not found or not executable at $QORCH" >&2

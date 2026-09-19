@@ -31,7 +31,7 @@ jobs:
         run: sh examples/orchestrator-smoke.sh
 
       - name: Run queue orchestrator smoke
-        run: sh examples/queue-orchestrator-smoke.sh
+        run: sh examples/dogfood/queue-orchestrator-smoke.sh
 
   test-windows:
     runs-on: windows-latest

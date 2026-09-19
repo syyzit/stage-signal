@@ -110,7 +110,7 @@ request:
 # Using .venv directly or inside active venv:
 .venv/bin/pytest
 sh examples/orchestrator-smoke.sh
-sh examples/queue-orchestrator-smoke.sh
+sh examples/dogfood/queue-orchestrator-smoke.sh
 ```
 
 Local and dogfood test runs should use `pip install -e ".[dev]"` into `.venv` and
