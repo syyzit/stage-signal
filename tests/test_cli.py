@@ -328,7 +328,7 @@ def test_watchdog_needs_reclaim(tmp_path: Path, flag: str, dead_pid: bool, stale
     env = dict(os.environ)
     env["PATH"] = str(Path(sys.executable).parent) + os.pathsep + env.get("PATH", "")
     env["PYTHONPATH"] = str(root / "src")
-    command = ["sh", str(root / "examples/orchestrator-watchdog.sh"),
+    command = ["sh", str(root / "examples/dogfood/orchestrator-watchdog.sh"),
                "--dir", str(stage.dir), "--once", flag]
 
     result = subprocess.run(command, env=env, capture_output=True, text=True, timeout=10)
@@ -385,7 +385,7 @@ def test_watchdog_wait_reclaim(tmp_path: Path, dead_pid: bool, stale: bool) -> N
     env["PATH"] = str(Path(sys.executable).parent) + os.pathsep + env.get("PATH", "")
     env["PYTHONPATH"] = str(root / "src")
     command = [
-        "sh", str(root / "examples/orchestrator-watchdog.sh"),
+        "sh", str(root / "examples/dogfood/orchestrator-watchdog.sh"),
         "--dir", str(stage.dir), "--wait-reclaim", "--timeout", "5", "--poll", "0.05",
     ]
 

@@ -13,8 +13,8 @@
 # (do not scrape events.jsonl with tail/jq).
 #
 # Usage:
-#   ./examples/orchestrator-watchdog.sh [--dir PATH] [--state WANT] [--timeout SEC] [--poll SEC] [--once]
-#   ./examples/orchestrator-watchdog.sh [--dir PATH] --wait-reclaim [--timeout SEC] [--poll SEC]
+#   ./examples/dogfood/orchestrator-watchdog.sh [--dir PATH] [--state WANT] [--timeout SEC] [--poll SEC] [--once]
+#   ./examples/dogfood/orchestrator-watchdog.sh [--dir PATH] --wait-reclaim [--timeout SEC] [--poll SEC]
 #
 #   --dir PATH       stage dir (default: ./.stage-signal or $STAGE_SIGNAL_DIR)
 #   --state WANT     done|blocked|failed|terminal (default: terminal)
@@ -137,7 +137,7 @@ print('%s %s (attempt %s)' % (st.get('state'), st.get('stage_name') or '-', st.g
 # Manual check (reclaim path):
 #   stage-signal --dir .stage-signal init
 #   stage-signal --dir .stage-signal start --stage t1 --pid 999999999
-#   ./examples/orchestrator-watchdog.sh --dir .stage-signal --once --doctor-reclaim
+#   ./examples/dogfood/orchestrator-watchdog.sh --dir .stage-signal --once --doctor-reclaim
 #   # -> exit 12, STATUS.json state=failed, one `failed` event appended
 #   # Repeat: exit 12 (no reclaim needed; --once observes failed), no new event
 doctor_reclaim() {
