@@ -6,6 +6,8 @@ See `docs/RELEASE.md` for the release procedure.
 
 ## [Unreleased]
 
+- Froze PID liveness probe and `needs_reclaim` derivation in SPEC §13.42 with no new exported constants (private `_is_pid_alive` / `_reclaim_diagnostics` reusing the already-frozen `WARNING_CODES`/`WARNING_CODE_*`/`WARNING_KEYS`, `DEFAULT_STALE_THRESHOLD`, and `STATE_RUNNING`), documenting the tri-state probe (`True` alive / `False` dead / `None` unknown) with invalid-input mapping and POSIX `os.kill(pid, 0)` / Windows `OpenProcess`/`GetExitCodeProcess` backends, the exact `DEAD_PID` / `STALE_HEARTBEAT` / `UNPARSEABLE_HEARTBEAT` emission conditions (running-only; `UNPARSEABLE_HEARTBEAT` advisory-only), the `needs_reclaim == (state == running and (DEAD_PID or STALE_HEARTBEAT))` fold excluding unparseable, the `stale_after=None`-disables-heartbeat rule, the probe-never-signals guarantee (signal `0` / read-only queries; `SIGTERM`/`SIGKILL` only via `reclaim --kill`), the frozen message prefixes and `detail` shapes, cross-linking §13.8/§13.12/§13.14/§13.22/§13.23/§13.25/§13.31/§13.35/§13.37/§13.38, leaving `PUBLIC_EXPORTS` at 134 symbols, and guaranteeing additive-only evolution under `schema_version: 1` (#178).
+
 - Labeled the dual-CLI orchestrator guides (`docs/examples/orchestrator.md`, `examples/cli-orchestrator-loop.md`, plus a one-line README pointer) as a dogfood harness example, clarifying the published product is only the thin `.stage-signal/` lifecycle contract (#188).
 - Added CLI regression tests in `tests/test_cli.py` locking that `done` without `--git-head` inherits the `git_head` recorded at `start` (SPEC §13.30.3), plus the explicit-`--git-head` override path (#186).
 
