@@ -18,6 +18,8 @@ See `docs/RELEASE.md` for the release procedure.
 
 - Docs: demote orchestrator-watchdog into dogfood (`examples/dogfood/orchestrator-watchdog.sh`), updating docs, dogfood guides, and regression tests to leave only canonical acceptance smokes and CI workflows in root `examples/` (#202).
 
+- Docs: purge private harness recipes from CONTRIBUTING, require pytest and orchestrator-smoke only, genericize README meta example, and mark demoted cut-list rows in ROADMAP-1.0 as done (#205).
+
 ## [0.1.7] — 2026-09-19
 
 Releases the soak of SPEC freezes §13.25–§13.42 plus docs/tests landed since 0.1.6 (PID liveness/`needs_reclaim`, locking, proof gate, observers, dual-CLI harness labeling, and `done --git-head` inherit regressions). Packaging-only; no new runtime features.
