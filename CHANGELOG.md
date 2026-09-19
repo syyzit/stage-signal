@@ -6,6 +6,8 @@ See `docs/RELEASE.md` for the release procedure.
 
 ## [Unreleased]
 
+- Docs: streamline SPEC §§1–12 into a concise architecture overview delegating all normative assertions to §13 freezes under `schema_version: 1` (#201).
+
 - Docs: demote dogfood harness scripts and dual-CLI guides to `examples/dogfood/` with an explanatory README clarifying they are external harnesses rather than published product, add lean Caller Guide (`docs/CALLER.md`) covering synchronous wait, health watchdog, and agent wrapper loops, and purge internal harness references from general docs (#199).
 
 - Docs: add 1.0 readiness roadmap (`docs/ROADMAP-1.0.md`) mapping all frozen §13.1–§13.42 sections vs public CLI/API surface, confirming zero normative gaps, detailing redundant prose between SPEC §§1–12 and §13, establishing a cut-list for dogfood harness scripts/docs, and defining the 1.0 "done" bar (#193).
