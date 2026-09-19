@@ -6,6 +6,8 @@ See `docs/RELEASE.md` for the release procedure.
 
 ## [Unreleased]
 
+- README: mention Claude Code as another pluggable agent CLI in the driving-agents table (#196).
+
 - README: reformat the contract scan (exit codes, wait/status/doctor, reclaim) into short sections and a table for humans; SPEC remains normative (#194).
 
 ## [0.1.7] — 2026-09-19

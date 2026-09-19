@@ -253,7 +253,7 @@ stage-signal supervise --every 30 -- pytest -v
 
 `supervise` returns the child process exit code (or `128 + SIGNUM` on signal termination; standard error codes 2, 3, 15 on bad args or setup failures). Upon starting the child, `supervise` adopts the child's `pid` and `pid_token` in `STATUS` (under exclusive lock) so `doctor` and `reclaim --kill` track the active worker process rather than the supervisor wrapper.
 
-### Driving coding agents (agy, OpenCode, etc.)
+### Driving coding agents (agy, OpenCode, Claude Code, etc.)
 
 An external orchestrator loop can drive coding agents across multi-stage milestones without scraping TUIs or transcripts. The orchestrator owns the **queue** (often in gitignored folders like `.agloop/` or `.museloop/` with prompt templates and run logs), while `.stage-signal/` owns the **stage signal** (`start`, `wait`, `done`, exit codes). The dual-CLI guides below are a dogfood harness example; the product is only the thin `.stage-signal/` lifecycle contract.
 
@@ -263,6 +263,7 @@ The agent CLI invocation line is pluggable — everything else stays identical:
 | :--- | :--- |
 | **agy** (Antigravity CLI) | `agy -p "$PROMPT" --dangerously-skip-permissions --print-timeout 45m` |
 | **OpenCode** | `opencode run --dir "$REPO" --auto -m "$MODEL" "$PROMPT"` |
+| **Claude Code** | `claude -p "$PROMPT" --dangerously-skip-permissions` |
 
 See [`docs/examples/orchestrator.md`](docs/examples/orchestrator.md) for the dual-CLI peer orchestrator guide with parallel worktrees and watchdog health checks, [`examples/cli-orchestrator-loop.md`](examples/cli-orchestrator-loop.md) for the end-to-end loop guide, and [`examples/multi-cli-loop.sh`](examples/multi-cli-loop.sh) for a thin runner reusing `examples/queue-orchestrator.sh`.
 
