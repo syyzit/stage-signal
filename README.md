@@ -128,26 +128,90 @@ On-disk layout (default):
 
 > **Platform locking note:** POSIX platforms use `fcntl.flock` (exclusive for mutations, shared for reads). Windows uses Python stdlib `msvcrt.locking` on the lock file (exclusive byte lock on byte 0; shared locks fall back to exclusive; no third-party dependencies). On environments lacking OS locking primitives, locking is a best-effort no-op. Do not assume Windows has POSIX `flock`. Atomic `os.replace` protects `STATUS.json` writes across all platforms.
 
-Exact schema and exit codes: see `docs/SPEC.md` (normative) and
-`docs/PRIOR_ART.md` (background).
+Exact schema and exit codes: see [`docs/SPEC.md`](docs/SPEC.md) (normative) and [`docs/PRIOR_ART.md`](docs/PRIOR_ART.md) (background). The notes below are a human scan of the same contract — when in doubt, SPEC wins.
 
-`status` / `wait` exit codes are part of the contract: `0` done/OK (also `wait --needs-reclaim` when reclaim is needed),
-`1` generic/corrupt (also `wait --needs-reclaim` ending in `done` without reclaim), `10` running, `11` blocked, `12` failed, `13` queued,
-`14` wait timeout, `15` not initialized, `2` bad args, `3` illegal transition.
-`wait --json` prints a structured JSON object (`outcome`, `wanted`, `observed_state` / `state`, `exit_code`, `timeout`, `stage_id`, `dir`, `reason`, `needs_reclaim`, `status`) to stdout while preserving these exit codes. `wanted` is the `--state` value, or `"needs_reclaim"` when `--needs-reclaim` is set. Top-level `needs_reclaim` is the same boolean as `status --json` / `doctor --json` (also nested on `status`). `reason` is the blocked/failed error text, or a short timeout message; `null` otherwise.
-`wait --needs-reclaim` polls until that boolean is true (running + `DEAD_PID` or `STALE_HEARTBEAT`, same detection as `doctor` / `status --json`). Healthy running keeps polling — do not treat `status` / `doctor --exit-reclaim` exit 10 as wait success. Terminal without reclaim fails closed (`done` → 1, `blocked` → 11, `failed` → 12). Library: `Stage.wait(..., needs_reclaim=True)`.
-`status` prints human text by default (including heartbeat age, e.g. `heartbeat: <ISO> (age 42s)`, only while `running` with a valid heartbeat). `status --json` includes dynamic `heartbeat_age_seconds` (number while running with a valid heartbeat; otherwise `null`) and the always-present boolean `needs_reclaim` with the same semantics as in `doctor --json` (`true` exactly when `running` and a `DEAD_PID` or `STALE_HEARTBEAT` warning applies, computed by the same detection logic as `doctor`; otherwise `false`).
-`doctor --json` (or `--format json`) and `Stage.diagnose()` provide machine-readable health diagnostics (`ok`, `needs_reclaim`, `state`, `problems`, `warnings`: `[{code, message, detail}]`, `status`, `summary`). The always-present boolean `needs_reclaim` is `true` exactly when the state is `running` and a `DEAD_PID` or `STALE_HEARTBEAT` warning applies; otherwise it is `false`, including healthy running, non-running states, and missing/unreadable status without reclaim warnings. Orchestrators should branch on `needs_reclaim` instead of string-matching `summary` or treating `ok` as a liveness signal. The summary still reports `ATTENTION: running needs reclaim` for reclaim warnings when there are no problems. `ok` means no problems: reclaim warnings alone preserve `ok: true` and exit 0 (exit 1 on problems), and `needs_reclaim` remains independent of any problems.
-To enable thin shell or watchdog scripts to branch on exit codes without requiring `jq`, `doctor --exit-reclaim` exits 10 when `needs_reclaim` is true (while still printing human or JSON output as requested). When `needs_reclaim` is false, it preserves existing exit codes (0 healthy/warnings, 1 problems, 2 bad args). Without `--exit-reclaim`, doctor retains its default advisory exit 0 on warnings.
+### Exit codes (`status` / `wait`)
 
-To act on a `DEAD_PID` warning (which includes an explicit recovery hint naming `fail --reason TEXT --if-dead-pid`), `fail --reason TEXT --if-dead-pid` hard-fails a
-`running` stage only after confirming the claiming PID is a valid positive
-integer that is actually dead; a live, invalid, or undeterminable PID aborts
-with exit 3 and no mutation (outside `running`, normal fail rules apply). Doctor remains advisory-only.
+| Code | Meaning |
+|------|---------|
+| `0` | `done` / OK — also `wait --needs-reclaim` when reclaim is needed |
+| `1` | Generic / corrupt — also `wait --needs-reclaim` ending in `done` without reclaim |
+| `2` | Bad args |
+| `3` | Illegal transition |
+| `10` | `running` |
+| `11` | `blocked` |
+| `12` | `failed` |
+| `13` | `queued` |
+| `14` | Wait timeout |
+| `15` | Not initialized |
 
-To reclaim whenever `needs_reclaim` would be true (DEAD_PID **or** STALE_HEARTBEAT, same detection as `doctor` / `status` / `Stage.diagnose()`), wait with `wait --needs-reclaim` then `reclaim --reason TEXT --kill`. That one-shot command first terminates a still-alive recorded PID (only after the guard passes, best effort: `SIGTERM`, wait up to 1 second polling liveness every 50ms, then `SIGKILL` if still alive; dead, null, invalid, or unknown-liveness PIDs get no signal; permission/OS errors warn on stderr and fail+clear still proceeds) and then writes `failed` + reason, immediately clearing to idle `queued` (clearing stage identity) under a single exclusive lock, emitting both `failed` and `clear_terminal` events; healthy running and non-running states exit 3 with no signal and no mutation. `Stage.start` captures an optional/null opaque `pid_token` process-start identity best effort (Linux `/proc/<pid>/stat` field 22, macOS `ps` `lstart` with stable locale/timezone, Windows `GetProcessTimes`); unavailable capture never prevents start. The token is replaced on every start, cleared with `pid` on idle reset, and preserved with `clear-terminal --keep-stage` or `reclaim --keep-failed`. After the `needs_reclaim` guard passes, `--kill` checks any recorded non-null token before each termination signal (initial TERM and escalation): a mismatch or unreadable current identity warns on stderr and skips the signal, but fail+clear or `--keep-failed` still proceeds. Missing/null tokens in legacy statuses preserve existing best-effort kill behavior. Only the recorded PID is targeted (not a process group or descendants); identity checks reduce PID reuse risk but cannot eliminate the check/signal race or low-resolution identity collisions. Skipped signals and permission errors mean successful reclaim does not guarantee the worker stopped — verify before relaunching. Without `--kill` no termination signals are sent. Use `--kill --keep-failed` to stop after `failed` without clearing (for watchdog audit before manual `clear-terminal`). The two-step `fail --reason TEXT --if-needs-reclaim` → `clear-terminal` remains available if separate mutation steps are desired (it does not signal processes).
+### `wait`
 
-`clear-terminal` resets `done`/`blocked`/`failed` **and** stuck `queued` (named or idle) back to idle queued, appending a `clear_terminal` event. From `running` it stays illegal — reclaim with `reclaim --kill`, `fail --if-needs-reclaim`, or `fail --if-dead-pid` first. After either mutation, `stage-signal events [--tail N] [--type TYPE] [--json]` is the first-class audit path (human default newest-last, last 20; `--tail 0` = all; `--json` is a JSON array). Do not scrape `events.jsonl` with `tail`/`jq`.
+- `wait --json` prints one object to stdout and **keeps** the exit codes above. Keys: `outcome`, `wanted`, `observed_state` / `state`, `exit_code`, `timeout`, `stage_id`, `dir`, `reason`, `needs_reclaim`, `status`.
+- `wanted` is the `--state` value, or `"needs_reclaim"` when `--needs-reclaim` is set.
+- Top-level `needs_reclaim` matches `status --json` / `doctor --json` (also nested on `status`).
+- `reason` is blocked/failed error text, or a short timeout message; otherwise `null`.
+- `wait --needs-reclaim` polls until that boolean is true (`running` + `DEAD_PID` or `STALE_HEARTBEAT`, same detection as `doctor` / `status --json`).
+- Healthy `running` keeps polling — **do not** treat `status` / `doctor --exit-reclaim` exit `10` as wait success.
+- Terminal without reclaim fails closed: `done` → `1`, `blocked` → `11`, `failed` → `12`.
+- Library: `Stage.wait(..., needs_reclaim=True)`.
+
+### `status`
+
+- Human text by default (heartbeat age only while `running` with a valid heartbeat), e.g. `heartbeat: <ISO> (age 42s)`.
+- `status --json` always includes:
+  - `heartbeat_age_seconds` — number while `running` with a valid heartbeat; otherwise `null`
+  - `needs_reclaim` — same boolean as `doctor --json` (`true` only when `running` and a `DEAD_PID` or `STALE_HEARTBEAT` warning applies)
+
+### `doctor` / `Stage.diagnose()`
+
+Machine-readable health: `ok`, `needs_reclaim`, `state`, `problems`, `warnings` (`[{code, message, detail}]`), `status`, `summary` (`doctor --json` or `--format json`).
+
+- Branch on **`needs_reclaim`**, not on string-matching `summary`, and not on `ok` as a liveness signal.
+- `needs_reclaim` is `true` only when `state == running` and a `DEAD_PID` or `STALE_HEARTBEAT` warning applies; otherwise `false` (healthy running, non-running, missing/unreadable status without reclaim warnings).
+- Reclaim warnings alone keep `ok: true` and exit `0`; exit `1` only on `problems`. `needs_reclaim` is independent of `problems`.
+- Summary may still say `ATTENTION: running needs reclaim` when there are reclaim warnings and no problems.
+- `doctor --exit-reclaim` (for thin shell/watchdogs without `jq`): exit `10` when `needs_reclaim` is true; otherwise existing exits (`0` healthy/warnings, `1` problems, `2` bad args). Without `--exit-reclaim`, doctor stays advisory exit `0` on warnings.
+
+### Dead PID → `fail --if-dead-pid`
+
+Doctor is advisory only. To act on a `DEAD_PID` warning (recovery hint names this flag):
+
+```bash
+stage-signal fail --reason TEXT --if-dead-pid
+```
+
+Hard-fails a `running` stage only after the claiming PID is a valid positive integer **and** confirmed dead. Live / invalid / undeterminable PID → exit `3`, no mutation. Outside `running`, normal fail rules apply.
+
+### Reclaim when `needs_reclaim` is true
+
+Same detection as `doctor` / `status` / `Stage.diagnose()` (`DEAD_PID` **or** `STALE_HEARTBEAT`):
+
+```bash
+stage-signal wait --needs-reclaim
+stage-signal reclaim --reason TEXT --kill
+```
+
+`reclaim --kill` (after the guard passes), under one exclusive lock:
+
+1. Best-effort stop of a still-alive recorded PID: `SIGTERM` → poll up to 1s every 50ms → `SIGKILL` if still alive. Dead / null / invalid / unknown-liveness PIDs get no signal. Permission/OS errors warn on stderr; fail+clear still proceeds.
+2. Write `failed` + reason, then clear to idle `queued` (stage identity cleared). Emits `failed` and `clear_terminal`.
+
+Healthy `running` and non-running states → exit `3`, no signal, no mutation.
+
+**`pid_token`:** `Stage.start` captures an optional opaque process-start identity when available (Linux `/proc/<pid>/stat` field 22, macOS `ps` `lstart` with stable locale/timezone, Windows `GetProcessTimes`). Unavailable capture never blocks start. Replaced on every `start`; cleared with `pid` on idle reset; preserved by `clear-terminal --keep-stage` or `reclaim --keep-failed`. After the reclaim guard, `--kill` re-checks any non-null token before each signal (TERM and escalation): mismatch / unreadable identity → warn and skip signal, but fail+clear / `--keep-failed` still proceeds. Legacy null tokens keep prior best-effort kill behavior.
+
+Only the recorded PID is targeted (not a process group). Identity checks reduce PID-reuse risk; they do not remove the check/signal race or low-resolution collisions. A successful reclaim does **not** guarantee the worker stopped if signals were skipped — verify before relaunch.
+
+- Without `--kill`: no termination signals.
+- `--kill --keep-failed`: stop after `failed` without clearing (watchdog audit, then manual `clear-terminal`).
+- Two-step alternative (no signals): `fail --reason TEXT --if-needs-reclaim` → `clear-terminal`.
+
+### `clear-terminal` and audit
+
+- Resets `done` / `blocked` / `failed` **and** stuck `queued` (named or idle) back to idle `queued`; appends `clear_terminal`.
+- Illegal from `running` — reclaim with `reclaim --kill`, `fail --if-needs-reclaim`, or `fail --if-dead-pid` first.
+- Audit: `stage-signal events [--tail N] [--type TYPE] [--json]` (human default newest-last, last 20; `--tail 0` = all; `--json` = array). Do **not** scrape `events.jsonl` with `tail`/`jq`.
 
 `start --meta` is repeatable and accepts two forms per entry (merged in
 order, later wins):
