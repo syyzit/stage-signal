@@ -442,11 +442,14 @@ concurrency and locking (§13.40), proof gate (§13.41), and PID liveness /
 published package is **0.1.7**, releasing the soak of freezes through §13.42. Action pins (`@v0.1.7`) and the optional PyPI `version` pin
 (`"0.1.7"`) stay aligned with the release.
 
+**1.0 readiness & "done" bar:** The published product is strictly the thin `.stage-signal/` lifecycle contract (CLI, on-disk status, normalized exit codes, and Python library) — not an agent orchestrator, task queue, or multi-agent cockpit. All 42 subsections of SPEC §13 are frozen. The path to 1.0 focuses on 0.1.7 soak stability, SPEC narrative consolidation, and demoting dogfood harnesses to lean caller examples. Full contract freeze map and cut-list: [`docs/ROADMAP-1.0.md`](docs/ROADMAP-1.0.md).
+
 ---
 
 ## Docs
 
 - `docs/SPEC.md` — normative contract (schema, CLI, exit codes)
+- `docs/ROADMAP-1.0.md` — 1.0 readiness map (§13.1–§13.42), cut-list, and done bar
 - `docs/COMPOSE.md` — proof interop (`--proof-ref` / `--require-proof`)
 - `docs/examples/orchestrator.md` — dual-CLI orchestrator example (agy + OpenCode as peers)
 - `docs/RELEASE.md` — release procedure (manual; no upload from agent loops)
