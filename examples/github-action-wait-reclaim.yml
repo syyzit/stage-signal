@@ -41,13 +41,13 @@ jobs:
       - name: Wait for reclaim signal
         id: wait
         continue-on-error: true
-        uses: syyzit/stage-signal@v0.1.6
+        uses: syyzit/stage-signal@v0.1.7
         with:
           dir: .stage-signal
           needs-reclaim: true
           timeout: 3600
           # poll: "5.0"
-          version: "0.1.6"
+          version: "0.1.7"
 
       # Branch 1: Reclaim needed (outcome == 'met', needs-reclaim == 'true', exit-code 0)
       - name: Reclaim needed

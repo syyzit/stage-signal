@@ -6,6 +6,11 @@ See `docs/RELEASE.md` for the release procedure.
 
 ## [Unreleased]
 
+## [0.1.7] — 2026-09-19
+
+Releases the soak of SPEC freezes §13.25–§13.42 plus docs/tests landed since 0.1.6 (PID liveness/`needs_reclaim`, locking, proof gate, observers, dual-CLI harness labeling, and `done --git-head` inherit regressions). Packaging-only; no new runtime features.
+
+
 - Froze PID liveness probe and `needs_reclaim` derivation in SPEC §13.42 with no new exported constants (private `_is_pid_alive` / `_reclaim_diagnostics` reusing the already-frozen `WARNING_CODES`/`WARNING_CODE_*`/`WARNING_KEYS`, `DEFAULT_STALE_THRESHOLD`, and `STATE_RUNNING`), documenting the tri-state probe (`True` alive / `False` dead / `None` unknown) with invalid-input mapping and POSIX `os.kill(pid, 0)` / Windows `OpenProcess`/`GetExitCodeProcess` backends, the exact `DEAD_PID` / `STALE_HEARTBEAT` / `UNPARSEABLE_HEARTBEAT` emission conditions (running-only; `UNPARSEABLE_HEARTBEAT` advisory-only), the `needs_reclaim == (state == running and (DEAD_PID or STALE_HEARTBEAT))` fold excluding unparseable, the `stale_after=None`-disables-heartbeat rule, the probe-never-signals guarantee (signal `0` / read-only queries; `SIGTERM`/`SIGKILL` only via `reclaim --kill`), the frozen message prefixes and `detail` shapes, cross-linking §13.8/§13.12/§13.14/§13.22/§13.23/§13.25/§13.31/§13.35/§13.37/§13.38, leaving `PUBLIC_EXPORTS` at 134 symbols, and guaranteeing additive-only evolution under `schema_version: 1` (#178).
 
 - Labeled the dual-CLI orchestrator guides (`docs/examples/orchestrator.md`, `examples/cli-orchestrator-loop.md`, plus a one-line README pointer) as a dogfood harness example, clarifying the published product is only the thin `.stage-signal/` lifecycle contract (#188).
@@ -251,7 +256,8 @@ GitHub release and tag: [`v0.1.0`](https://github.com/syyzit/stage-signal/releas
 - Stdlib only, Python `>=3.11`. Entry point `stage-signal`
   (`python -m stage_signal` alias).
 
-[Unreleased]: https://github.com/syyzit/stage-signal/compare/v0.1.6...HEAD
+[Unreleased]: https://github.com/syyzit/stage-signal/compare/v0.1.7...HEAD
+[0.1.7]: https://github.com/syyzit/stage-signal/compare/v0.1.6...v0.1.7
 [0.1.6]: https://github.com/syyzit/stage-signal/compare/v0.1.5...v0.1.6
 [0.1.5]: https://github.com/syyzit/stage-signal/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/syyzit/stage-signal/compare/v0.1.3...v0.1.4
