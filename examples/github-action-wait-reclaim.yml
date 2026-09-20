@@ -22,7 +22,7 @@
 #   reason                   (blocked/failed text, or timeout message)
 #   json                     (raw wait --json payload)
 #
-# Pin the action ref (@v0.1.7) independently of the optional `version` pip pin.
+# Pin the action ref (@v1.0.0) independently of the optional `version` pip pin.
 # Omitting `version` installs the release the pinned action ref ships with --
 # never "whatever is newest". Once 1.0 ships, a floating `@v1` tag will follow
 # backwards-compatible 1.x action fixes; use an exact tag for reproducibility.
@@ -46,13 +46,13 @@ jobs:
       - name: Wait for reclaim signal
         id: wait
         continue-on-error: true
-        uses: syyzit/stage-signal@v0.1.7
+        uses: syyzit/stage-signal@v1.0.0
         with:
           dir: .stage-signal
           needs-reclaim: true
           timeout: 3600
           # poll: "5.0"
-          version: "0.1.7"
+          version: "1.0.0"
 
       # Branch 1: Reclaim needed (outcome == 'met', needs-reclaim == 'true', exit-code 0)
       - name: Reclaim needed

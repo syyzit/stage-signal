@@ -287,7 +287,7 @@ No preinstalled venv needed — the composite action installs `stage-signal`
 from PyPI then runs `stage-signal wait`:
 
 ```yaml
-- uses: syyzit/stage-signal@v0.1.7
+- uses: syyzit/stage-signal@v1.0.0
   with:
     dir: .stage-signal   # default
     state: terminal      # done | blocked | failed | terminal (default)
@@ -295,7 +295,7 @@ from PyPI then runs `stage-signal wait`:
     timeout: 3600        # seconds (default)
     # poll: 5.0          # poll interval in seconds (default: CLI default 5.0)
     # python-version: "3.12"  # default
-    version: "0.1.7"          # PyPI pin; defaults to the version this ref ships
+    version: "1.0.0"          # PyPI pin; defaults to the version this ref ships
                               # with. Pass "latest" to track the newest release.
     # pip-cache: true         # optional boolean for pip caching (default: false)
     # cache: "pip"            # optional setup-python cache (default: "")
@@ -318,7 +318,7 @@ Because non-zero exit codes (11 blocked, 12 failed, 14 timeout, 1 done-without-r
 ```yaml
 - name: Wait for milestone
   id: wait
-  uses: syyzit/stage-signal@v0.1.7
+  uses: syyzit/stage-signal@v1.0.0
   continue-on-error: true
   with:
     state: terminal
@@ -355,7 +355,7 @@ In CI watchdogs, gate on the reclaim condition without writing cron/sleep loops 
 ```yaml
 - name: Wait for reclaim signal
   id: wait
-  uses: syyzit/stage-signal@v0.1.7
+  uses: syyzit/stage-signal@v1.0.0
   continue-on-error: true
   with:
     needs-reclaim: true
@@ -382,7 +382,7 @@ In CI watchdogs, gate on the reclaim condition without writing cron/sleep loops 
     echo "Stage reached terminal state without reclaim: state=${{ steps.wait.outputs.state }} exit_code=${{ steps.wait.outputs.exit-code }}"
 ```
 
-See [`examples/github-action-wait.yml`](examples/github-action-wait.yml) and [`examples/github-action-wait-reclaim.yml`](examples/github-action-wait-reclaim.yml) for complete copyable workflows that wait on an existing `.stage-signal/` directory and branch on `done` / `blocked` / `failed` / `timeout` / `reclaim-needed`. The composite action's steps use `shell: bash` (available on GitHub-hosted Ubuntu, macOS, and Windows runners). **Pinning.** The action ref and the PyPI `version` input are independent pins, and both default to something explicit: `uses: syyzit/stage-signal@v0.1.7` selects the action source, `version: "0.1.7"` selects the installed package. If `version` is omitted, the action installs the release its own ref ships with — never "whatever is newest" — so a pinned `uses:` cannot silently pick up a future release. Pass `version: latest` if you *want* to track the newest release.
+See [`examples/github-action-wait.yml`](examples/github-action-wait.yml) and [`examples/github-action-wait-reclaim.yml`](examples/github-action-wait-reclaim.yml) for complete copyable workflows that wait on an existing `.stage-signal/` directory and branch on `done` / `blocked` / `failed` / `timeout` / `reclaim-needed`. The composite action's steps use `shell: bash` (available on GitHub-hosted Ubuntu, macOS, and Windows runners). **Pinning.** The action ref and the PyPI `version` input are independent pins, and both default to something explicit: `uses: syyzit/stage-signal@v1.0.0` selects the action source, `version: "1.0.0"` selects the installed package. If `version` is omitted, the action installs the release its own ref ships with — never "whatever is newest" — so a pinned `uses:` cannot silently pick up a future release. Pass `version: latest` if you *want* to track the newest release.
 
 Once 1.0 ships, a floating `v1` tag will be maintained alongside the exact `v1.x.y` tags: `uses: syyzit/stage-signal@v1` follows every backwards-compatible 1.x action fix (the usual GitHub Actions convention), while `@v1.2.3` stays byte-exact. Because the `version` default moves with the action source, `@v1` also tracks the matching package release. Use `@v1` for convenience, an exact tag (or a commit SHA) when you need reproducibility. Waiting for `terminal` or `--needs-reclaim` with `continue-on-error: true` keeps 11/12/14/1 from collapsing into a generic failed step so later `if:` branches can read `state` / `timed-out` / `needs-reclaim` / `reason`.
 
@@ -431,7 +431,7 @@ Agent UIs and chat transcripts are for humans. Orchestrators need a stable, bori
 
 ## Status
 
-0.1.7: library (`src/stage_signal/`), full CLI (`init`, `start`,
+1.0.0: library (`src/stage_signal/`), full CLI (`init`, `start`,
 `heartbeat`, `note`, `artifact`, `done`, `blocked`, `fail`, `status`,
 `wait`, `clear-terminal`, `doctor`), unit + concurrency tests,
 `examples/dogfood/orchestrator-watchdog.sh` (+ `examples/orchestrator-smoke.sh`),
@@ -452,8 +452,8 @@ needs-reclaim branches.
 doctor / wait observers (§13.35–§13.38), `.orch` mirror (§13.39),
 concurrency and locking (§13.40), proof gate (§13.41), and PID liveness /
 `needs_reclaim` derivation (§13.42) — while the
-published package is **0.1.7**, releasing the soak of freezes through §13.42. Action pins (`@v0.1.7`) and the optional PyPI `version` pin
-(`"0.1.7"`) stay aligned with the release.
+published package is **1.0.0**, releasing the soak of freezes through §13.42. Action pins (`@v1.0.0`) and the optional PyPI `version` pin
+(`"1.0.0"`) stay aligned with the release.
 
 **1.0 readiness & "done" bar:** The published product is strictly the thin `.stage-signal/` lifecycle contract (CLI, on-disk status, normalized exit codes, and Python library) — not an agent orchestrator, task queue, or multi-agent cockpit. All 42 subsections of SPEC §13 are frozen; the remaining pre-1.0 work is caller-facing docs accuracy, Action hygiene, and turning "soaked across platforms" from an assertion into CI jobs (see above) — not new freezes. Full contract freeze map and cut-list: [`docs/ROADMAP-1.0.md`](docs/ROADMAP-1.0.md).
 

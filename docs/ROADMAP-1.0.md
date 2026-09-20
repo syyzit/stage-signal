@@ -140,7 +140,9 @@ The release of **1.0.0** is achieved when the following criteria are satisfied:
    - *Status:* **Done** (#201, #207).
 3. **Examples Streamlined:**
    - Bloated dogfood harness scripts and documents listed in the cut-list are demoted or archived; only lean, caller-focused integration examples remain.
-4. **0.1.7 Soak Validation:**
+4. **0.1.7 Soak Validation:** ✅ *(superseded by 1.0.0 — falsifiable soak CI on main + cut-list #210)*
+
+   ~~Legacy text:~~
    - The 0.1.7 release (shipping freezes through §13.42) completes its soak period across all target platforms (Linux, macOS, Windows) and coding agents (Antigravity, OpenCode, Claude Code, Cursor, human shell) with zero breaking issues or freeze churn.
 5. **Zero Open Normative Issues:**
    - All 616 unit/concurrency tests remain clean and green with 100% coverage of frozen constants and public exports.

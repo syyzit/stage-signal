@@ -43,12 +43,12 @@ inputs:
     default: '3.12'
   version:
     description: >-
-      stage-signal version to install from PyPI. A bare version ("0.1.7") is
-      pinned with "=="; a constraint (">=0.1.7", "~=0.1.7") is passed through.
+      stage-signal version to install from PyPI. A bare version ("1.0.0") is
+      pinned with "=="; a constraint (">=1.0.0", "~=1.0.0") is passed through.
       Defaults to the version this action ref ships with. Pass "latest" to
       install the newest release instead.
     required: false
-    default: '0.1.7'
+    default: '1.0.0'
   cache:
     description: 'Dependency cache for actions/setup-python (e.g. "pip", or "" to disable)'
     required: false

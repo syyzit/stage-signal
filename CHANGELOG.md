@@ -6,6 +6,9 @@ See `docs/RELEASE.md` for the release procedure.
 
 ## [Unreleased]
 
+## [1.0.0] — 2026-09-20
+
+- **1.0.0** — first stable release of the thin stage-lifecycle contract (SPEC §13.1–§13.42 frozen). Packaging and docs/Action hygiene from the pre-1.0 cut-list (#209/#210). No breaking CLI/API change vs 0.1.7; classifier is Production/Stable. Floating Action tag `@v1` tracks this line.
 - Windows: skip POSIX `bash` docs-execute tests on win32 (WSL stub breaks `bash -n`; wheel smoke still covers Windows) (#210 follow-up)
 
 - Pre-1.0 cut-list: fixed the two `docs/CALLER.md` defects an external caller hits first (the `artifact --kind ... --path ...` invocation that exits `2`, now `artifact changes.diff --label patch`; and `supervise` shown mid-wrapper before `done`, now documented as the *terminal* path it is, with the "don't branch on supervise's exit code" caveat from SPEC §13.24); documented the **stale-terminal `wait` race** (a leftover terminal state from the previous stage satisfies `wait --state terminal` immediately — `clear-terminal` or assert `stage_id`) and the adjacent `done`-from-idle-`queued` route (SPEC §13.30) in both `docs/CALLER.md` and the README `wait` section; told adopters to gitignore `.stage-signal/` in the README quick start; hardened `action.yml` by passing every input through `env:` instead of interpolating it into the composite `run:` block, flattening **all** scalar `$GITHUB_OUTPUT` writes (not just `reason`) so a newline in a stage name cannot forge `state=done`, and defaulting the `version` input to the release the action ref ships with (`0.1.7`, with `latest` opting back into unpinned); pinned `version:` in both Action examples and documented the post-1.0 floating `@v1` tag convention (docs only — no tag published); flipped the PyPI classifier from `3 - Alpha` to `5 - Production/Stable` and added Python 3.14. Soak evidence replaces assertion: new `tests/test_packaging.py` locks `__version__` against `pyproject.toml`, installed distribution metadata and `--version`; new `tests/test_docs_examples.py` parses every `stage-signal` invocation in README/CALLER against the real argparse parser and executes the documented patterns end-to-end; new CI jobs install the built wheel into a clean venv and run `examples/orchestrator-smoke.sh` across ubuntu/macOS/Windows, execute the doc examples, and (`.github/workflows/action.yml`) run the composite action via `uses: ./` on a real runner over the done / blocked / failed / timeout / needs-reclaim branches plus an output-injection regression. No SPEC §13 changes, no new frozen surface, no version bump (#209).
@@ -25,6 +28,7 @@ See `docs/RELEASE.md` for the release procedure.
 - Docs: demote orchestrator-watchdog into dogfood (`examples/dogfood/orchestrator-watchdog.sh`), updating docs, dogfood guides, and regression tests to leave only canonical acceptance smokes and CI workflows in root `examples/` (#202).
 
 - Docs: purge private harness recipes from CONTRIBUTING, require pytest and orchestrator-smoke only, genericize README meta example, and mark demoted cut-list rows in ROADMAP-1.0 as done (#205).
+
 
 ## [0.1.7] — 2026-09-19
 
@@ -276,7 +280,8 @@ GitHub release and tag: [`v0.1.0`](https://github.com/syyzit/stage-signal/releas
 - Stdlib only, Python `>=3.11`. Entry point `stage-signal`
   (`python -m stage_signal` alias).
 
-[Unreleased]: https://github.com/syyzit/stage-signal/compare/v0.1.7...HEAD
+[Unreleased]: https://github.com/syyzit/stage-signal/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/syyzit/stage-signal/compare/v0.1.7...v1.0.0
 [0.1.7]: https://github.com/syyzit/stage-signal/compare/v0.1.6...v0.1.7
 [0.1.6]: https://github.com/syyzit/stage-signal/compare/v0.1.5...v0.1.6
 [0.1.5]: https://github.com/syyzit/stage-signal/compare/v0.1.4...v0.1.5
