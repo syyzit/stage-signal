@@ -33,6 +33,14 @@ from stage_signal.cli import build_parser
 ROOT = Path(__file__).resolve().parent.parent
 DOC_FILES = ["README.md", "docs/CALLER.md"]
 
+# Docs fences are POSIX sh/bash. On Windows GitHub runners `bash` is often the
+# WSL install stub (UTF-16 "install me" message, exit 1) — not a real shell.
+# Product behavior on Windows is covered by the wheel smoke job + core suite.
+needs_posix_bash = pytest.mark.skipif(
+    sys.platform == "win32" or shutil.which("bash") is None,
+    reason="POSIX bash required (Windows covered by smoke-from-wheel)",
+)
+
 _FENCE = re.compile(r"^```(\w*)\s*$")
 # Shell expansions we cannot evaluate statically. "0" keeps the surrounding
 # argv shape intact and satisfies both string and numeric argparse types
@@ -142,7 +150,7 @@ def test_documented_command_parses(command: str, source: str) -> None:
             )
 
 
-@pytest.mark.skipif(shutil.which("bash") is None, reason="bash not available")
+@needs_posix_bash
 @pytest.mark.parametrize(
     "source,block",
     _doc_blocks(("bash", "sh", "shell")),
@@ -180,7 +188,7 @@ def _run_script(script: str, cwd: Path, env: dict[str, str]) -> subprocess.Compl
     )
 
 
-@pytest.mark.skipif(shutil.which("bash") is None, reason="bash not available")
+@needs_posix_bash
 def test_caller_agent_wrapper_runs_to_done(tmp_path: Path, shell_env: dict[str, str]) -> None:
     """docs/CALLER.md §3: init -> start -> note -> artifact -> done, exit 0 throughout."""
     work = tmp_path / "work"
@@ -200,7 +208,7 @@ stage-signal status --json
     assert '"state": "done"' in proc.stdout
 
 
-@pytest.mark.skipif(shutil.which("bash") is None, reason="bash not available")
+@needs_posix_bash
 def test_caller_supervise_is_terminal(tmp_path: Path, shell_env: dict[str, str]) -> None:
     """docs/CALLER.md §3 alternative path: supervise concludes the stage itself.
 
@@ -225,7 +233,7 @@ stage-signal supervise --every 30 -- true
     assert after.returncode == 3, (after.returncode, after.stdout, after.stderr)
 
 
-@pytest.mark.skipif(shutil.which("bash") is None, reason="bash not available")
+@needs_posix_bash
 def test_caller_wait_exit_codes(tmp_path: Path, shell_env: dict[str, str]) -> None:
     """docs/CALLER.md §1 summary table.
 
@@ -269,7 +277,7 @@ def test_caller_wait_exit_codes(tmp_path: Path, shell_env: dict[str, str]) -> No
     assert timeout.returncode == 14, (timeout.returncode, timeout.stderr)
 
 
-@pytest.mark.skipif(shutil.which("bash") is None, reason="bash not available")
+@needs_posix_bash
 def test_stale_terminal_race_and_documented_workaround(
     tmp_path: Path, shell_env: dict[str, str]
 ) -> None:
@@ -300,7 +308,7 @@ def test_stale_terminal_race_and_documented_workaround(
     assert cleared.returncode == 14, (cleared.returncode, cleared.stderr)
 
 
-@pytest.mark.skipif(shutil.which("bash") is None, reason="bash not available")
+@needs_posix_bash
 def test_done_is_legal_from_idle_queued(tmp_path: Path, shell_env: dict[str, str]) -> None:
     """The second route to an unearned `done` the docs now name (SPEC §13.30)."""
     work = tmp_path / "work"
