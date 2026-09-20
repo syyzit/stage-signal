@@ -6,6 +6,8 @@ See `docs/RELEASE.md` for the release procedure.
 
 ## [Unreleased]
 
+- Action: `version: local` (or `.`) installs the checked-out source (`pip install "$GITHUB_WORKSPACE"`) instead of the PyPI pin, and the soak workflow (`.github/workflows/action.yml`) passes it on every `uses: ./` step. On the 1.0.0 release commit the soak failed on `main` because the action's default `version` pin was not on PyPI yet, so the install waited, `$GITHUB_OUTPUT` stayed empty, and every matrix assert failed. External callers (`uses: syyzit/stage-signal@v1`) keep the pinned PyPI default (#211).
+
 ## [1.0.0] — 2026-09-20
 
 - **1.0.0** — first stable release of the thin stage-lifecycle contract (SPEC §13.1–§13.42 frozen). Packaging and docs/Action hygiene from the pre-1.0 cut-list (#209/#210). No breaking CLI/API change vs 0.1.7; classifier is Production/Stable. Floating Action tag `@v1` tracks this line.

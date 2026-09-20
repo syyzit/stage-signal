@@ -450,6 +450,23 @@ def test_action_yml_pins_a_default_version() -> None:
     )
 
 
+def test_action_yml_supports_a_local_install() -> None:
+    """A release commit's pinned version is not on PyPI yet (#211)."""
+    content = ACTION_YML.read_text(encoding="utf-8")
+    assert '[ "$VERSION" = "local" ] || [ "$VERSION" = "." ]' in content
+    assert 'pip install "$GITHUB_WORKSPACE"' in content
+
+
+def test_soak_workflow_installs_the_checked_out_source() -> None:
+    """`uses: ./` must not install from PyPI, or the soak races the release."""
+    content = (ROOT / ".github" / "workflows" / "action.yml").read_text(encoding="utf-8")
+    uses_local = content.count("uses: ./")
+    assert uses_local >= 2
+    assert content.count("version: local") == uses_local, (
+        "every `uses: ./` step must pass `version: local`"
+    )
+
+
 def _forge_payload(tmp_path: Path, stage_id: str) -> Path:
     payload = tmp_path / "wait.json"
     payload.write_text(

@@ -1,7 +1,8 @@
 name: 'stage-signal wait'
 description: >-
   Wait on a stage-signal stage without a preinstalled venv.
-  Installs stage-signal from PyPI then runs
+  Installs stage-signal from PyPI (or, with `version: local`, from the
+  checked-out source) then runs
   `stage-signal --dir <dir> wait --state <state> --timeout <timeout>`
   or `stage-signal --dir <dir> wait --needs-reclaim --timeout <timeout>`.
   Exposes step outputs (state, outcome, exit-code, timed-out, stage-id,
@@ -46,7 +47,10 @@ inputs:
       stage-signal version to install from PyPI. A bare version ("1.0.0") is
       pinned with "=="; a constraint (">=1.0.0", "~=1.0.0") is passed through.
       Defaults to the version this action ref ships with. Pass "latest" to
-      install the newest release instead.
+      install the newest release instead, or "local" (or ".") to install the
+      checked-out source at $GITHUB_WORKSPACE instead of PyPI — for repos that
+      run this action with `uses: ./`, where the pinned release may not be on
+      PyPI yet.
     required: false
     default: '1.0.0'
   cache:
@@ -121,7 +125,9 @@ runs:
       run: |
         python -m pip install --upgrade pip
         VERSION=$(printf '%s' "$INPUT_VERSION" | tr -d '[:space:]')
-        if [ -z "$VERSION" ] || [ "$VERSION" = "latest" ]; then
+        if [ "$VERSION" = "local" ] || [ "$VERSION" = "." ]; then
+          pip install "$GITHUB_WORKSPACE"
+        elif [ -z "$VERSION" ] || [ "$VERSION" = "latest" ]; then
           pip install stage-signal
         else
           case "$VERSION" in
