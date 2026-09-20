@@ -2,46 +2,52 @@
 
 **Schema version:** `1`
 **Ship name:** `stage-signal` · **Language:** Python 3.11+ stdlib-first
-**Source of truth:** Under `schema_version: 1`, **[§13 (Appendix: schema_version 1 compatibility)](#13-appendix-schema_version-1-compatibility-normative)** is the sole normative specification locking all schemas, transitions, event formats, exit codes, and public interfaces. Sections 1–12 provide a concise architecture overview that delegates all normative assertions to §13. Background research lives in `docs/PRIOR_ART.md`.
+**Source of truth:** Under `schema_version: 1`, **[§13 (Appendix: schema_version 1 compatibility)](#13-appendix-schema_version-1-compatibility-normative)** is the sole normative specification. It locks every schema, transition, event format, exit code, and public interface.
+
+> **Reading note.** Sections 1–12 are a **non-normative architecture overview**. They exist to orient a reader and to index §13; they intentionally state no rule of their own. Every sentence, diagram, and table below is a summary of some frozen subsection, and each carries a §13 citation. **Where an overview sentence and §13 disagree, §13 wins** — report the divergence as a documentation bug rather than a contract change. Background research lives in `docs/PRIOR_ART.md`; caller recipes live in `docs/CALLER.md`.
 
 ## 1. Overview
 
-`stage-signal` is a thin, dependency-free filesystem and CLI lifecycle contract between autonomous coding agents and outer observers (watchdogs, CI runners, cron jobs, human developers). Agents mutate execution lifecycle state on disk; observers inspect snapshots and await terminal or health conditions without attaching to a terminal UI (TUI) or managing complex daemon processes.
+`stage-signal` is a thin, dependency-free filesystem and CLI lifecycle contract between autonomous coding agents and outer observers (watchdogs, CI runners, cron jobs, human developers). Agents mutate execution lifecycle state on disk; observers inspect snapshots and await terminal or health conditions without attaching to a terminal UI (TUI) or managing a daemon.
 
-- **Additive-only policy:** Evolution under schema version 1 is strictly additive (§13.1).
-- **Public API inventory:** Complete symbol exports and class definitions are frozen in §13.20 and §13.21.
-- **Product scope:** The product boundary is strictly the `.stage-signal/` contract, CLI, and Python library (see `docs/ROADMAP-1.0.md`).
+- **Additive-only policy:** evolution under schema version 1 — §13.1.
+- **Public API inventory:** symbol exports and class surface — §13.20, §13.21.
+- **Product scope:** the boundary is the `.stage-signal/` contract, the CLI, and the Python library — `docs/ROADMAP-1.0.md`.
 
 ## 2. On-disk layout
 
-All lifecycle state resides in a local filesystem directory (default `.stage-signal/` at the repository root). Writes are atomic (temporary file in directory + `os.replace`), and operations are serialized across processes using filesystem locks without third-party dependencies.
+Lifecycle state lives in a local directory (default `.stage-signal/` at the repository root). Status publication is atomic (temp file in the same directory, then `os.replace`); operations serialize across processes with stdlib filesystem locks.
 
 ```
 .stage-signal/
-  STATUS.json        # Normative single-object status snapshot (§13.2, §13.3)
+  STATUS.json        # Single-object status snapshot (§13.2, §13.3)
   STATUS.md          # Best-effort human markdown mirror (§13.18)
   events.jsonl       # Append-only audit log, one JSON object per line (§13.5, §13.6)
   locks/stage.lock   # Concurrency lockfile (POSIX fcntl, Windows msvcrt; §13.40)
 ```
 
-- **Canonical paths:** Directory and file name constants (`DEFAULT_DIR_NAME`, `STATUS_FILENAME`, `STATUS_MD_FILENAME`, `EVENTS_FILENAME`, `LOCKS_DIRNAME`, `LOCK_FILENAME`, `DEFAULT_MIRROR_DIRNAME`) are frozen in §13.13.
-- **Environment overrides:** Directory resolution via `STAGE_SIGNAL_DIR` and other environment fallbacks are frozen in §13.14.
-- **Human mirror contract:** `STATUS.md` rendering and required section headings are frozen in §13.18.
-- **Concurrency & locking:** POSIX `fcntl.flock`, Windows `msvcrt.locking`, and atomicity semantics are frozen in §13.40.
+- **Canonical paths:** `DEFAULT_DIR_NAME`, `STATUS_FILENAME`, `STATUS_MD_FILENAME`, `EVENTS_FILENAME`, `LOCKS_DIRNAME`, `LOCK_FILENAME`, `DEFAULT_MIRROR_DIRNAME` — §13.13.
+- **Environment overrides:** `STAGE_SIGNAL_DIR` and directory resolution — §13.14.
+- **Human mirror:** `STATUS.md` rendering and required headings — §13.18.
+- **Concurrency & atomicity:** locking, atomic replace, torn-read tolerance — §13.40.
 
-## 3. STATUS.json schema (schema_version 1)
+## 3. STATUS.json
 
-`STATUS.json` is the single source of truth for the active or most recent stage attempt. It records identity, lifecycle state, process claims, timing, notes, artifacts, and terminal result or error details. Machine-readable read snapshots dynamically compute unpersisted liveness metrics (`heartbeat_age_seconds` and `needs_reclaim`).
+`STATUS.json` describes the active or most recent stage attempt: identity, lifecycle state, process claim, timing, notes, artifacts, and terminal result or error. Read snapshots additionally expose liveness fields that are computed at read time rather than persisted (`heartbeat_age_seconds`, `needs_reclaim`).
 
-- **Additive evolution:** Existing keys and value semantics are immutable under schema version 1 (§13.1).
-- **Persisted schema:** Exactly 23 required top-level keys (`STATUS_REQUIRED_KEYS`) plus optional `pid_token` are frozen in §13.2.
-- **Read snapshot schema:** The serialized JSON contract and dynamic fields (`STATUS_JSON_KEYS`) are frozen in §13.3 and §13.35.
-- **Artifacts and notes:** List entry schemas (`ARTIFACT_ENTRY_KEYS`, `NOTE_ENTRY_KEYS`) and the `MAX_NOTES` (200) FIFO cap are frozen in §13.7, §13.28, and §13.29.
-- **Result and error objects:** Shape, kinds, and clearing semantics (`RESULT_KEYS`, `ERROR_KEYS`, `ERROR_KINDS`) are frozen in §13.9, §13.30, §13.31, and §13.32.
-- **Proof metadata:** Verification object keys and status values (`PROOF_KEYS`, `PROOF_VERIFIED_VALUES`) are frozen in §13.10 and §13.41.
-- **Dynamic fields:** `heartbeat_age_seconds` calculation and `needs_reclaim` derivation are frozen in §13.35.3 and §13.42.
+- **Additive evolution:** existing keys and value semantics — §13.1.
+- **Persisted schema:** `STATUS_REQUIRED_KEYS` (23 keys) plus optional `pid_token` — §13.2.
+- **Read snapshot:** `STATUS_JSON_KEYS` and dynamic fields — §13.3, §13.35.
+- **Artifacts and notes:** `ARTIFACT_ENTRY_KEYS`, `NOTE_ENTRY_KEYS`, `MAX_NOTES` FIFO cap — §13.7, §13.28, §13.29.
+- **Result and error objects:** `RESULT_KEYS`, `ERROR_KEYS`, `ERROR_KINDS` and clearing semantics — §13.9, §13.30–§13.32.
+- **Proof metadata:** `PROOF_KEYS`, `PROOF_VERIFIED_VALUES` — §13.10, §13.41.
+- **Dynamic fields:** `heartbeat_age_seconds`, `needs_reclaim` derivation — §13.35.3, §13.42.
 
 ## 4. States & transitions
+
+The lifecycle has two non-terminal states (`queued`, `running`) and three terminal states (`done`, `blocked`, `failed`). Transitions are validated under an exclusive lock.
+
+The diagram below is illustrative only; the authoritative edge set is the matrix in §13.19.
 
 ```
             ┌──────────────────────────────┐
@@ -59,34 +65,34 @@ All lifecycle state resides in a local filesystem directory (default `.stage-sig
         └──────────┘ └──────────┘ └──────────┘
 ```
 
-The lifecycle state machine partitions into two non-terminal states (`queued`, `running`) and three terminal states (`done`, `blocked`, `failed`). Transitions are strictly validated under an exclusive lock. Mutators reject illegal state transitions with exit 3.
-
-- **Lifecycle states & terminal set:** Canonical state definitions (`STATES`, `TERMINAL_STATES`) are frozen in §13.12.
-- **Transition matrix:** The complete allowed transition table (`ALLOWED_TRANSITIONS`) and predicates are frozen in §13.19.
-- **Bootstrap (`init`):** Idempotent setup, project resolution, and initial queued state are frozen in §13.34.
-- **Claim work (`start`):** Transitioning from any state to `running`, PID token capture, and retry attempt counters are frozen in §13.33.
-- **Liveness (`heartbeat`):** Updating heartbeat timestamps and optional progress notes while `running` is frozen in §13.27.
-- **Progress append (`note`):** Appending audit notes with FIFO rotation is frozen in §13.28.
-- **Artifact recording (`artifact`):** Appending file artifacts with path validation is frozen in §13.29.
-- **Success (`done`):** Terminal completion, idempotent retry, `--accept-failure` handling, and proof verification gates are frozen in §13.30 and §13.41.
-- **Failure (`fail`):** Terminal error recording and guarded watchdog transitions (`--if-dead-pid`, `--if-needs-reclaim`) are frozen in §13.31.
-- **Blockage (`blocked`):** Terminal obstacle recording is frozen in §13.32.
-- **Watchdog recovery (`reclaim`):** One-shot fail-and-clear transitions with optional `--kill` process termination are frozen in §13.25.
-- **Reset and abandon (`clear-terminal`):** Returning terminal or queued stages to idle queued state is frozen in §13.26.
-- **Liveness & staleness detection:** Advisory PID liveness checks, stale thresholds, and `needs_reclaim` rules are frozen in §13.42.
+- **States & terminal set:** `STATES`, `TERMINAL_STATES` — §13.12.
+- **Transition matrix:** `ALLOWED_TRANSITIONS` and predicates, including rejection of illegal edges — §13.19.
+- **Bootstrap (`init`):** idempotent setup, project resolution, initial queued state — §13.34.
+- **Claim work (`start`):** entry into `running`, PID token capture, attempt counters — §13.33.
+- **Liveness (`heartbeat`):** heartbeat timestamps and optional progress note — §13.27.
+- **Progress (`note`):** audit note append with FIFO rotation — §13.28.
+- **Artifacts (`artifact`):** file artifact append with path validation — §13.29.
+- **Success (`done`):** terminal completion, idempotent retry, `--accept-failure`, proof gate — §13.30, §13.41.
+- **Failure (`fail`):** terminal error recording, guarded `--if-dead-pid` / `--if-needs-reclaim` — §13.31.
+- **Blockage (`blocked`):** terminal obstacle recording — §13.32.
+- **Recovery (`reclaim`):** one-shot fail-and-clear with optional `--kill` — §13.25.
+- **Reset (`clear-terminal`):** returning terminal or queued stages to idle — §13.26.
+- **Staleness detection:** advisory PID liveness, stale thresholds, `needs_reclaim` — §13.42.
 
 ## 5. events.jsonl
 
-`events.jsonl` provides an immutable, append-only chronological audit log of all stage mutations. Every state transition or progress update appends exactly one JSON record (or two for default `reclaim`) flushed and fsynced to disk under lock. Callers access events via high-level query APIs rather than scraping raw files.
+`events.jsonl` is an append-only chronological audit log of stage mutations. Records are appended under lock, flushed, and fsynced. Callers read events through the query API rather than scraping the file.
 
-- **Event types:** The complete 9-type vocabulary (`EVENT_TYPES`) is frozen in §13.5.
-- **Record schema:** Key requirements for event dictionaries (`EVENT_RECORD_KEYS`, `EVENTS_JSON_KEYS`) are frozen in §13.6.
-- **Event query contract:** Non-mutating read snapshots, chronological ordering (newest last), type filtering before tailing, and CLI defaults (`EVENTS_DEFAULT_TAIL`) are frozen in §13.36.
-- **Append durability:** Locked appending, buffer flush, and `os.fsync` for durability are frozen in §13.40.5.
+- **Event types:** the 9-type vocabulary `EVENT_TYPES` — §13.5.
+- **Record schema:** `EVENT_RECORD_KEYS`, `EVENTS_JSON_KEYS` — §13.6.
+- **Query contract:** non-mutating snapshots, ordering (newest last), type filtering before tailing, `EVENTS_DEFAULT_TAIL` — §13.36.
+- **Append durability:** locked append, flush, `os.fsync` — §13.40.5.
 
 ## 6. CLI contract
 
-The command-line interface provides consistent subcommands for mutating stage state and observing execution progress. Commands adhere to strict argument validation and return normalized exit codes for shell scripting.
+The CLI exposes one subcommand per lifecycle mutation plus four observer commands (`status`, `events`, `wait`, `doctor`) and a child-process wrapper (`supervise`).
+
+The synopsis below is a **non-normative** reading aid. The frozen inventory is `CLI_SUBCOMMANDS` (§13.15), and each command's argument rules live in the per-command freezes cited beneath it.
 
 ```
 stage-signal [--dir PATH] <command> [args]
@@ -112,17 +118,19 @@ stage-signal supervise [--every SEC] [--dir DIR] [--summary SUMMARY] [--reason R
              [--write-status-mirror] -- CMD [ARGS...]
 ```
 
-- **Subcommand inventory:** All 15 public subcommands (`CLI_SUBCOMMANDS`) are frozen in §13.15.
-- **Mutator CLI contracts:** Detailed argument rules and state mutations are frozen across §13.25–§13.34.
-- **Status inspection (`status`):** Human text output and `--json` dictionary contract are frozen in §13.35.
-- **Audit query (`events`):** Chronological tail, type filtering, and `--json` array output are frozen in §13.36.
-- **Diagnostic inspection (`doctor`):** Advisory checks, warning codes (`WARNING_CODES`), summary strings (`DOCTOR_SUMMARY_*`), `--exit-reclaim` (exit 10), and `--json` format are frozen in §13.8, §13.22, and §13.37.
-- **Observer polling (`wait`):** Non-mutating polling, wait vocabulary (`WAIT_CHOICES`, `WAIT_WANT_NEEDS_RECLAIM`), outcome enumerations (`WAIT_OUTCOMES`), timeout handling, and `--json` payload schema (`WAIT_JSON_KEYS`) are frozen in §13.11, §13.23, and §13.38.
-- **Child supervision (`supervise`):** Process spawning, PID adoption, automated heartbeat pumping, signal forwarding, and child exit code propagation are frozen in §13.24.
+- **Subcommand inventory:** all 15 public subcommands (`CLI_SUBCOMMANDS`) — §13.15.
+- **Mutators:** per-command argument rules and state effects — §13.25–§13.34.
+- **`status`:** human output and `--json` dictionary — §13.35.
+- **`events`:** tail, type filtering, `--json` array — §13.36.
+- **`doctor`:** advisory checks, `WARNING_CODES`, `DOCTOR_SUMMARY_*`, `--exit-reclaim` — §13.8, §13.22, §13.37.
+- **`wait`:** poll loop, `WAIT_CHOICES` / `WAIT_WANT_NEEDS_RECLAIM`, `WAIT_OUTCOMES`, timeout, `WAIT_JSON_KEYS` — §13.11, §13.23, §13.38.
+- **`supervise`:** child spawn, PID adoption, heartbeat pumping, signal forwarding, exit propagation — §13.24.
 
-## 7. Exit codes (part of the contract)
+## 7. Exit codes
 
-Exit codes form a rigid API contract across CLI commands. Mutators exit 0 on success; observer commands map stage states to standardized non-zero exit codes to enable direct branching in shell scripts (`if stage-signal status; ...`).
+Exit codes are a scripting API: mutators exit 0 on success, and observer commands map the stage state to a distinct non-zero code so a caller can branch directly on `stage-signal status`.
+
+The table below is a **non-normative** summary of the frozen values in §13.4 and the state mapping in §13.16.
 
 | Code | Constant | Meaning |
 |------|----------|---------|
@@ -134,43 +142,44 @@ Exit codes form a rigid API contract across CLI commands. Mutators exit 0 on suc
 | 11 | `EXIT_STATE_BLOCKED` | Observed state is `blocked` |
 | 12 | `EXIT_STATE_FAILED` | Observed state is `failed` |
 | 13 | `EXIT_STATE_QUEUED` | Observed state is `queued` |
-| 14 | `EXIT_WAIT_TIMEOUT` | Observer `wait` timed out before condition was met |
+| 14 | `EXIT_WAIT_TIMEOUT` | Observer `wait` timed out before the condition was met |
 | 15 | `EXIT_NOT_INITIALIZED` | Stage directory or `STATUS.json` is missing / uninitialized |
 
-- **Exit code table:** Canonical numerical values (`EXIT_CODES`) are frozen in §13.4.
-- **State mapping:** The bijection between lifecycle states and observer exit codes (`STATE_EXIT_CODES`, `state_exit_code()`) is frozen in §13.16.
-- **Exception mapping:** Library exception class mapping to CLI exit codes is frozen in §13.17.
-- **Observer wait exit behavior:** Wait outcome resolution and exit codes across terminal states are frozen in §13.38.7.
+- **Numerical values:** `EXIT_CODES` — §13.4.
+- **State mapping:** `STATE_EXIT_CODES`, `state_exit_code()` — §13.16.
+- **Exception mapping:** library exceptions to CLI exit codes — §13.17.
+- **Wait exit behavior:** outcome resolution across terminal states — §13.38.7.
+- **`supervise` exits:** child propagation and signal bases — §13.24.
 
 ## 8. Concurrency & atomicity
 
-Multiple processes and threads can safely interact with the same stage directory concurrently. The locking implementation relies strictly on standard library mechanisms without external dependencies.
+Processes and threads may share one stage directory. Locking uses only the standard library.
 
-- **Process-level locking:** Exclusive and shared file locking on `locks/stage.lock` via POSIX `fcntl.flock` and Windows `msvcrt.locking` byte locking with fallback are frozen in §13.40.3.
-- **Thread synchronization:** In-process synchronization via reentrant lock registry (`_THREAD_LOCKS`) is frozen in §13.40.2.
-- **Atomic file writes:** Temp-file creation in the stage directory followed by atomic `os.replace` for `STATUS.json` is frozen in §13.40.4.
-- **Torn-read tolerance:** Pure readers retry once on partial or torn reads before failing closed (§13.40.4).
-- **Append durability:** Locked append, buffer flush, and `os.fsync` for `events.jsonl` are frozen in §13.40.5.
+- **Process locking:** `locks/stage.lock` via POSIX `fcntl.flock` (exclusive for mutations, shared for reads) and Windows `msvcrt.locking` — §13.40.3.
+- **Thread synchronization:** in-process reentrant lock registry (`_THREAD_LOCKS`) — §13.40.2.
+- **Atomic writes:** same-directory temp file plus `os.replace` for `STATUS.json` — §13.40.4.
+- **Torn-read tolerance:** readers retry once before failing closed — §13.40.4.
+- **Append durability:** locked append, flush, `os.fsync` for `events.jsonl` — §13.40.5.
 
 ## 9. Proof composition (`--require-proof`)
 
-The proof composition contract allows callers to bind verifiable task proofs (such as test output receipts, cryptographic signatures, or external ledger references) to `done` transitions.
+Callers may bind a verifiable receipt (test output, signature, external ledger reference) to a `done` transition, and optionally require that it verify before the stage is allowed to complete.
 
-- **Proof metadata schema:** The `proof` dictionary format (`PROOF_KEYS`) and verification status values (`PROOF_VERIFIED_VALUES`) are frozen in §13.10.
-- **Verification gate semantics:** File existence checks, fallback external verification execution, resolution precedence (`--proof-ref` vs `STAGE_SIGNAL_PROOF_REF`), and fail-closed refusal before mutation are frozen in §13.41.
-- **Integration guide:** Practical examples and interop patterns with external proof systems are documented in `docs/COMPOSE.md`.
+- **Proof metadata:** `PROOF_KEYS`, `PROOF_VERIFIED_VALUES` — §13.10.
+- **Gate semantics:** file gate vs external verifier, `--proof-ref` / `STAGE_SIGNAL_PROOF_REF` precedence, fail-closed refusal before any mutation — §13.41.
+- **Integration guide:** worked examples and interop patterns — `docs/COMPOSE.md`.
 
 ## 10. Optional `.orch` status mirror
 
-To integrate seamlessly with orchestrators expecting repository-level status files, mutating commands accept `--write-status-mirror` (or the `STAGE_SIGNAL_STATUS_MIRROR=1` environment variable).
+For orchestrators that expect a repository-level status file, mutating commands accept `--write-status-mirror` (or `STAGE_SIGNAL_STATUS_MIRROR=1`).
 
-- **Mirror directory naming:** Canonical mirror location (`DEFAULT_MIRROR_DIRNAME`, `.orch`) is frozen in §13.13.
-- **Environment flag:** Configuration via `ENV_STATUS_MIRROR` is frozen in §13.14.
-- **Mirror rendering and rules:** Opt-in evaluation, repo-root resolution, writing `<repo>/.orch/STATUS.md`, touching `<repo>/.orch/DONE` on completion, and never-raising error policy are frozen in §13.39.
+- **Mirror location:** `DEFAULT_MIRROR_DIRNAME` (`.orch`) — §13.13.
+- **Environment flag:** `ENV_STATUS_MIRROR` — §13.14.
+- **Rendering and rules:** opt-in evaluation, repo-root resolution, `<repo>/.orch/STATUS.md`, `<repo>/.orch/DONE` on completion, never-raises policy — §13.39.
 
 ## 11. Library API (Python)
 
-The `stage_signal` package exports a pure Python (3.11+ stdlib-first) library exposing the complete stage contract for direct programmatic integration.
+The `stage_signal` package exposes the same contract programmatically.
 
 ```python
 from stage_signal import Stage, StageError, IllegalTransition, NotInitialized, state_exit_code
@@ -186,21 +195,21 @@ with Stage.open(".stage-signal") as s:
     print(s.events(tail=20, type="failed"))
 ```
 
-- **Class method surface:** All 15 public instance methods on `Stage` (`STAGE_PUBLIC_METHODS`) are frozen in §13.20.
-- **Top-level exports:** Complete symbol exports (`PUBLIC_EXPORTS`) in `__all__` are frozen in §13.21.
-- **Exception hierarchy:** `StageError` base class and standard subclasses are frozen in §13.17.
-- **State exit helpers:** `state_exit_code()` and predicate helpers are frozen in §13.16 and §13.19.
-- **Method specifications:** Detailed contracts for each method are frozen across §13.24–§13.38.
+- **Method surface:** the 15 public `Stage` methods (`STAGE_PUBLIC_METHODS`) — §13.20.
+- **Top-level exports:** `PUBLIC_EXPORTS` / `__all__` — §13.21.
+- **Exception hierarchy:** `StageError` and subclasses — §13.17.
+- **Exit helpers:** `state_exit_code()` and transition predicates — §13.16, §13.19.
+- **Per-method contracts:** §13.24–§13.38.
 
 ## 12. Testing strategy
 
-The integrity of `stage-signal` is maintained through a zero-regression test suite covering unit transitions, process concurrency, platform-specific file locking, and CLI subprocess execution.
+The suite is expected to stay green with no regressions against the §13 freezes.
 
-- **Unit verification:** State machine transitions, schema validations, and idempotent operations (§13.19, §13.34).
-- **Concurrency & atomicity tests:** Multi-threaded and multi-process lock contention, atomic replacement, and torn-read recovery (§13.40).
-- **CLI integration tests:** End-to-end command invocations, argument handling, and normalized exit code mapping (§13.4, §13.15).
-- **Watchdog acceptance tests:** Smoke validation of the complete orchestrator and watchdog recovery cycle (`examples/orchestrator-smoke.sh`).
-- **1.0 Release criteria:** Zero unfrozen normative gaps, test suite green across Linux/macOS/Windows, and strict contract freeze adherence (`docs/ROADMAP-1.0.md` §5).
+- **Unit:** transitions, schema validation, idempotent operations — §13.19, §13.34.
+- **Concurrency:** multi-threaded and multi-process lock contention, atomic replace, torn-read recovery — §13.40.
+- **CLI integration:** end-to-end invocations, argument handling, exit codes — §13.4, §13.15.
+- **Acceptance:** the orchestrator/watchdog recovery cycle — `examples/orchestrator-smoke.sh`.
+- **1.0 criteria:** zero unfrozen normative gaps and a green suite on Linux/macOS/Windows — `docs/ROADMAP-1.0.md` §5.
 
 ## 13. Appendix: schema_version 1 compatibility (normative)
 
