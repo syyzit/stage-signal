@@ -17,36 +17,59 @@ External callers that launch a background worker or monitor an existing stage ca
 ### The Loop
 
 ```bash
-# Block until the stage reaches any terminal state (done, blocked, or failed):
-stage-signal wait --state terminal --timeout 3600 --poll 5
+# Clear any terminal state left by the *previous* stage first — otherwise it
+# satisfies the wait below instantly (see "Stale-terminal race"):
+stage-signal clear-terminal || true
+
+# ... launch the worker for this stage here ...
+
+# Block until the stage reaches any terminal state (done, blocked, or failed).
+# --state terminal treats all three as "met" and exits 0, so branch on the
+# observed state, not on the exit code:
+OBSERVED=$(stage-signal wait --json --state terminal --timeout 3600 --poll 5)
 EXIT_CODE=$?
 
-case "$EXIT_CODE" in
-  0)
+if [ "$EXIT_CODE" -eq 14 ]; then
+  echo "Timed out waiting for stage completion"
+  exit 14
+fi
+
+case "$(printf '%s' "$OBSERVED" | python3 -c 'import json,sys; print(json.load(sys.stdin)["state"])')" in
+  done)
     echo "Stage completed successfully (done)"
     ;;
-  11)
+  blocked)
     echo "Stage paused: external blocker encountered (blocked)"
     stage-signal status --json
     ;;
-  12)
+  failed)
     echo "Stage failed (failed)"
     stage-signal events --tail 10
     ;;
-  14)
-    echo "Timed out waiting for stage completion"
-    ;;
-  *)
-    echo "Unexpected wait exit code: $EXIT_CODE"
-    ;;
+esac
+```
+
+To have the **exit code alone** distinguish outcomes, wait for a specific state
+instead — `wait --state done` exits `0` on `done`, `11` if `blocked` won, `12`
+if `failed` won, and `14` on timeout:
+
+```bash
+stage-signal wait --state done --timeout 3600 --poll 5
+case "$?" in
+  0)  echo "done" ;;
+  11) echo "blocked"; stage-signal status --json ;;
+  12) echo "failed"; stage-signal events --tail 10 ;;
+  14) echo "timed out" ;;
 esac
 ```
 
 ### Key Semantics
 
-- **Normalized exit codes:** `wait --state terminal` exits `0` on `done`, `11` on `blocked`, `12` on `failed`, and `14` on timeout (SPEC §13.4, §13.38).
-- **Targeting specific states:** Calling `stage-signal wait --state done` waits specifically for `done`. If the stage instead terminates in `failed` or `blocked`, `wait` reports the mismatch and exits with that terminal state's code (`12` or `11`).
+- **`--state terminal` exits `0` for all three terminal states.** `done`, `blocked` and `failed` all resolve to `outcome: met` (SPEC §13.38), so a `terminal` wait cannot tell you *which* one happened from its exit code — read `state` from `wait --json` or `status --json`. Only `14` (timeout) is distinguishable this way.
+- **Targeting specific states gives you distinguishable codes.** `stage-signal wait --state done` waits specifically for `done`; if the stage instead terminates in `blocked` or `failed`, `wait` reports the mismatch and exits with that terminal state's code (`11` or `12`) (SPEC §13.4, §13.38).
 - **Reading snapshots:** Call `stage-signal status --json` or `stage-signal events --json --tail 20` to inspect outcome details without parsing unstructured logs.
+- **Stale-terminal race — clear before you launch:** `wait` is scoped to the *directory*, not to a stage. A leftover terminal state from the **previous** stage satisfies `wait --state terminal` immediately, so an orchestrator that launches a worker and waits can be told "done" for work that never started. Before launching the next worker, run `stage-signal clear-terminal` (resets a terminal state back to idle `queued`), or read `stage_id` from `wait --json` / `status --json` and assert it matches the stage you launched. The same caveat applies to `status`.
+- **`done` is legal from idle `queued`:** A wrapper that dies before `start`, or an operator running in the wrong directory, produces `state: done` with `stage_id: null` and `pid: null` at exit `0` (deliberate, SPEC §13.30). Combined with the race above, an orchestrator can observe a `done` nobody earned — so assert `stage_id` (and, where it matters, `result.git_head`) rather than trusting `state` alone.
 
 ---
 
@@ -105,10 +128,7 @@ stage-signal start --stage "issue-42" --session "agent-run-1" --pid $$
 
 # 3. Work loop: emit heartbeats, notes, and artifacts during execution
 stage-signal note "Running test suite"
-stage-signal artifact --kind patch --path "changes.diff"
-
-# Long-running commands can be wrapped with supervise for automatic heartbeats:
-stage-signal supervise --every 30 -- pytest -q
+stage-signal artifact changes.diff --label patch
 
 # 4. Terminal outcome:
 # On success (always pass --git-head after committing code):
@@ -123,11 +143,33 @@ stage-signal done \
 # stage-signal fail --reason "Compilation failed with 5 errors"
 ```
 
+### Alternative Terminal Path: `supervise`
+
+`supervise` is **itself terminal** — it records `done` on child exit `0` and `fail`
+on any non-zero exit. It therefore replaces steps 3–4 above; it is not a drop-in
+for a mid-script `heartbeat`. Use it as the **last** command in the wrapper and do
+not follow it with `done` / `note` / `artifact`:
+
+```bash
+#!/bin/sh
+set -eu
+
+stage-signal init
+stage-signal start --stage "issue-42" --session "agent-run-1" --pid $$
+stage-signal note "Running test suite"
+
+# Terminal: heartbeats every 30s, then done (child exit 0) or fail (non-zero).
+# `set -eu` aborts the script on non-zero, so put any custom error handling
+# in a trap — or drop `supervise` and call `fail --reason "..."` yourself.
+exec stage-signal supervise --every 30 -- pytest -q
+```
+
 ### Key Semantics
 
 - **PID recording:** Always pass `--pid $$` (POSIX) or the active process ID (e.g. `os.getpid()`) on `start` so watchdog diagnostics track the correct process.
 - **Git head inheritance:** `done` without `--git-head` inherits the commit SHA captured at `start` (SPEC §13.30.3). Any worker that commits changes **must** pass `--git-head $(git rev-parse HEAD)` on `done` so `result.git_head` reflects the finished commit.
-- **Heartbeats & `supervise`:** Long commands without output can trigger false `STALE_HEARTBEAT` warnings. Wrapping commands with `stage-signal supervise --every SEC -- <command>` automatically refreshes heartbeats and adopts the child process PID.
+- **Heartbeats & `supervise`:** Long commands without output can trigger false `STALE_HEARTBEAT` warnings. `stage-signal supervise --every SEC -- <command>` refreshes heartbeats and adopts the child PID for the duration of the child — but it is a **terminal** command (see above), not a heartbeat helper you can call mid-script. To keep a hand-rolled loop alive instead, emit `stage-signal heartbeat` yourself.
+- **Do not branch on `supervise`'s exit code:** `supervise` returns the child's exit code verbatim, so a child exiting `2` / `3` / `15` is indistinguishable from bad-args / illegal-transition / not-initialized (SPEC §13.24). Read `stage-signal status --json` to learn the outcome.
 - **Abandoning parked stages:** If a stage was queued but never started (or needs to be canceled), run `stage-signal clear-terminal` to reset it back to idle `queued` without editing files manually.
 
 ---
@@ -136,10 +178,12 @@ stage-signal done \
 
 | Operation | Command | Primary Exit Codes |
 |---|---|---|
-| **Wait for completion** | `stage-signal wait --state terminal` | `0` (done), `11` (blocked), `12` (failed), `14` (timeout) |
+| **Wait for any terminal state** | `stage-signal wait --json --state terminal` | `0` (done, blocked *or* failed — read `state`), `14` (timeout) |
+| **Wait for success specifically** | `stage-signal wait --state done` | `0` (done), `11` (blocked), `12` (failed), `14` (timeout) |
 | **Wait for health failure** | `stage-signal wait --needs-reclaim` | `0` (reclaim needed), `1` (clean done), `14` (timeout) |
 | **Reclaim dead worker** | `stage-signal reclaim --reason "..." --kill` | `0` (reclaimed to queued), `12` (--keep-failed), `3` (guard refused) |
 | **Claim stage** | `stage-signal start --stage <name> --pid $$` | `0` (running), `2` (bad args) |
 | **Record completion** | `stage-signal done --summary "..." --git-head $(git rev-parse HEAD)` | `0` (done), `3` (illegal transition) |
+| **Clear stale terminal before relaunch** | `stage-signal clear-terminal` | `0` (reset to queued), `3` (not terminal) |
 | **Check snapshot** | `stage-signal status --json` | `0` (done), `10` (running), `11` (blocked), `12` (failed), `13` (queued) |
 | **Inspect health** | `stage-signal doctor --json` | `0` (healthy), `10` (`--exit-reclaim` needed), `1` (problem) |

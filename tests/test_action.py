@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import textwrap
 import uuid
 from pathlib import Path
 
@@ -18,6 +19,56 @@ from stage_signal.cli import main
 
 ROOT = Path(__file__).resolve().parent.parent
 ACTION_YML = ROOT / "action.yml"
+
+
+def _action_emitter_source() -> str:
+    """Extract the Python heredoc embedded in action.yml's `wait` step.
+
+    Tests run the action's *real* output-emitting code rather than a copy, so
+    the two cannot drift (the copy is how the unsanitized `stage_id` write
+    survived review).
+    """
+    lines = ACTION_YML.read_text(encoding="utf-8").splitlines()
+    start = next(
+        i for i, line in enumerate(lines) if "exec(textwrap.dedent(sys.stdin.read()))" in line
+    )
+    body = []
+    for line in lines[start + 1:]:
+        if line.strip() == "EOF":
+            break
+        body.append(line)
+    else:  # pragma: no cover - action.yml is malformed
+        raise AssertionError("unterminated heredoc in action.yml")
+    return textwrap.dedent("\n".join(body)) + "\n"
+
+
+def _run_action_emitter(
+    json_path: Path,
+    exit_code: int,
+    stage_dir: Path,
+    needs_reclaim_input: str,
+    gh_out: Path,
+) -> dict[str, str]:
+    """Run action.yml's emitter with the argv/env the composite step gives it."""
+    env = dict(os.environ)
+    env["GITHUB_OUTPUT"] = str(gh_out)
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            _action_emitter_source(),
+            str(json_path),
+            str(exit_code),
+            str(stage_dir),
+            needs_reclaim_input,
+        ],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert proc.returncode == 0, proc.stderr
+    return _parse_github_output(gh_out)
 
 
 def test_action_yml_declares_outputs_and_inputs() -> None:
@@ -107,10 +158,9 @@ def _run_action_wait_step(
         if poll:
             cmd.extend(["--poll", poll])
 
+        # The action always passes --json now; force_no_json simulates an empty
+        # payload so the STATUS.json fallback branch is exercised.
         use_json = not force_no_json
-        if use_json:
-            help_proc = subprocess.run([exe, "wait", "--help"], capture_output=True, text=True)
-            use_json = "--json" in (help_proc.stdout + help_proc.stderr)
         if use_json:
             cmd.append("--json")
 
@@ -130,95 +180,12 @@ def _run_action_wait_step(
             )
         exit_code = proc.returncode
 
-        raw_json = tmp_out.read_text(encoding="utf-8") if use_json and tmp_out.exists() else ""
-        observed = ""
-        outcome = ""
-        timed_out = "false"
-        stage_id = ""
-        reason = ""
-        needs_reclaim_val = "false"
+        outputs = _run_action_emitter(
+            tmp_out, exit_code, stage_dir, "true" if needs_reclaim else "false", gh_out
+        )
+        exit_code = int(outputs["exit-code"])
 
-        if raw_json.strip():
-            try:
-                data = json.loads(raw_json)
-                observed = str(data.get("state") or data.get("observed_state") or "")
-                outcome = str(data.get("outcome") or "")
-                exit_code = int(data.get("exit_code", exit_code))
-                timed_out = "true" if data.get("timeout") else "false"
-                stage_id = str(data.get("stage_id") or "")
-                reason = str(data.get("reason") or "")
-                if data.get("needs_reclaim"):
-                    needs_reclaim_val = "true"
-                status = data.get("status") or {}
-                if isinstance(status, dict):
-                    if not stage_id:
-                        stage_id = str(status.get("stage_id") or "")
-                    if not reason:
-                        err = status.get("error") or {}
-                        if isinstance(err, dict):
-                            reason = str(err.get("reason") or "")
-                    if needs_reclaim_val == "false" and status.get("needs_reclaim"):
-                        needs_reclaim_val = "true"
-            except Exception:
-                pass
-
-        if not observed:
-            status_file = stage_dir / "STATUS.json"
-            if status_file.exists():
-                try:
-                    st = json.loads(status_file.read_text(encoding="utf-8"))
-                    observed = str(st.get("state") or "")
-                    stage_id = str(st.get("stage_id") or "")
-                    if not reason:
-                        err = st.get("error") or {}
-                        if isinstance(err, dict):
-                            reason = str(err.get("reason") or "")
-                    if needs_reclaim_val == "false" and st.get("needs_reclaim"):
-                        needs_reclaim_val = "true"
-                except Exception:
-                    pass
-
-        if needs_reclaim and exit_code == 0:
-            needs_reclaim_val = "true"
-
-        if not outcome:
-            if exit_code == 0:
-                outcome = "met"
-            elif exit_code == 14:
-                outcome = "timeout"
-                timed_out = "true"
-            elif exit_code in (11, 12, 13) or (exit_code == 1 and observed in ("done", "blocked", "failed", "queued")):
-                outcome = "mismatch"
-            else:
-                outcome = "error"
-
-        if exit_code == 14:
-            timed_out = "true"
-            if not reason:
-                reason = "wait timed out"
-
-        reason = " ".join(reason.splitlines()).strip()
-
-        nl = "\n"
-        with open(gh_out, "a", encoding="utf-8") as f:
-            f.write(f"state={observed}{nl}")
-            f.write(f"observed-state={observed}{nl}")
-            f.write(f"observed_state={observed}{nl}")
-            f.write(f"outcome={outcome}{nl}")
-            f.write(f"exit-code={exit_code}{nl}")
-            f.write(f"exit_code={exit_code}{nl}")
-            f.write(f"timed-out={timed_out}{nl}")
-            f.write(f"timed_out={timed_out}{nl}")
-            f.write(f"stage-id={stage_id}{nl}")
-            f.write(f"stage_id={stage_id}{nl}")
-            f.write(f"reason={reason}{nl}")
-            f.write(f"needs-reclaim={needs_reclaim_val}{nl}")
-            f.write(f"needs_reclaim={needs_reclaim_val}{nl}")
-            if raw_json.strip():
-                delim = f"ghdel_{uuid.uuid4().hex}"
-                f.write(f"json<<{delim}{nl}{raw_json.strip()}{nl}{delim}{nl}")
-
-        return exit_code, _parse_github_output(gh_out)
+        return exit_code, outputs
 
 
 def test_action_wait_met_done(tmp_path: Path) -> None:
@@ -445,3 +412,129 @@ def test_example_workflows_branch_on_reclaim_outcomes() -> None:
         assert "reclaim-needed" in content
         assert "terminal-without-reclaim" in content
 
+
+
+# --- Action hygiene: inputs must not be interpolated into shell, and every
+# --- GITHUB_OUTPUT value must be single-line (issue #209 / OPUS review §2.4).
+
+
+def test_action_yml_never_interpolates_inputs_into_shell() -> None:
+    """`${{ inputs.* }}` inside a `run:` body is arbitrary code execution.
+
+    Inputs must reach the script through `env:` and be read as "$VAR".
+    Expressions are still allowed in `with:` and `env:` mappings.
+    """
+    lines = ACTION_YML.read_text(encoding="utf-8").splitlines()
+    in_run = False
+    offenders = []
+    for lineno, line in enumerate(lines, 1):
+        stripped = line.strip()
+        if stripped in ("run: |", "run: |-"):
+            in_run = True
+            continue
+        if in_run and stripped and not line.startswith("        "):
+            in_run = False
+        if in_run and "${{" in line and "inputs." in line:
+            offenders.append(f"{lineno}: {stripped}")
+    assert not offenders, "inputs interpolated into a run: body: " + "; ".join(offenders)
+
+
+def test_action_yml_pins_a_default_version() -> None:
+    """An unpinned default means `@v1.0.0` can install an arbitrary later release."""
+    import stage_signal
+
+    content = ACTION_YML.read_text(encoding="utf-8")
+    block = content.split("  version:", 1)[1].split("\n  cache:", 1)[0]
+    assert f"default: '{stage_signal.__version__}'" in block, (
+        "action.yml `version` default must match the packaged version"
+    )
+
+
+def _forge_payload(tmp_path: Path, stage_id: str) -> Path:
+    payload = tmp_path / "wait.json"
+    payload.write_text(
+        json.dumps(
+            {
+                "outcome": "met",
+                "state": "queued",
+                "exit_code": 13,
+                "timeout": False,
+                "stage_id": stage_id,
+                "reason": None,
+            }
+        ),
+        encoding="utf-8",
+    )
+    return payload
+
+
+def test_action_outputs_cannot_be_forged_via_stage_id(tmp_path: Path) -> None:
+    """A newline in a stage name must not inject a second GITHUB_OUTPUT entry."""
+    payload = _forge_payload(tmp_path, "demo\nstate=done\nneeds-reclaim=true")
+    outputs = _run_action_emitter(
+        payload, 13, tmp_path / ".stage-signal", "false", tmp_path / "gh_out"
+    )
+    assert outputs["state"] == "queued"
+    assert outputs["needs-reclaim"] == "false"
+    assert outputs["stage-id"] == "demo state=done needs-reclaim=true"
+
+
+def test_action_outputs_cannot_be_forged_via_reason(tmp_path: Path) -> None:
+    payload = tmp_path / "wait.json"
+    payload.write_text(
+        json.dumps(
+            {
+                "outcome": "mismatch",
+                "state": "failed",
+                "exit_code": 12,
+                "timeout": False,
+                "stage_id": "s1",
+                "reason": "boom\nstate=done\ntimed-out=false",
+            }
+        ),
+        encoding="utf-8",
+    )
+    outputs = _run_action_emitter(
+        payload, 12, tmp_path / ".stage-signal", "false", tmp_path / "gh_out"
+    )
+    assert outputs["state"] == "failed"
+    assert outputs["reason"] == "boom state=done timed-out=false"
+
+
+def test_action_every_scalar_output_is_single_line(tmp_path: Path) -> None:
+    """No scalar output may span lines, whatever the payload contains."""
+    payload = tmp_path / "wait.json"
+    payload.write_text(
+        json.dumps(
+            {
+                "outcome": "me\nt",
+                "state": "que\nued",
+                "exit_code": 13,
+                "timeout": False,
+                "stage_id": "a\nb",
+                "reason": "c\nd",
+                "needs_reclaim": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+    gh_out = tmp_path / "gh_out"
+    _run_action_emitter(payload, 13, tmp_path / ".stage-signal", "false", gh_out)
+    raw = gh_out.read_text(encoding="utf-8")
+    scalar_part = raw.split("json<<", 1)[0]
+    keys = [line.split("=", 1)[0] for line in scalar_part.splitlines() if line]
+    assert keys == [
+        "state",
+        "observed-state",
+        "observed_state",
+        "outcome",
+        "exit-code",
+        "exit_code",
+        "timed-out",
+        "timed_out",
+        "stage-id",
+        "stage_id",
+        "reason",
+        "needs-reclaim",
+        "needs_reclaim",
+    ]

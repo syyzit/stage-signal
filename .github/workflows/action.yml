@@ -1,0 +1,196 @@
+name: action
+
+# Soak: actually run the composite action on a real runner.
+#
+# tests/test_action.py exercises the action's *emitter* in-process; nothing
+# proved the composite action itself works on GitHub — that `uses:` resolves,
+# that the pinned PyPI install succeeds, that inputs reach the script through
+# `env:`, or that the declared outputs reach a downstream `if:`. This workflow
+# does, once per documented branch (#209).
+
+on:
+  push:
+  pull_request:
+  schedule:
+    # Weekly, to catch PyPI/runner drift with no human attention.
+    - cron: '17 6 * * 1'
+  workflow_dispatch:
+
+jobs:
+  action-branches:
+    name: ${{ matrix.case }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - case: done
+            setup: stage-signal start --stage fixture-done --pid $$ && stage-signal done --summary "fixture ok"
+            state: terminal
+            expect_state: done
+            expect_outcome: met
+            expect_exit: '0'
+            expect_timed_out: 'false'
+            expect_needs_reclaim: 'false'
+            expect_stage_id: fixture-done
+
+          - case: blocked
+            setup: stage-signal start --stage fixture-blocked --pid $$ && stage-signal blocked --reason "fixture blocker"
+            state: done
+            expect_state: blocked
+            expect_outcome: mismatch
+            expect_exit: '11'
+            expect_timed_out: 'false'
+            expect_needs_reclaim: 'false'
+            expect_stage_id: fixture-blocked
+
+          - case: failed
+            setup: stage-signal start --stage fixture-failed --pid $$ && stage-signal fail --reason "fixture failure"
+            state: done
+            expect_state: failed
+            expect_outcome: mismatch
+            expect_exit: '12'
+            expect_timed_out: 'false'
+            expect_needs_reclaim: 'false'
+            expect_stage_id: fixture-failed
+
+          - case: timeout
+            setup: 'true'   # leave the stage idle in queued
+            state: terminal
+            expect_state: queued
+            expect_outcome: timeout
+            expect_exit: '14'
+            expect_timed_out: 'true'
+            expect_needs_reclaim: 'false'
+            expect_stage_id: ''
+
+          - case: needs-reclaim
+            setup: stage-signal start --stage fixture-reclaim --pid 999999999
+            needs_reclaim: 'true'
+            state: terminal
+            expect_state: running
+            expect_outcome: met
+            expect_exit: '0'
+            expect_timed_out: 'false'
+            expect_needs_reclaim: 'true'
+            expect_stage_id: fixture-reclaim
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Python for the fixture
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Build the fixture stage dir
+        env:
+          SETUP: ${{ matrix.setup }}
+        run: |
+          set -eu
+          mkdir -p fixture
+          cd fixture
+          export PYTHONPATH="$GITHUB_WORKSPACE/src"
+          stage-signal() { python -m stage_signal --dir "$PWD/.stage-signal" "$@"; }
+          stage-signal init
+          eval "$SETUP"
+          stage-signal status --json || true
+
+      - name: Wait via the composite action
+        id: wait
+        continue-on-error: true
+        uses: ./
+        with:
+          dir: fixture/.stage-signal
+          state: ${{ matrix.state }}
+          needs-reclaim: ${{ matrix.needs_reclaim || 'false' }}
+          timeout: 20
+          poll: 1
+
+      - name: Assert declared outputs
+        env:
+          GOT_STATE: ${{ steps.wait.outputs.state }}
+          GOT_OBSERVED: ${{ steps.wait.outputs.observed-state }}
+          GOT_OUTCOME: ${{ steps.wait.outputs.outcome }}
+          GOT_EXIT: ${{ steps.wait.outputs.exit-code }}
+          GOT_TIMED_OUT: ${{ steps.wait.outputs.timed-out }}
+          GOT_NEEDS_RECLAIM: ${{ steps.wait.outputs.needs-reclaim }}
+          GOT_STAGE_ID: ${{ steps.wait.outputs.stage-id }}
+          GOT_JSON: ${{ steps.wait.outputs.json }}
+          WANT_STATE: ${{ matrix.expect_state }}
+          WANT_OUTCOME: ${{ matrix.expect_outcome }}
+          WANT_EXIT: ${{ matrix.expect_exit }}
+          WANT_TIMED_OUT: ${{ matrix.expect_timed_out }}
+          WANT_NEEDS_RECLAIM: ${{ matrix.expect_needs_reclaim }}
+          WANT_STAGE_ID: ${{ matrix.expect_stage_id }}
+        run: |
+          set -eu
+          fail=0
+          check() {
+            if [ "$2" != "$3" ]; then
+              echo "::error::$1: expected '$3', got '$2'"
+              fail=1
+            else
+              echo "ok $1=$2"
+            fi
+          }
+          check state "$GOT_STATE" "$WANT_STATE"
+          check observed-state "$GOT_OBSERVED" "$WANT_STATE"
+          check outcome "$GOT_OUTCOME" "$WANT_OUTCOME"
+          check exit-code "$GOT_EXIT" "$WANT_EXIT"
+          check timed-out "$GOT_TIMED_OUT" "$WANT_TIMED_OUT"
+          check needs-reclaim "$GOT_NEEDS_RECLAIM" "$WANT_NEEDS_RECLAIM"
+          check stage-id "$GOT_STAGE_ID" "$WANT_STAGE_ID"
+          # `json` must be present and parseable whenever wait produced a payload.
+          printf '%s' "$GOT_JSON" | python -c 'import json,sys; json.loads(sys.stdin.read())'
+          exit "$fail"
+
+  # A newline in a stage name must not be able to write a second
+  # GITHUB_OUTPUT entry and forge `state=done` for a downstream `if:`.
+  action-output-injection:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Build a fixture whose stage id carries a newline
+        run: |
+          set -eu
+          mkdir -p fixture
+          cd fixture
+          export PYTHONPATH="$GITHUB_WORKSPACE/src"
+          ss() { python -m stage_signal --dir "$PWD/.stage-signal" "$@"; }
+          ss init
+          ss start --stage "$(printf 'forged\nstate=done\nneeds-reclaim=true')" --pid $$
+          # Terminal (not running), so needs_reclaim is genuinely false and any
+          # `needs-reclaim=true` in the outputs could only come from injection.
+          ss blocked --reason "fixture blocker"
+
+      - name: Wait via the composite action
+        id: wait
+        continue-on-error: true
+        uses: ./
+        with:
+          dir: fixture/.stage-signal
+          state: done
+          timeout: 5
+          poll: 1
+
+      - name: Outputs must not be forged
+        env:
+          GOT_STATE: ${{ steps.wait.outputs.state }}
+          GOT_NEEDS_RECLAIM: ${{ steps.wait.outputs.needs-reclaim }}
+          GOT_STAGE_ID: ${{ steps.wait.outputs.stage-id }}
+        run: |
+          set -eu
+          [ "$GOT_STATE" = "blocked" ] || { echo "::error::state was forged: $GOT_STATE"; exit 1; }
+          [ "$GOT_NEEDS_RECLAIM" != "true" ] || { echo "::error::needs-reclaim was forged"; exit 1; }
+          case "$GOT_STAGE_ID" in
+            *"forged state=done needs-reclaim=true"*) echo "ok stage-id flattened: $GOT_STAGE_ID" ;;
+            *) echo "::error::unexpected stage-id: $GOT_STAGE_ID"; exit 1 ;;
+          esac

@@ -42,9 +42,13 @@ inputs:
     required: false
     default: '3.12'
   version:
-    description: 'stage-signal version constraint to install (e.g. "0.1.7" or "==0.1.7"; default installs latest)'
+    description: >-
+      stage-signal version to install from PyPI. A bare version ("0.1.7") is
+      pinned with "=="; a constraint (">=0.1.7", "~=0.1.7") is passed through.
+      Defaults to the version this action ref ships with. Pass "latest" to
+      install the newest release instead.
     required: false
-    default: ''
+    default: '0.1.7'
   cache:
     description: 'Dependency cache for actions/setup-python (e.g. "pip", or "" to disable)'
     required: false
@@ -112,10 +116,14 @@ runs:
 
     - name: Install stage-signal
       shell: bash
+      env:
+        INPUT_VERSION: ${{ inputs.version }}
       run: |
         python -m pip install --upgrade pip
-        VERSION=$(echo "${{ inputs.version }}" | tr -d '[:space:]')
-        if [ -n "$VERSION" ]; then
+        VERSION=$(printf '%s' "$INPUT_VERSION" | tr -d '[:space:]')
+        if [ -z "$VERSION" ] || [ "$VERSION" = "latest" ]; then
+          pip install stage-signal
+        else
           case "$VERSION" in
             "=="*|">="*|"<="*|"~="*|"!="*|"<"*|">"*)
               pip install "stage-signal${VERSION}"
@@ -124,19 +132,23 @@ runs:
               pip install "stage-signal==${VERSION}"
               ;;
           esac
-        else
-          pip install stage-signal
         fi
 
     - id: wait
       name: Wait for stage
       shell: bash
+      env:
+        INPUT_DIR: ${{ inputs.dir }}
+        INPUT_STATE: ${{ inputs.state }}
+        INPUT_TIMEOUT: ${{ inputs.timeout }}
+        INPUT_POLL: ${{ inputs.poll }}
+        INPUT_NEEDS_RECLAIM: ${{ inputs.needs-reclaim }}
       run: |
-        DIR="${{ inputs.dir }}"
-        STATE="${{ inputs.state }}"
-        TIMEOUT="${{ inputs.timeout }}"
-        POLL="${{ inputs.poll }}"
-        NEEDS_RECLAIM="${{ inputs.needs-reclaim }}"
+        DIR="$INPUT_DIR"
+        STATE="$INPUT_STATE"
+        TIMEOUT="$INPUT_TIMEOUT"
+        POLL="$INPUT_POLL"
+        NEEDS_RECLAIM="$INPUT_NEEDS_RECLAIM"
 
         ARGS=("--timeout" "$TIMEOUT")
         if [ "$NEEDS_RECLAIM" = "true" ]; then
@@ -152,19 +164,10 @@ runs:
         fi
 
         TMP_OUT=$(mktemp)
-        HAS_JSON=false
-        if stage-signal wait --help 2>&1 | grep -q -- '--json'; then
-          HAS_JSON=true
-        fi
 
         set +e
-        if [ "$HAS_JSON" = "true" ]; then
-          stage-signal --dir "$DIR" wait --json "${ARGS[@]}" > "$TMP_OUT"
-          EXIT_CODE=$?
-        else
-          stage-signal --dir "$DIR" wait "${ARGS[@]}"
-          EXIT_CODE=$?
-        fi
+        stage-signal --dir "$DIR" wait --json "${ARGS[@]}" > "$TMP_OUT"
+        EXIT_CODE=$?
         set -e
 
         if [ -s "$TMP_OUT" ]; then
@@ -250,24 +253,44 @@ runs:
             if not reason:
                 reason = "wait timed out"
 
-        reason = " ".join(reason.splitlines()).strip()
+        def flatten(value):
+            """Collapse to a single line so a value can never forge another output.
+
+            `stage_id` and `reason` are attacker-influenced (a stage name or an
+            error string may contain newlines), and every scalar here is written
+            in the `key=value` form, where an embedded newline would start a new
+            GITHUB_OUTPUT entry. Flatten all of them, not just `reason`.
+            """
+            return " ".join(str(value).splitlines()).strip()
+
+        state = flatten(state)
+        outcome = flatten(outcome)
+        timed_out = flatten(timed_out)
+        stage_id = flatten(stage_id)
+        reason = flatten(reason)
+        needs_reclaim = flatten(needs_reclaim)
 
         if gh_output:
+            scalars = [
+                ("state", state),
+                ("observed-state", state),
+                ("observed_state", state),
+                ("outcome", outcome),
+                ("exit-code", exit_code),
+                ("exit_code", exit_code),
+                ("timed-out", timed_out),
+                ("timed_out", timed_out),
+                ("stage-id", stage_id),
+                ("stage_id", stage_id),
+                ("reason", reason),
+                ("needs-reclaim", needs_reclaim),
+                ("needs_reclaim", needs_reclaim),
+            ]
             with open(gh_output, "a", encoding="utf-8") as f:
-                f.write(f"state={state}\n")
-                f.write(f"observed-state={state}\n")
-                f.write(f"observed_state={state}\n")
-                f.write(f"outcome={outcome}\n")
-                f.write(f"exit-code={exit_code}\n")
-                f.write(f"exit_code={exit_code}\n")
-                f.write(f"timed-out={timed_out}\n")
-                f.write(f"timed_out={timed_out}\n")
-                f.write(f"stage-id={stage_id}\n")
-                f.write(f"stage_id={stage_id}\n")
-                f.write(f"reason={reason}\n")
-                f.write(f"needs-reclaim={needs_reclaim}\n")
-                f.write(f"needs_reclaim={needs_reclaim}\n")
+                for key, value in scalars:
+                    f.write(f"{key}={flatten(value)}\n")
                 if raw_json.strip():
+                    # Multiline by nature: heredoc form with a random delimiter.
                     delim = f"ghdel_{uuid.uuid4().hex}"
                     f.write(f"json<<{delim}\n{raw_json.strip()}\n{delim}\n")
         EOF

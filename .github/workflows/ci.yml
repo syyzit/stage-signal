@@ -10,7 +10,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.11", "3.12", "3.13"]
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
     steps:
       - uses: actions/checkout@v7
 
@@ -81,3 +81,77 @@ jobs:
 
       - name: Check distributions with twine
         run: twine check dist/*
+
+  # Soak: prove the *published artifact* works, not just the working tree.
+  # CI's other jobs all `pip install -e .`, which cannot catch a packaging
+  # defect (missing module, broken entry point, bad wheel metadata).
+  smoke-from-wheel:
+    name: smoke from wheel (${{ matrix.os }}, py${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python-version: ["3.11", "3.13"]
+        include:
+          - os: windows-latest
+            python-version: "3.12"
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Build wheel
+        run: |
+          python -m pip install --upgrade pip build
+          python -m build --wheel
+
+      - name: Install the wheel into a clean venv
+        shell: bash
+        run: |
+          python -m venv "$RUNNER_TEMP/smokeenv"
+          if [ -d "$RUNNER_TEMP/smokeenv/bin" ]; then
+            VENV_BIN="$RUNNER_TEMP/smokeenv/bin"
+          else
+            VENV_BIN="$RUNNER_TEMP/smokeenv/Scripts"
+          fi
+          "$VENV_BIN/python" -m pip install --upgrade pip
+          "$VENV_BIN/python" -m pip install dist/*.whl
+          echo "$VENV_BIN" >> "$GITHUB_PATH"
+
+      - name: Assert the installed artifact is this commit's version
+        shell: bash
+        run: |
+          # No `-e .` and no repo src on sys.path: this reads the wheel.
+          cd "$RUNNER_TEMP"
+          stage-signal --version
+          python -c "import stage_signal, importlib.metadata as m; \
+            assert stage_signal.__version__ == m.version('stage-signal'), \
+            (stage_signal.__version__, m.version('stage-signal'))"
+
+      - name: Run orchestrator smoke against the installed binary
+        if: runner.os != 'Windows'
+        run: sh examples/orchestrator-smoke.sh
+
+  # Soak: run the docs. `docs/CALLER.md` shipped a command that exits 2
+  # because nothing ever executed the fenced examples (#209).
+  docs-execute:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install stage-signal with test extras
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Execute documented examples
+        run: python -m pytest tests/test_docs_examples.py -q
