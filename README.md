@@ -446,7 +446,9 @@ ubuntu / macOS / Windows, `docs-execute` runs the fenced examples in this README
 and `docs/CALLER.md` (`tests/test_docs_examples.py`), and
 `.github/workflows/action.yml` executes the composite action itself via
 `uses: ./` on a real runner across the done / blocked / failed / timeout /
-needs-reclaim branches.
+needs-reclaim branches. Those in-repo steps pass `version: local`, which
+installs the checked-out source instead of the PyPI pin (a release commit's
+pin is not published yet); external callers keep the pinned PyPI default.
 
 `main` carries SPEC contract freezes through §13.42 — status / events /
 doctor / wait observers (§13.35–§13.38), `.orch` mirror (§13.39),
