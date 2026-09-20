@@ -440,6 +440,14 @@ Caller Guide (`docs/CALLER.md`), archived dogfood harnesses in `examples/dogfood
 pytest + smokes + packaging check via `python -m build` /
 `twine check`, no upload). Contract: SPEC v1.
 
+CI no longer only tests the working tree: `smoke-from-wheel` installs the built
+wheel into a clean venv and runs `examples/orchestrator-smoke.sh` on
+ubuntu / macOS / Windows, `docs-execute` runs the fenced examples in this README
+and `docs/CALLER.md` (`tests/test_docs_examples.py`), and
+`.github/workflows/action.yml` executes the composite action itself via
+`uses: ./` on a real runner across the done / blocked / failed / timeout /
+needs-reclaim branches.
+
 `main` carries SPEC contract freezes through §13.42 — status / events /
 doctor / wait observers (§13.35–§13.38), `.orch` mirror (§13.39),
 concurrency and locking (§13.40), proof gate (§13.41), and PID liveness /
@@ -447,7 +455,7 @@ concurrency and locking (§13.40), proof gate (§13.41), and PID liveness /
 published package is **0.1.7**, releasing the soak of freezes through §13.42. Action pins (`@v0.1.7`) and the optional PyPI `version` pin
 (`"0.1.7"`) stay aligned with the release.
 
-**1.0 readiness & "done" bar:** The published product is strictly the thin `.stage-signal/` lifecycle contract (CLI, on-disk status, normalized exit codes, and Python library) — not an agent orchestrator, task queue, or multi-agent cockpit. All 42 subsections of SPEC §13 are frozen. The path to 1.0 focuses on 0.1.7 soak stability, SPEC narrative consolidation, and demoting dogfood harnesses to lean caller examples. Full contract freeze map and cut-list: [`docs/ROADMAP-1.0.md`](docs/ROADMAP-1.0.md).
+**1.0 readiness & "done" bar:** The published product is strictly the thin `.stage-signal/` lifecycle contract (CLI, on-disk status, normalized exit codes, and Python library) — not an agent orchestrator, task queue, or multi-agent cockpit. All 42 subsections of SPEC §13 are frozen; the remaining pre-1.0 work is caller-facing docs accuracy, Action hygiene, and turning "soaked across platforms" from an assertion into CI jobs (see above) — not new freezes. Full contract freeze map and cut-list: [`docs/ROADMAP-1.0.md`](docs/ROADMAP-1.0.md).
 
 ---
 

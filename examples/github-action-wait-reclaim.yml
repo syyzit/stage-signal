@@ -22,6 +22,11 @@
 #   reason                   (blocked/failed text, or timeout message)
 #   json                     (raw wait --json payload)
 #
+# Pin the action ref (@v0.1.7) independently of the optional `version` pip pin.
+# Omitting `version` installs the release the pinned action ref ships with --
+# never "whatever is newest". Once 1.0 ships, a floating `@v1` tag will follow
+# backwards-compatible 1.x action fixes; use an exact tag for reproducibility.
+#
 # Non-zero wait codes fail the step unless `continue-on-error: true` — that
 # is what keeps 11/12/14/1 from collapsing into a generic failure so later
 # `if:` branches can read `needs-reclaim` / `state` / `timed-out` / `reason`.
