@@ -6,6 +6,8 @@ See `docs/RELEASE.md` for the release procedure.
 
 ## [Unreleased]
 
+- Docs: finish the SPEC §§1–12 streamline by restating them as an explicitly non-normative architecture overview — adds a reading note declaring §13 authoritative on any divergence, labels the CLI synopsis (§6) and exit-code table (§7) as non-normative summaries citing §13.15 and §13.4/§13.16, marks the transition diagram (§4) illustrative against the §13.19 matrix, and trims residual duplicated prose (~16% fewer words) without touching §13, adding freezes, or changing runtime behavior (#207).
+
 - Docs: streamline SPEC §§1–12 into a concise architecture overview delegating all normative assertions to §13 freezes under `schema_version: 1` (#201).
 
 - Docs: demote dogfood harness scripts and dual-CLI guides to `examples/dogfood/` with an explanatory README clarifying they are external harnesses rather than published product, add lean Caller Guide (`docs/CALLER.md`) covering synchronous wait, health watchdog, and agent wrapper loops, and purge internal harness references from general docs (#199).

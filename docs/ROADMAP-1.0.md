@@ -96,6 +96,7 @@ All normative requirements for `schema_version: 1` are locked across §13.1 thro
    - In pre-1.0 development, individual features landed as discrete frozen subsections in §13 while sections 1–12 retained the narrative description.
    - Today, §13 is an exhaustive, 3,300+ line normative specification that fully re-specifies every rule introduced in §§1–12 (status schema, transition edges, event records, exit codes, and locking).
    - *1.0 Recommendation:* Streamline `SPEC.md` §§1–12 into a concise architecture overview that delegates all normative assertions to §13, eliminating duplicative prose and preventing semantic drift.
+   - *Status:* **Done** — §§1–12 are now a non-normative architecture overview that indexes §13; the exit-code and CLI tables are explicitly labeled non-normative summaries citing §13.4/§13.16 and §13.15 (#201, #207).
 2. **Obsolete Background References:**
    - Early planning artifacts (e.g. `docs/IMPLEMENTATION_PLAN.md` or obsolete prototype notes) have been completely superseded by `SPEC.md` and should be formally retired.
 
@@ -136,6 +137,7 @@ The release of **1.0.0** is achieved when the following criteria are satisfied:
    - Zero product features for task scheduling, queueing, or multi-agent cockpits.
 2. **SPEC Consolidation:**
    - Duplicate normative text between `SPEC.md` §§1–12 and §13 is unified, establishing §13 as the single source of truth under `schema_version: 1`.
+   - *Status:* **Done** (#201, #207).
 3. **Examples Streamlined:**
    - Bloated dogfood harness scripts and documents listed in the cut-list are demoted or archived; only lean, caller-focused integration examples remain.
 4. **0.1.7 Soak Validation:**
